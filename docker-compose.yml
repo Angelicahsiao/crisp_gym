@@ -1,0 +1,19 @@
+services:
+  crispy-gym:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: crisp-gym-pixi:test
+    container_name: crisp-gym
+    volumes:
+      - ~/workspaces:/workspaces
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    environment:
+      - DISPLAY=${DISPLAY}
+      # - CRISP_CONFIG_PATH=/workspace/configs
+    network_mode: host
+    stdin_open: true
+    tty: true
+    privileged: true
+    working_dir: /workspaces/crisp_gym
+    command: bash -c "if [ ! -d /workspaces/crisp_gym/.pixi/envs/humble ]; then pixi install -e humble; fi && exec bash"
