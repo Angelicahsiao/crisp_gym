@@ -14,7 +14,13 @@ ITERATIONS = 5  # number of full circles to draw
 
 # %% === Environment Setup ===
 env_config = FrankaEnvConfig(control_frequency=CTRL_FREQ, gripper_config=None, camera_configs=[])
-env = ManipulatorCartesianEnv(namespace="right", config=env_config)
+env_config.cartesian_control_param_config = (
+    "./crisp_gym/config/control/default_cartesian_impedance.yaml"
+)
+env_config.joint_control_param_config = (
+    "./crisp_gym/config/control/joint_control.yaml"
+)
+env = ManipulatorCartesianEnv(namespace="", config=env_config)
 
 # %% === Move to Starting Point ===
 start_position = CENTER + [0, RADIUS, 0]
