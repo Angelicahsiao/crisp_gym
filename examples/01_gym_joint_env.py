@@ -13,7 +13,13 @@ CTRL_FREQ = 10
 
 # === Initialize environment ===
 env_config = FrankaEnvConfig(control_frequency=CTRL_FREQ, gripper_config=None, camera_configs=[])
-env = ManipulatorJointEnv(namespace="right", config=env_config)
+env_config.cartesian_control_param_config = (
+    "./crisp_gym/config/control/default_cartesian_impedance.yaml"
+)
+env_config.joint_control_param_config = (
+    "./crisp_gym/config/control/joint_control.yaml"
+)
+env = ManipulatorJointEnv(namespace="", config=env_config)
 
 print("Moving to start position...")
 env.move_to(position=START_POSITION, speed=0.15)
