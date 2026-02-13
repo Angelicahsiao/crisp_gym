@@ -1,5 +1,6 @@
 """Class defining the teleoperation for a pose streamer."""
 
+import logging
 import threading
 import time
 
@@ -10,6 +11,8 @@ from geometry_msgs.msg import PoseStamped
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import qos_profile_sensor_data
 from std_msgs.msg import Float32
+
+logger = logging.getLogger(__name__)
 
 
 class TeleopStreamedPose:
@@ -29,22 +32,26 @@ class TeleopStreamedPose:
         # Set this with config
         self._gripper_topic = f"/{self._prefix}phone_gripper"
         self._pose_topic = f"/{self._prefix}phone_pose"
+        
+        logger.info(f"Creating subscriptions to: {self._pose_topic}, {self._gripper_topic}")
 
-        self.node.create_subscription(
+        self._pose_sub = self.node.create_subscription(
             PoseStamped,
             self._pose_topic,
             callback=self._callback_pose,
             callback_group=ReentrantCallbackGroup(),
             qos_profile=qos_profile_sensor_data,
         )
-
-        self.node.create_subscription(
+        
+        self._gripper_sub = self.node.create_subscription(
             Float32,
             self._gripper_topic,
             callback=self._callback_gripper,
             callback_group=ReentrantCallbackGroup(),
             qos_profile=qos_profile_sensor_data,
         )
+        
+        logger.info("Subscriptions created, starting executor thread...")
 
         threading.Thread(target=self._spin_node, daemon=True).start()
 
@@ -77,14 +84,26 @@ class TeleopStreamedPose:
             rclpy.init()
         executor = rclpy.executors.MultiThreadedExecutor(num_threads=2)
         executor.add_node(self.node)
-        while rclpy.ok():
-            executor.spin_once(timeout_sec=0.1)
+        logger.info("Executor thread started, spinning...")
+        try:
+            while rclpy.ok():
+                # Use 0.01s timeout for responsive callback processing (10ms instead of 100ms)
+                executor.spin_once(timeout_sec=0.01)
+        except Exception as e:
+            logger.error(f"Executor error: {e}", exc_info=True)
+        finally:
+            logger.info("Executor thread stopping")
 
     def _callback_gripper(self, msg: Float32):
         self._last_gripper = msg.data
+        # logger.debug(f"Gripper callback: {msg.data}")
 
     def _callback_pose(self, msg: PoseStamped):
-        self._last_pose = Pose.from_ros_msg(msg)
+        # logger.info(f"PoseStamped callback received: pos=({msg.pose.position.x:.3f}, {msg.pose.position.y:.3f}, {msg.pose.position.z:.3f})")
+        try:
+            self._last_pose = Pose.from_ros_msg(msg)
+        except Exception as e:
+            logger.error(f"Error converting ROS pose to Pose: {e}", exc_info=True)
 
     def is_ready(self) -> bool:
         """Check if the leader robot and its gripper are ready.
@@ -97,9 +116,12 @@ class TeleopStreamedPose:
     def wait_until_ready(self, timeout: float = 5.0):
         """Wait until the leader robot and its gripper are ready."""
         start_time = time.time()
+        logger.info("Waiting for first pose message...")
         while not self.is_ready() and rclpy.ok():
-            rclpy.spin_once(self.node, timeout_sec=0.1)
+            # Don't spin directly - let the background executor thread handle it
+            time.sleep(0.01)
             if time.time() - start_time > timeout:
                 raise TimeoutError("Timed out waiting for the teleop streamer to be ready.")
         if not rclpy.ok():
             raise RuntimeError("ROS2 has been shutdown.")
+        logger.info("✓ First pose received, ready to proceed")
