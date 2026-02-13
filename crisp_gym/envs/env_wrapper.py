@@ -20,31 +20,54 @@ from numpy.typing import NDArray
 from crisp_gym.envs.manipulator_env import ManipulatorBaseEnv
 
 
+# def stack_gym_space(space: gym.Space, repeat: int) -> gym.Space:
+#     """Repeat a Gym space definition by stacking it multiple times.
+
+#     Args:
+#         space (gym.Space): The original Gym space to be repeated.
+#         repeat (int): Number of times to repeat/stack the space.
+
+#     Returns:
+#         gym.Space: A new Gym space with the original space stacked 'repeat' times.
+
+#     Raises:
+#         ValueError: If the input space type is not supported (currently supports Box and Dict spaces).
+#     """
+#     if isinstance(space, gym.spaces.Box):
+#         # Convert dtype to type to match Box constructor's type annotation
+#         dtype = np.dtype(space.dtype).type
+#         return gym.spaces.Box(
+#             low=np.repeat(space.low[None], repeat, axis=0),
+#             high=np.repeat(space.high[None], repeat, axis=0),
+#             dtype=dtype,
+#         )
+#     elif isinstance(space, gym.spaces.Dict):
+#         return gym.spaces.Dict({k: stack_gym_space(v, repeat) for k, v in space.spaces.items()})
+#     else:
+#         raise ValueError(f"Space {space} is not supported.")
+
 def stack_gym_space(space: gym.Space, repeat: int) -> gym.Space:
-    """Repeat a Gym space definition by stacking it multiple times.
-
-    Args:
-        space (gym.Space): The original Gym space to be repeated.
-        repeat (int): Number of times to repeat/stack the space.
-
-    Returns:
-        gym.Space: A new Gym space with the original space stacked 'repeat' times.
-
-    Raises:
-        ValueError: If the input space type is not supported (currently supports Box and Dict spaces).
-    """
     if isinstance(space, gym.spaces.Box):
-        # Convert dtype to type to match Box constructor's type annotation
         dtype = np.dtype(space.dtype).type
         return gym.spaces.Box(
             low=np.repeat(space.low[None], repeat, axis=0),
             high=np.repeat(space.high[None], repeat, axis=0),
             dtype=dtype,
         )
+
     elif isinstance(space, gym.spaces.Dict):
-        return gym.spaces.Dict({k: stack_gym_space(v, repeat) for k, v in space.spaces.items()})
+        return gym.spaces.Dict({
+            k: stack_gym_space(v, repeat)
+            for k, v in space.spaces.items()
+        })
+
+    elif isinstance(space, gym.spaces.Text):
+        # 🚫 Text cannot be stacked — keep it unchanged
+        return space
+
     else:
         raise ValueError(f"Space {space} is not supported.")
+
 
 
 class WindowWrapper(gym.Wrapper):
@@ -93,9 +116,14 @@ class WindowWrapper(gym.Wrapper):
         obs, reward, terminated, truncated, info = self.env.step(action, **kwargs)
         self.window.append(obs)
         self.window = self.window[-self.window_size :]
-        obs = {
-            key: np.stack([frame[key] for frame in self.window]) for key in self.window[0].keys()
-        }
+        obs = {}
+        for key, value in self.window[0].items():
+            if isinstance(value, str):
+                # Text obs: do NOT stack
+                obs[key] = value
+            else:
+                obs[key] = np.stack([frame[key] for frame in self.window])
+
         return obs, float(reward), terminated, truncated, info
 
     def reset(
@@ -114,9 +142,14 @@ class WindowWrapper(gym.Wrapper):
         """
         obs, info = self.env.reset(seed=seed, options=options)
         self.window = [obs] * self.window_size
-        obs = {
-            key: np.stack([frame[key] for frame in self.window]) for key in self.window[0].keys()
-        }
+        obs = {}
+        for key, value in self.window[0].items():
+            if isinstance(value, str):
+                # Text obs: do NOT stack
+                obs[key] = value
+            else:
+                obs[key] = np.stack([frame[key] for frame in self.window])
+
         return obs, info
 
     def close(self) -> None:
