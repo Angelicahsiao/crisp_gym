@@ -3,11 +3,14 @@
 import argparse
 import logging
 import time
-
+from pathlib import Path
+import crisp_gym
 import numpy as np
 
-from crisp_gym.envs.manipulator_env import make_env
+from crisp_gym.envs.manipulator_env import make_env, ManipulatorCartesianEnv, ManipulatorJointEnv
+from crisp_gym.envs.manipulator_env_config import FrankaEnvConfig
 from crisp_gym.teleop.teleop_robot import make_leader
+from crisp_gym.teleop.teleop_sensor_stream import TeleopStreamedPose
 from crisp_gym.util.setup_logger import setup_logging
 
 # Parse args:
@@ -30,6 +33,12 @@ parser.add_argument(
     default=100.0,
     help="Control frequency in Hz (default: 100.0)",
 )
+parser.add_argument(
+    "--use-streamed-teleop",
+    action="store_true",
+    help="Use streamed pose instead of physical leader robot",
+)
+
 
 
 args = parser.parse_args()
@@ -40,42 +49,96 @@ logger = logging.getLogger(__name__)
 
 # %% Leader setup
 logger.info("Setting up leader robot...")
-leader = make_leader(name="left_aloha_franka", namespace="left")
-leader.wait_until_ready()
-leader.prepare_for_teleop()
+if args.use_streamed_teleop:
+    leader = TeleopStreamedPose()
+    logger.info("Using streamed teleop as leader.")
+else:
+    leader = make_leader(name="left_aloha_franka", namespace="left")
+    leader.wait_until_ready()
+    leader.prepare_for_teleop()
+    logger.info("Using physical leader robot.")
 
 # %% Environment setup
 logger.info("Setting up environment...")
-env = make_env("right_no_cam_franka", control_type="cartesian", namespace="right")
+# env = make_env("right_no_cam_franka", control_type="cartesian", namespace="right")
+CTRL_FREQ = 50
+BASE_DIR = Path(crisp_gym.__file__).parent
+
+env_config = FrankaEnvConfig(control_frequency=CTRL_FREQ, gripper_config=None, camera_configs=[])
+env_config.cartesian_control_param_config = str(
+    BASE_DIR / "config/control/default_cartesian_impedance.yaml"
+)
+
+env_config.joint_control_param_config = str(
+    BASE_DIR / "config/control/joint_control.yaml"
+)
+# env_config.cartesian_control_param_config = "./config/control/default_cartesian_impedance.yaml"
+# env_config.joint_control_param_config = "./config/control/joint_control.yaml"
+env = ManipulatorCartesianEnv(namespace="", config=env_config)
 env.robot.home()
 env.reset()
 
 # %% Now run the teleoperation loop
 logger.info(":rocket: Starting teleoperation...")
 
-if args.use_force_feedback:
-    leader.robot.controller_switcher_client.switch_controller("torque_feedback_controller")
-else:
-    leader.robot.cartesian_controller_parameters_client.load_param_config(
-        file_path=leader.config.gravity_compensation_controller
-    )
-    leader.robot.controller_switcher_client.switch_controller("cartesian_impedance_controller")
+# if args.use_force_feedback:
+#     leader.robot.controller_switcher_client.switch_controller("torque_feedback_controller")
+# else:
+#     leader.robot.cartesian_controller_parameters_client.load_param_config(
+#         file_path=leader.config.gravity_compensation_controller
+#     )
+#     leader.robot.controller_switcher_client.switch_controller("cartesian_impedance_controller")
 
 
-previous_pose = leader.robot.end_effector_pose
+if not args.use_streamed_teleop:
+    if args.use_force_feedback:
+        leader.robot.controller_switcher_client.switch_controller("torque_feedback_controller")
+    else:
+        leader.robot.cartesian_controller_parameters_client.load_param_config(
+            file_path=leader.config.gravity_compensation_controller
+        )
+        leader.robot.controller_switcher_client.switch_controller(
+            "cartesian_impedance_controller"
+        )
+
+
+
+# previous_pose = leader.robot.end_effector_pose
+previous_pose = (
+    leader.robot.end_effector_pose
+    if not args.use_streamed_teleop
+    else leader.last_pose
+)
+
 
 while True:
     # NOTE: the leader pose and follower pose will drift apart over time but this is
     #       fine assuming that we are just recording the leader's actions and not absolute positions.
+    current_pose = (
+        leader.robot.end_effector_pose
+        if not args.use_streamed_teleop
+        else leader.last_pose
+    )
 
-    action_pose = leader.robot.end_effector_pose - previous_pose
-    previous_pose = leader.robot.end_effector_pose
+    action_pose = current_pose - previous_pose
+    previous_pose = current_pose
+
+    gripper_value = (
+        leader.gripper.value
+        if not args.use_streamed_teleop and leader.gripper
+        else leader.last_gripper if args.use_streamed_teleop else 0.0
+    )
+
+    # action_pose = leader.robot.end_effector_pose - previous_pose
+    # previous_pose = leader.robot.end_effector_pose
 
     action = np.concatenate(
         [
             action_pose.position,
             action_pose.orientation.as_euler("xyz"),
-            np.array([leader.gripper.value if leader.gripper else 0.0]),
+            # np.array([leader.gripper.value if leader.gripper else 0.0]),
+            np.array([gripper_value]),
+
         ]
     )
     obs, *_ = env.step(action, block=False)
