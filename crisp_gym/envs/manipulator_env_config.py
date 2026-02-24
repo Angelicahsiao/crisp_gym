@@ -355,6 +355,39 @@ class OnlyWristCamFrankaEnvConfig(FrankaEnvConfig):
         ]
     )
 
+@dataclass
+class RobotiqFrankaEnvConfig(FrankaEnvConfig):
+    """Franka Gym Environment Configuration."""
+
+    gripper_config: GripperConfig | None = field(
+        default_factory=lambda: GripperConfig(
+            min_value=0,
+            max_value=0.7,
+            command_topic="robotiq_2f85/robotiq_gripper_controller/gripper_cmd",
+            joint_state_topic="robotiq_2f85/joint_states",
+            reboot_service="robotiq_2f85/reboot_gripper",
+            enable_torque_service="robotiq_2f85/dynamixel_hardware_interface/set_dxl_torque",
+        )
+    )
+#   min_value: 0.8
+#   max_value: 0.0
+#   command_topic: "/robotiq_2f85/robotiq_gripper_controller/gripper_cmd"
+#   use_gripper_command_action: True
+#   max_delta: 1.0
+#   max_effort: 5.0
+
+    camera_configs: List[CameraConfig] = field(
+        default_factory=lambda: [
+            CameraConfig(
+                camera_name="camera",
+                camera_frame="wrist_link",
+                resolution=[256, 256],
+                camera_color_image_topic="camera/wrist_camera/color/image_rect_raw",
+                camera_color_info_topic="camera/wrist_camera/color/camera_info",
+            ),
+        ]
+    )
+
 
 @dataclass
 class AlohaFrankaEnvConfig(FrankaEnvConfig):
@@ -497,6 +530,7 @@ STRING_TO_CONFIG = {
     "right_aloha_franka": RightAlohaFrankaEnvConfig,
     "left_aloha_franka": LeftAlohaFrankaEnvConfig,
     "franka": FrankaEnvConfig,
+    "robotiq_franka": RobotiqFrankaEnvConfig,
     "no_cam_franka": NoCamFrankaEnvConfig,
     "left_no_cam_franka": LeftNoCamFrankaEnvConfig,
     "right_no_cam_franka": RightNoCamFrankaEnvConfig,
