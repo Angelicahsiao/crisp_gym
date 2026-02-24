@@ -3,14 +3,14 @@
 import argparse
 import json
 import logging
-
+from pathlib import Path
 import numpy as np
 import rclpy
 
 import crisp_gym  # noqa: F401
 from crisp_gym.config.home import HomeConfig
-from crisp_gym.envs.manipulator_env import ManipulatorCartesianEnv, make_env
-from crisp_gym.envs.manipulator_env_config import list_env_configs
+from crisp_gym.envs.manipulator_env import ManipulatorCartesianEnv, make_env, ManipulatorJointEnv
+from crisp_gym.envs.manipulator_env_config import list_env_configs, FrankaEnvConfig
 from crisp_gym.record.record_functions import make_teleop_fn, make_teleop_streamer_fn
 from crisp_gym.record.recording_manager import make_recording_manager
 from crisp_gym.teleop.teleop_robot import TeleopRobot, make_leader
@@ -136,7 +136,7 @@ def main():
     if args.follower_namespace is None:
         args.follower_namespace = prompt.prompt(
             "Please enter the follower robot namespace (e.g., 'left', 'right', ...)",
-            default="right",
+            default="",
         )
         logger.info(f"Using follower namespace: {args.follower_namespace}")
 
@@ -165,14 +165,36 @@ def main():
         )
         logger.info(f"Using follower configuration: {args.follower_config}")
 
-    try:
+    # Add Franka-specific setup logic
+    if args.follower_config == "franka":
+        # Set up Franka's custom environment config
+        CTRL_FREQ = 50
+        BASE_DIR = Path(crisp_gym.__file__).parent
+        env_config = FrankaEnvConfig(control_frequency=CTRL_FREQ, gripper_config=None, camera_configs=[])
+        env_config.cartesian_control_param_config = str(
+            BASE_DIR / "config/control/default_cartesian_impedance.yaml"
+        )
+        env_config.joint_control_param_config = str(
+            BASE_DIR / "config/control/joint_control.yaml"
+        )
         ctrl_type = "cartesian" if not args.joint_control else "joint"
+        print("change path")
+        # Choose the environment based on joint or cartesian control
+        if args.joint_control:  # If joint control is enabled
+            env = ManipulatorJointEnv(namespace=args.follower_namespace, config=env_config)
+        else:  # Default to cartesian control
+            env = ManipulatorCartesianEnv(namespace=args.follower_namespace, config=env_config)
 
+    # If the follower config is not "franka", proceed with default logic
+    else:
+        ctrl_type = "cartesian" if not args.joint_control else "joint"
         env = make_env(
             env_type=args.follower_config,
             control_type=ctrl_type,
             namespace=args.follower_namespace,
         )
+
+    try:
 
         leader: TeleopRobot | TeleopStreamedPose | None = None
         if args.use_streamed_teleop:
