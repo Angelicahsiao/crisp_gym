@@ -75,7 +75,7 @@ def make_teleop_streamer_fn(env: ManipulatorCartesianEnv, leader: TeleopStreamed
         action_pose = pose - prev_pose
         prev_pose = pose
 
-        gripper = leader.gripper.value if leader.gripper is not None else 0.0
+        gripper = leader.last_gripper if leader.last_gripper is not None else 0.0
 
         action_pose_vector = action_pose.to_array(env.config.orientation_representation)
 

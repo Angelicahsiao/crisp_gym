@@ -9,7 +9,9 @@ from abc import ABC, abstractmethod
 from inspect import signature
 from pathlib import Path
 from typing import Callable, Literal
+from typing_extensions import override
 
+import sys
 import numpy as np
 import rclpy
 
@@ -470,67 +472,131 @@ class ROSRecordingManager(RecordingManager):
                 self.state = "to_be_deleted"
 
 
+# class KeyboardRecordingManager(RecordingManager):
+#     """Keyboard-based recording manager for controlling episode recording."""
+
+#     def __init__(self, config: RecordingManagerConfig | None = None, **kwargs) -> None:  # noqa: ANN003
+#         """Initialize keyboard recording manager.
+
+#         Args:
+#             config: RecordingManagerConfig instance. If provided, **kwargs are ignored except for backwards compatibility.
+#             **kwargs: Individual parameters for backwards compatibility.
+#         """
+#         super().__init__(config=config, **kwargs)
+#         self.listener = keyboard.Listener(on_press=self._on_press)
+
+#     @override
+#     def get_instructions(self) -> str:
+#         """Returns the instructions to use the recording manager."""
+#         return "[b]Keys for recording:[/b]\n<r> To start/stop [b]R[/b]ecording.\n<s> To [b]S[/b]ave the current recorded episode.\n<d> to [b]D[/b]elete the current episode.\n<q> To [b]Q[/b]uit the recording."
+
+#     def _on_press(self, key: keyboard.KeyCode | keyboard.Key | None) -> None:
+#         """Handle keyboard press events.
+
+#         Args:
+#             key: The keyboard key that was pressed
+#         """
+#         if key is None:
+#             return
+
+#         if isinstance(key, keyboard.Key):
+#             return
+
+#         try:
+#             if self.state == "is_waiting":
+#                 if key.char == "r":
+#                     self.state = "recording"
+#                 if key.char == "q":
+#                     self.state = "exit"
+#             elif self.state == "recording":
+#                 if key.char == "r":
+#                     self.state = "paused"
+#             elif self.state == "paused":
+#                 if key.char == "q":
+#                     self.state = "exit"
+#                 if key.char == "s":
+#                     self.state = "to_be_saved"
+#                 if key.char == "d":
+#                     self.state = "to_be_deleted"
+#         except AttributeError:
+#             pass
+
+#     def stop(self) -> None:
+#         """Stop the keyboard listener."""
+#         self.listener.stop()
+
+#     def __enter__(self) -> "RecordingManager":  # noqa: D105
+#         self.listener.start()
+#         return super().__enter__()
+
+#     def __exit__(self, exc_type, exc_value, traceback) -> None:  # noqa: ANN001, D105
+#         self.listener.stop()
+#         super().__exit__(exc_type, exc_value, traceback)
 class KeyboardRecordingManager(RecordingManager):
-    """Keyboard-based recording manager for controlling episode recording."""
+    """Stdin-based recording manager for controlling episode recording."""
 
-    def __init__(self, config: RecordingManagerConfig | None = None, **kwargs) -> None:  # noqa: ANN003
-        """Initialize keyboard recording manager.
-
-        Args:
-            config: RecordingManagerConfig instance. If provided, **kwargs are ignored except for backwards compatibility.
-            **kwargs: Individual parameters for backwards compatibility.
-        """
+    def __init__(self, config: RecordingManagerConfig | None = None, **kwargs) -> None:
         super().__init__(config=config, **kwargs)
-        self.listener = keyboard.Listener(on_press=self._on_press)
+        self._running = False
+        self._thread: threading.Thread | None = None
 
     @override
     def get_instructions(self) -> str:
-        """Returns the instructions to use the recording manager."""
-        return "[b]Keys for recording:[/b]\n<r> To start/stop [b]R[/b]ecording.\n<s> To [b]S[/b]ave the current recorded episode.\n<d> to [b]D[/b]elete the current episode.\n<q> To [b]Q[/b]uit the recording."
+        return (
+            "[b]Keys for recording:[/b]\n"
+            "<r> To start/stop [b]R[/b]ecording.\n"
+            "<s> To [b]S[/b]ave the current recorded episode.\n"
+            "<d> To [b]D[/b]elete the current episode.\n"
+            "<q> To [b]Q[/b]uit the recording.\n"
+            "\nPress key then ENTER."
+        )
 
-    def _on_press(self, key: keyboard.KeyCode | keyboard.Key | None) -> None:
-        """Handle keyboard press events.
+    def _input_loop(self) -> None:
+        """Background thread reading stdin."""
+        while self._running:
+            try:
+                user_input = sys.stdin.readline().strip().lower()
+                if not user_input:
+                    continue
+                key = user_input[0]
+                self._handle_key(key)
+            except Exception:
+                break
 
-        Args:
-            key: The keyboard key that was pressed
-        """
-        if key is None:
-            return
+    def _handle_key(self, key: str) -> None:
+        if self.state == "is_waiting":
+            if key == "r":
+                self.state = "recording"
+            elif key == "q":
+                self.state = "exit"
 
-        if isinstance(key, keyboard.Key):
-            return
+        elif self.state == "recording":
+            if key == "r":
+                self.state = "paused"
 
-        try:
-            if self.state == "is_waiting":
-                if key.char == "r":
-                    self.state = "recording"
-                if key.char == "q":
-                    self.state = "exit"
-            elif self.state == "recording":
-                if key.char == "r":
-                    self.state = "paused"
-            elif self.state == "paused":
-                if key.char == "q":
-                    self.state = "exit"
-                if key.char == "s":
-                    self.state = "to_be_saved"
-                if key.char == "d":
-                    self.state = "to_be_deleted"
-        except AttributeError:
-            pass
+        elif self.state == "paused":
+            if key == "q":
+                self.state = "exit"
+            elif key == "s":
+                self.state = "to_be_saved"
+            elif key == "d":
+                self.state = "to_be_deleted"
 
     def stop(self) -> None:
-        """Stop the keyboard listener."""
-        self.listener.stop()
+        """Stop stdin listener thread."""
+        self._running = False
 
-    def __enter__(self) -> "RecordingManager":  # noqa: D105
-        self.listener.start()
+    def __enter__(self) -> "RecordingManager":
+        self._running = True
+        self._thread = threading.Thread(target=self._input_loop, daemon=True)
+        self._thread.start()
         return super().__enter__()
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:  # noqa: ANN001, D105
-        self.listener.stop()
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self._running = False
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
         super().__exit__(exc_type, exc_value, traceback)
-
 
 def make_recording_manager(
     recording_manager_type: Literal["keyboard", "ros"],
