@@ -275,7 +275,6 @@ class ManipulatorEnvConfig(ABC):
 @dataclass(kw_only=True)
 class FrankaEnvConfig(ManipulatorEnvConfig, ABC):
     """Franka Gym Environment Configuration."""
-
     control_frequency: float = 30.0
 
     robot_config: RobotConfig = field(default_factory=lambda: FrankaConfig())
@@ -289,6 +288,7 @@ class FrankaEnvConfig(ManipulatorEnvConfig, ABC):
         default_factory=lambda: find_config("control/joint_control.yaml")
         or CRISP_CONFIG_PATH / "control" / "joint_control.yaml"
     )
+
 
 
 @dataclass

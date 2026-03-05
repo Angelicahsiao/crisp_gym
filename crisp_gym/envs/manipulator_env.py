@@ -376,18 +376,27 @@ class ManipulatorBaseEnv(gym.Env):
         Args:
             action (float): Action value for the gripper (0,1).
         """
+        # print("Set gripper action:", action)
+        # print("Gripper mode:", self.config.gripper_mode)
+        # print("Gripper threshold:", self.config.gripper_threshold)
+        logger.debug(f"gripper.value: {self.gripper.value}")
+        # print(action)
+        # print(self.config.gripper_mode)
         if self.config.gripper_mode == GripperMode.NONE:
             return
         elif self.config.gripper_mode == GripperMode.ABSOLUTE_BINARY:
             if action < self.config.gripper_threshold and self.gripper.is_open(
                 open_threshold=self.config.gripper_threshold
             ):
+                # print(action)
                 self.gripper.close()
             elif action >= self.config.gripper_threshold and not self.gripper.is_open(
                 open_threshold=self.config.gripper_threshold
             ):
+                # print(action)
                 self.gripper.open()
         elif self.config.gripper_mode == GripperMode.RELATIVE_BINARY:
+            # print("Is gripper open?", self.gripper.is_open())
             if action < 0 and self.gripper.is_open(open_threshold=self.config.gripper_threshold):
                 self.gripper.close()
             elif action > 0 and not self.gripper.is_open(

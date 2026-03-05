@@ -23,12 +23,22 @@ home_front_up = [
     0.8040582,
 ]
 
+home_open_up = [
+    0.425725623070977,
+    -0.013800044320084788,
+    -0.33286129072276527,
+    -2.7729492382868126,
+    0.10167396715537252,
+    4.262024898082136,
+    -0.021739227284989265,
+]
 
 class HomeConfig(Enum):
     """Enum for different home configurations."""
 
     CLOSE_TO_TABLE = home_close_to_table
     FRONT_UP = home_front_up
+    OPEN_POSE = home_open_up
 
     def randomize(self, noise: float = 0.01) -> list:
         """Randomize the home configuration."""
