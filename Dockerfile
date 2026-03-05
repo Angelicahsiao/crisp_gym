@@ -1,7 +1,28 @@
 
 FROM ghcr.io/prefix-dev/pixi:0.63.2-jammy
 
+
+USER root
+
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    libavcodec-dev \
+    libavformat-dev \
+    libavutil-dev \
+    libswscale-dev \
+    libx11-6 \
+    libxext6 \
+    libxrender1 \
+    libxtst6 \
+    libxi6 \
+    libxkbcommon-x11-0 \
+    libgl1-mesa-glx \
+    libgl1-mesa-dri \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /workspaces/crisp_gym
+ENV PYTHONPATH="/workspaces/crisp_py:$PYTHONPATH"
 
 
 # 1️⃣ Pixi metadata (drives dependency resolution)
