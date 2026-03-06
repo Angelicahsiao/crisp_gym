@@ -1,0 +1,42 @@
+control_frequency: 30.0
+gripper_enabled: true
+gripper_continuous_control: false
+
+cartesian_control_param_config: null
+joint_control_param_config: null
+
+robot_config:
+  robot_type: "franka"
+  home_config:
+  - 0.425725623070977
+  - -0.013800044320084788
+  - -0.33286129072276527
+  - -2.6913555955684414
+  - 0.10167396715537252
+  - 4.262024898082136
+  - -0.021739227284989265
+
+gripper_config:
+  min_value: 0.79
+  max_value: 0.0
+  command_topic: "/robotiq_2f85/robotiq_gripper_controller/gripper_cmd"
+  joint_state_topic: /robotiq_2f85/joint_states
+  use_gripper_command_action: True
+  max_delta: 1.0
+  max_effort: 5.0
+
+camera_configs:
+  - camera_name: "env_cam"
+    camera_frame: "env_link"
+    resolution: [256, 256]
+    camera_color_image_topic: "/env/env_cam/color/image_raw"
+    camera_color_info_topic: "/env/env_cam/color/camera_info"
+  - camera_name: "wirst_cam"
+    camera_frame: "wirst_link"
+    camera_color_image_topic: "/wrist/wrist_cam/color/image_rect_raw"
+    camera_color_info_topic: "/wrist/wrist_cam/color/camera_info"
+    resolution: [256, 256]
+    # max_image_delay: 1.0
+
+
+sensor_configs: []
