@@ -25,3 +25,39 @@ services:
     privileged: true
     working_dir: /workspaces/crisp_gym
     command: bash -c "if [ ! -d /workspaces/crisp_gym/.pixi/envs/humble ]; then pixi install -e humble; fi && exec bash"
+
+  crisp-gym-deploy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: crisp-gym-pixi:cuda
+    container_name: crisp-gym-deploy
+    volumes:
+      - ~/workspaces:/workspaces
+      - $HOME/.Xauthority:/root/.Xauthority
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /dev:/dev
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      - QT_X11_NO_MITSHM=1
+      - DISPLAY=$DISPLAY
+      - ROS_DOMAIN_ID=100
+      - RCUTILS_COLORIZED_OUTPUT=1
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+    network_mode: "host"
+    stdin_open: true
+    tty: true
+    ipc: "host"
+    pid: "host"
+    privileged: true
+    working_dir: /workspaces/crisp_gym
+    command: >
+      bash -c "if [ ! -d /workspaces/crisp_gym/.pixi/envs/humble ]; then pixi install -e humble-lerobot; fi && exec bash"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
