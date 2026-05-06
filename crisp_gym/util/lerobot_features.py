@@ -15,12 +15,15 @@ from crisp_gym.envs.manipulator_env import ManipulatorBaseEnv, make_env
 from crisp_gym.util.control_type import ControlType
 
 try:
-    from lerobot.datasets.lerobot_dataset import CODEBASE_VERSION
+    from lerobot.datasets.dataset_metadata import CODEBASE_VERSION
 except ImportError:
-    raise ImportError(
-        "The 'lerobot' package is required to use this function. "
-        "Please use a lerobot environment 'pixi shell -e <rosdistro>-lerobot'."
-    )
+    try:
+        from lerobot.datasets.lerobot_dataset import CODEBASE_VERSION
+    except ImportError:
+        raise ImportError(
+            "The 'lerobot' package is required to use this function. "
+            "Please use a lerobot environment 'pixi shell -e <rosdistro>-lerobot'."
+        )
 
 import logging
 
@@ -40,9 +43,9 @@ def get_features(
         use_video (bool): Whether to include video features. Defaults to True.
         ignore_keys (list[str], optional): List of observation keys to ignore. Defaults to None.
     """
-    if not CODEBASE_VERSION.startswith("v2"):
+    if not (CODEBASE_VERSION.startswith("v2") or CODEBASE_VERSION.startswith("v3")):
         logger.warning(
-            "Feature generation for LeRobot has been implemented for version 2.x of LeRobotDataset. Expect unexpected behaviour for other versions."
+            f"Feature generation for LeRobot has been implemented for v2.x/v3.x of LeRobotDataset. Got {CODEBASE_VERSION}. Expect unexpected behaviour."
         )
 
     ctrl_dims: dict[ControlType, list[str]] = {
