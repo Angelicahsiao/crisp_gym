@@ -52,7 +52,7 @@ rerun-sdk = "=0.22.1"
 # === Newer version ===
 # lerobot = { git = "https://github.com/huggingface/lerobot", rev = "74690e3f56a90b6ea314afbfb3b801a3d842a005", extras = ["smolvla"]}
 # === Local version ===
-lerobot = { path = "../clare_rebuttal/lerobot_lsy/", editable = true }
+# lerobot = { path = "../clare_rebuttal/lerobot_lsy/", editable = true }
 
 [feature.humble]
 channels = ["https://prefix.dev/robostack-humble"]
