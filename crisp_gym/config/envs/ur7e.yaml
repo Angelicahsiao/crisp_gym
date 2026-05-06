@@ -1,0 +1,13 @@
+control_frequency: 50.0
+
+robot_config:
+  robot_type: "ur"
+
+gripper_config: null
+camera_configs: []
+sensor_configs: []
+
+gripper_mode: "none"
+
+cartesian_control_param_config: "control/ur_cartesian_impedance.yaml"
+joint_control_param_config: "control/ur_joint_control.yaml"
