@@ -21,8 +21,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-dri \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /workspaces/crisp_gym
-ENV PYTHONPATH="/workspaces/crisp_py:$PYTHONPATH"
+WORKDIR /workspace/crisp_gym
+ENV PYTHONPATH="/workspace/crisp_py:$PYTHONPATH"
 
 
 # 1️⃣ Pixi metadata (drives dependency resolution)

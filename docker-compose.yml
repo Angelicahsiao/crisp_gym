@@ -6,7 +6,7 @@ services:
     image: crisp-gym-pixi:test
     container_name: crisp-gym
     volumes:
-      - ~/workspaces:/workspaces
+      - ~/workspace:/workspace
       - $HOME/.Xauthority:/root/.Xauthority
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /dev:/dev
@@ -15,7 +15,9 @@ services:
       - DISPLAY=$DISPLAY
       - ROS_DOMAIN_ID=100
       - RCUTILS_COLORIZED_OUTPUT=1
-      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp  # <--- add this!
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - NETWORK_INTERFACE=${NETWORK_INTERFACE:-lo}
+      - CYCLONEDDS_URI=file:///workspace/crisp_gym/scripts/cyclone_config.xml
       # - CRISP_CONFIG_PATH=/workspace/configs
     network_mode: "host"
     stdin_open: true
@@ -23,8 +25,8 @@ services:
     ipc: "host"
     pid: "host"
     privileged: true
-    working_dir: /workspaces/crisp_gym
-    command: bash -c "if [ ! -d /workspaces/crisp_gym/.pixi/envs/humble ]; then pixi install -e humble; fi && exec bash"
+    working_dir: /workspace/crisp_gym
+    command: bash -c "if [ ! -d /workspace/crisp_gym/.pixi/envs/humble ]; then pixi install -e humble; fi && exec bash"
 
   crisp-gym-deploy:
     build:
@@ -33,7 +35,7 @@ services:
     image: crisp-gym-pixi:cuda
     container_name: crisp-gym-deploy
     volumes:
-      - ~/workspaces:/workspaces
+      - ~/workspace:/workspace
       - $HOME/.Xauthority:/root/.Xauthority
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /dev:/dev
@@ -45,15 +47,17 @@ services:
       - ROS_DOMAIN_ID=100
       - RCUTILS_COLORIZED_OUTPUT=1
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - NETWORK_INTERFACE=${NETWORK_INTERFACE:-lo}
+      - CYCLONEDDS_URI=file:///workspace/crisp_gym/scripts/cyclone_config.xml
     network_mode: "host"
     stdin_open: true
     tty: true
     ipc: "host"
     pid: "host"
     privileged: true
-    working_dir: /workspaces/crisp_gym
+    working_dir: /workspace/crisp_gym
     command: >
-      bash -c "if [ ! -d /workspaces/crisp_gym/.pixi/envs/humble ]; then pixi install -e humble-lerobot; fi && exec bash"
+      bash -c "if [ ! -d /workspace/crisp_gym/.pixi/envs/humble ]; then pixi install -e humble-lerobot; fi && exec bash"
     deploy:
       resources:
         reservations:
