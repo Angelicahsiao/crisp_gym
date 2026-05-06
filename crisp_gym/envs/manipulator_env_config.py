@@ -10,7 +10,7 @@ import numpy as np
 import yaml
 from crisp_py.camera.camera_config import CameraConfig
 from crisp_py.gripper.gripper import GripperConfig
-from crisp_py.robot.robot_config import FrankaConfig, RobotConfig, make_robot_config
+from crisp_py.robot.robot_config import FrankaConfig, RobotConfig, URConfig, make_robot_config
 from crisp_py.sensors.sensor_config import SensorConfig
 from crisp_py.utils.geometry import OrientationRepresentation
 
@@ -119,6 +119,18 @@ class ManipulatorEnvConfig(ABC):
         if isinstance(self.gripper_mode, str):
             self.gripper_mode = GripperMode(self.gripper_mode)
 
+        if isinstance(self.cartesian_control_param_config, str):
+            self.cartesian_control_param_config = (
+                find_config(self.cartesian_control_param_config)
+                or Path(self.cartesian_control_param_config)
+            )
+
+        if isinstance(self.joint_control_param_config, str):
+            self.joint_control_param_config = (
+                find_config(self.joint_control_param_config)
+                or Path(self.joint_control_param_config)
+            )
+
         if (
             self.cartesian_control_param_config is not None
             and not self.cartesian_control_param_config.exists()
@@ -220,7 +232,7 @@ class ManipulatorEnvConfig(ABC):
             else:
                 data["robot_config"] = make_robot_config(**data["robot_config"])
 
-        if "gripper_config" in data:
+        if "gripper_config" in data and data["gripper_config"] is not None:
             gripper_cfg = data["gripper_config"]
             if not isinstance(gripper_cfg, dict):
                 raise ValueError("gripper_config must be a dictionary in the YAML file.")
@@ -484,6 +496,28 @@ class NoCamNoGripperFrankaEnvConfig(FrankaEnvConfig):
     gripper_mode: GripperMode | str = GripperMode.NONE
 
 
+@dataclass(kw_only=True)
+class UREnvConfig(ManipulatorEnvConfig):
+    """Universal Robots (UR) Gym Environment Configuration."""
+
+    control_frequency: float = 50.0
+
+    robot_config: RobotConfig = field(default_factory=lambda: URConfig())
+    gripper_config: GripperConfig | None = None
+    camera_configs: List[CameraConfig] = field(default_factory=lambda: [])
+
+    gripper_mode: GripperMode | str = GripperMode.NONE
+
+    cartesian_control_param_config: Path | None = field(
+        default_factory=lambda: find_config("control/ur_cartesian_impedance.yaml")
+        or CRISP_CONFIG_PATH / "control" / "ur_cartesian_impedance.yaml"
+    )
+    joint_control_param_config: Path | None = field(
+        default_factory=lambda: find_config("control/ur_joint_control.yaml")
+        or CRISP_CONFIG_PATH / "control" / "ur_joint_control.yaml"
+    )
+
+
 def make_env_config(
     env_type: str,
     config_path: Path | str | None = None,
@@ -536,4 +570,5 @@ STRING_TO_CONFIG = {
     "right_no_cam_franka": RightNoCamFrankaEnvConfig,
     "only_wrist_cam_franka": OnlyWristCamFrankaEnvConfig,
     "no_cam_no_gripper_franka": NoCamNoGripperFrankaEnvConfig,
+    "ur": UREnvConfig,
 }
