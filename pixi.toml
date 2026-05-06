@@ -44,7 +44,7 @@ pudb = ">=2025.1.3, <2026"
 
 [feature.lerobot.dependencies]
 pynput = "*"
-rerun-sdk = "=0.22.1"
+rerun-sdk = ">=0.24.0,<0.27.0"
 
 [feature.lerobot.pypi-dependencies]
 # === v0.5.1 via local clone with patched pyproject.toml (Python 3.11 compat) ===
