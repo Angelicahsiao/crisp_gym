@@ -171,12 +171,12 @@ def main():
         CTRL_FREQ = 50
         BASE_DIR = Path(crisp_gym.__file__).parent
         env_config = FrankaEnvConfig(control_frequency=CTRL_FREQ, gripper_config=None, camera_configs=[])
-        env_config.cartesian_control_param_config = str(
-            BASE_DIR / "config/control/default_cartesian_impedance.yaml"
-        )
-        env_config.joint_control_param_config = str(
-            BASE_DIR / "config/control/joint_control.yaml"
-        )
+        # env_config.cartesian_control_param_config = str(
+        #     BASE_DIR / "config/control/default_cartesian_impedance.yaml"
+        # )
+        # env_config.joint_control_param_config = str(
+        #     BASE_DIR / "config/control/joint_control.yaml"
+        # )
         ctrl_type = "cartesian" if not args.joint_control else "joint"
         print("change path")
         # Choose the environment based on joint or cartesian control
@@ -193,6 +193,13 @@ def main():
             control_type=ctrl_type,
             namespace=args.follower_namespace,
         )
+        print("Cartesian config:",
+            env.config.cartesian_control_param_config)
+
+        print("Joint config:",
+            env.config.joint_control_param_config)
+        print("Config class:", type(env.config))
+        print("Your env_type:", args.follower_config)
 
     try:
 
@@ -247,6 +254,9 @@ def main():
         logger.debug("[DEBUG] env.wait_until_ready() done")
         env.home(home_config=HomeConfig.CLOSE_TO_TABLE.randomize(noise=args.home_config_noise))
         logger.debug("[DEBUG] env.home() done")
+        print("HomeConfig:", HomeConfig.CLOSE_TO_TABLE.randomize(noise=args.home_config_noise))
+        print("HomeConfig:", HomeConfig.OPEN_POSE.randomize(noise=args.home_config_noise))
+        env.home(home_config=HomeConfig.OPEN_POSE.randomize(noise=args.home_config_noise))
         env.reset()
         logger.debug("[DEBUG] env.reset() done")
 
@@ -274,7 +284,7 @@ def main():
         def on_end():
             """Hook function to be called when stopping the recording."""
             env.robot.reset_targets()
-            random_home = HomeConfig.CLOSE_TO_TABLE.randomize(noise=args.home_config_noise)
+            random_home = HomeConfig.OPEN_POSE.randomize(noise=args.home_config_noise)
             env.robot.home(blocking=False, home_config=random_home)
             if isinstance(leader, TeleopRobot):
                 leader.robot.reset_targets()

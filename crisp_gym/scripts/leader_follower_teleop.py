@@ -6,13 +6,19 @@ import time
 from pathlib import Path
 import crisp_gym
 import numpy as np
-
+import yaml
 from crisp_gym.envs.manipulator_env import make_env, ManipulatorCartesianEnv, ManipulatorJointEnv
 from crisp_gym.envs.manipulator_env_config import FrankaEnvConfig
 from crisp_gym.teleop.teleop_robot import make_leader
 from crisp_gym.teleop.teleop_sensor_stream import TeleopStreamedPose
 from crisp_gym.util.setup_logger import setup_logging
+from crisp_py.gripper import GripperConfig
+from crisp_py.gripper import make_gripper
 
+import crisp_py
+
+from crisp_gym.util.gripper_mode import GripperMode
+print(crisp_py.__file__)
 # Parse args:
 parser = argparse.ArgumentParser(description="Teleoperation of a leader robot.")
 parser.add_argument(
@@ -39,6 +45,20 @@ parser.add_argument(
     help="Use streamed pose instead of physical leader robot",
 )
 
+parser.add_argument(
+    "--gripper-config",
+    type=str,
+    default=None,
+    help="Path to gripper YAML config file (default: None = disable gripper)",
+)
+
+parser.add_argument(
+    "--camera-config",
+    type=str,
+    default=None,
+    help="Path to camera YAML config file (default: None = disable camera)",
+)
+
 
 
 args = parser.parse_args()
@@ -63,8 +83,44 @@ logger.info("Setting up environment...")
 # env = make_env("right_no_cam_franka", control_type="cartesian", namespace="right")
 CTRL_FREQ = 50
 BASE_DIR = Path(crisp_gym.__file__).parent
+gripper_config = (
+    str(BASE_DIR / args.gripper_config)
+    if args.gripper_config is not None
+    else None
+)
 
-env_config = FrankaEnvConfig(control_frequency=CTRL_FREQ, gripper_config=None, camera_configs=[])
+camera_config = (
+    str(BASE_DIR / args.camera_config)
+    if args.camera_config is not None
+    else None
+)
+# gripper = make_gripper("gripper_robotiq_2f85")
+
+# env_config = FrankaEnvConfig(
+#     control_frequency=CTRL_FREQ,
+#     gripper_mode=GripperMode.ABSOLUTE_BINARY, 
+#     gripper_config= gripper.config,
+#     camera_configs=[],
+#     gripper_threshold=0.5
+# )
+# env_config = FrankaEnvConfig(control_frequency=CTRL_FREQ, gripper_config=None, camera_configs=[])
+
+env_config = FrankaEnvConfig(
+    control_frequency=CTRL_FREQ,
+    gripper_mode=GripperMode.ABSOLUTE_BINARY, 
+    gripper_config= GripperConfig.from_yaml(gripper_config),
+    camera_configs=[],
+    gripper_threshold=0.1
+)
+
+print("Cartesian config:",
+      env_config.cartesian_control_param_config.resolve())
+
+print("Joint config:",
+      env_config.joint_control_param_config.resolve())
+print(env_config.gripper_mode)
+print(env_config.gripper_config)
+print(f"Gripper command action: {env_config.gripper_config.use_gripper_command_action}")
 env_config.cartesian_control_param_config = str(
     BASE_DIR / "config/control/default_cartesian_impedance.yaml"
 )
@@ -72,6 +128,11 @@ env_config.cartesian_control_param_config = str(
 env_config.joint_control_param_config = str(
     BASE_DIR / "config/control/joint_control.yaml"
 )
+print("Cartesian config:",
+      env_config.cartesian_control_param_config)
+
+print("Joint config:",
+      env_config.joint_control_param_config)
 # env_config.cartesian_control_param_config = "./config/control/default_cartesian_impedance.yaml"
 # env_config.joint_control_param_config = "./config/control/joint_control.yaml"
 env = ManipulatorCartesianEnv(namespace="", config=env_config)
@@ -128,6 +189,7 @@ while True:
         if not args.use_streamed_teleop and leader.gripper
         else leader.last_gripper if args.use_streamed_teleop else 0.0
     )
+    # print(gripper_value)
 
     # action_pose = leader.robot.end_effector_pose - previous_pose
     # previous_pose = leader.robot.end_effector_pose
@@ -141,5 +203,6 @@ while True:
 
         ]
     )
+    # logger.info(f"Action: {action}")
     obs, *_ = env.step(action, block=False)
     time.sleep(1.0 / args.control_frequency)
