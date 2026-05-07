@@ -34,11 +34,23 @@ fi
 if grep -q 'requires-python = ">=3.12"' "$PYPROJECT"; then
     echo "Patching $PYPROJECT: requires-python >=3.12 → >=3.11"
     sed -i.bak 's/requires-python = ">=3.12"/requires-python = ">=3.11"/' "$PYPROJECT"
-    echo "Patch applied."
 else
-    echo "$PYPROJECT already patched or has unexpected requires-python value — no change needed."
+    echo "requires-python already patched or unexpected — no change."
+fi
+
+# Relax numpy >= 2.0.0 to >= 1.26 so it can coexist with ROS2 Humble
+# (which pins numpy 1.x via robostack conda packages).
+# WARNING: lerobot may use numpy 2.x-only APIs at runtime. If you see
+# errors like "module 'numpy' has no attribute 'float_'", you'll need
+# to either upgrade ROS to Jazzy or patch the offending numpy calls.
+if grep -qE '"numpy>=2\.0\.0' "$PYPROJECT"; then
+    echo "Patching $PYPROJECT: numpy >=2.0.0 → >=1.26.0"
+    sed -i.bak2 's/"numpy>=2\.0\.0/"numpy>=1.26.0/g' "$PYPROJECT"
+else
+    echo "numpy constraint already patched or unexpected — no change."
 fi
 
 echo ""
 echo "Done. Now run:"
+echo "  rm -f pixi.lock"
 echo "  pixi install -e humble-lerobot"
