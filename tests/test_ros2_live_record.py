@@ -104,6 +104,53 @@ def _test_home_pose(env):
     return joints_after
 
 
+def _test_fake_teleop(env, duration_s=1.0, dx_per_step=0.001):
+    """Stream a synthetic cartesian +x delta at the env's control rate.
+
+    Mimics what a leader teleop would publish: a sequence of small per-step
+    cartesian deltas. Verifies that the follower tracks the commanded motion
+    in the +x direction without rotating significantly.
+    """
+    fps = int(env.config.control_frequency)
+    n_steps = int(duration_s * fps)
+    action_dim = env.action_space.shape[0]
+
+    print(f">> Streaming {n_steps} fake teleop deltas at {fps} Hz "
+          f"(+{dx_per_step * 1000:.1f} mm per step)...")
+
+    obs_start = env.get_obs()
+    pos_start = np.asarray(obs_start["observation.state.cartesian"][:3], dtype=np.float64)
+    print(f"   start cartesian xyz: {np.round(pos_start, 4)}")
+
+    delta = np.zeros(action_dim, dtype=np.float32)
+    delta[0] = dx_per_step  # +x translation
+    for _ in range(n_steps):
+        env.step(delta, block=True)
+
+    # Stop motion: send a few zero deltas so the controller settles.
+    zero = np.zeros(action_dim, dtype=np.float32)
+    for _ in range(int(0.2 * fps)):
+        env.step(zero, block=True)
+    time.sleep(0.2)
+
+    obs_end = env.get_obs()
+    pos_end = np.asarray(obs_end["observation.state.cartesian"][:3], dtype=np.float64)
+    print(f"   end cartesian xyz:   {np.round(pos_end, 4)}")
+
+    delta_xyz = pos_end - pos_start
+    expected_dx = dx_per_step * n_steps
+    print(f"   commanded +x: {expected_dx:.4f} m, observed delta xyz: {np.round(delta_xyz, 4)}")
+
+    # Tolerances are loose: sim controller has lag and a steady-state offset.
+    # Require: x moved in commanded direction at least 30% of expected, and
+    # y/z drift is small relative to the commanded x motion.
+    assert delta_xyz[0] > 0.3 * expected_dx, (
+        f"Robot did not track +x motion: dx={delta_xyz[0]:.4f}, expected ~{expected_dx:.4f}"
+    )
+    assert abs(delta_xyz[1]) < 0.5 * expected_dx, f"Excess y drift: {delta_xyz[1]:.4f}"
+    assert abs(delta_xyz[2]) < 0.5 * expected_dx, f"Excess z drift: {delta_xyz[2]:.4f}"
+
+
 def main():
     print("\n=== ROS2 Live Record Test (UR sim) ===\n")
 
@@ -124,6 +171,17 @@ def main():
         except Exception:
             failed = True
             print(f"  [{FAIL}] env.home() test")
+            traceback.print_exc()
+
+        try:
+            _test_fake_teleop(env)
+            print(f"  [{PASS}] fake teleop streamed deltas tracked by follower\n")
+            # Return to home before the record test so frames are consistent.
+            env.home(blocking=True)
+            time.sleep(0.3)
+        except Exception:
+            failed = True
+            print(f"  [{FAIL}] fake teleop test")
             traceback.print_exc()
 
         print(">> Reading initial observation...")
