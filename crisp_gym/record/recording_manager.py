@@ -20,6 +20,10 @@ try:
     from lerobot.utils.constants import HF_LEROBOT_HOME
 except ImportError:
     from lerobot.constants import HF_LEROBOT_HOME
+try:
+    from lerobot.datasets.dataset_metadata import CODEBASE_VERSION as _LEROBOT_CODEBASE_VERSION
+except ImportError:
+    from lerobot.datasets.lerobot_dataset import CODEBASE_VERSION as _LEROBOT_CODEBASE_VERSION
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from pynput import keyboard
 from rclpy.executors import SingleThreadedExecutor
@@ -140,7 +144,8 @@ class RecordingManager(ABC):
             if hasattr(LeRobotDataset, "resume"):
                 dataset = LeRobotDataset.resume(repo_id=self.config.repo_id)
             else:
-                dataset = LeRobotDataset(repo_id=self.config.repo_id)
+                # Pass revision= to avoid get_safe_version() hitting HF Hub.
+                dataset = LeRobotDataset(repo_id=self.config.repo_id, revision=_LEROBOT_CODEBASE_VERSION)
             if self.config.num_episodes <= dataset.num_episodes:
                 logger.error(
                     f"The dataset already has {dataset.num_episodes} recorded. Please select a larger number."

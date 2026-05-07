@@ -312,10 +312,11 @@ def test_dataset_resume(tmp_dir):
     dataset.save_episode()
     assert dataset.num_episodes == 1
 
+    CODEBASE_VERSION, _ = _import_lerobot_metadata()
     if hasattr(LeRobotDataset, "resume"):
         dataset2 = LeRobotDataset.resume(repo_id=repo_id, root=ds_root)
     else:
-        dataset2 = LeRobotDataset(repo_id=repo_id, root=ds_root)
+        dataset2 = LeRobotDataset(repo_id=repo_id, root=ds_root, revision=CODEBASE_VERSION)
     _add_frame_compat(dataset2, frame, task="pick the block")
     dataset2.save_episode()
     assert dataset2.num_episodes == 2, f"Expected 2 episodes after resume, got {dataset2.num_episodes}"
