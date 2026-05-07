@@ -10,6 +10,18 @@ Run with:
     python tests/test_lerobot_record.py
 """
 
+import os
+import tempfile as _tempfile_early
+# Prevent lerobot's HF Hub calls (v0.4.x's LeRobotDataset constructor calls
+# get_safe_version which hits the Hub).
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+# Redirect lerobot's default dataset cache so RecordingManager._create_dataset()
+# (which calls LeRobotDataset.create() without an explicit root=) writes to a
+# scratch dir instead of ~/.cache/huggingface/lerobot. Must be set before any
+# lerobot import — its module-level HF_LEROBOT_HOME constant freezes this.
+_LEROBOT_TEST_HOME = _tempfile_early.mkdtemp(prefix="lerobot_test_home_")
+os.environ["HF_LEROBOT_HOME"] = _LEROBOT_TEST_HOME
+
 
 def _import_lerobot_metadata():
     """Match the production code's version-aware imports."""
@@ -229,6 +241,16 @@ def test_get_features_version_check():
     )
 
 
+def _add_frame_compat(dataset, frame, task):
+    """Call add_frame with task as kwarg (v0.4.x) or in frame dict (v0.5.x)."""
+    from inspect import signature
+    if "task" in signature(dataset.add_frame).parameters:
+        dataset.add_frame(frame, task=task)
+    else:
+        frame_with_task = dict(frame, task=task)
+        dataset.add_frame(frame_with_task)
+
+
 def test_dataset_create_add_save(tmp_dir):
     """LeRobotDataset.create() → add_frame() → save_episode() flow."""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
@@ -247,17 +269,15 @@ def test_dataset_create_add_save(tmp_dir):
         use_videos=False,
     )
 
-    obs_space = env.observation_space
     frame = {
         "action": np.zeros(7, dtype=np.float32),
         "observation.state": np.zeros(7, dtype=np.float32),
         "observation.state.cartesian": np.zeros(6, dtype=np.float32),
         "observation.state.gripper": np.zeros(1, dtype=np.float32),
         "observation.images.wrist": np.zeros((480, 640, 3), dtype=np.uint8),
-        "task": "pick the block",
     }
-    dataset.add_frame(frame)
-    dataset.add_frame(frame)
+    _add_frame_compat(dataset, frame, task="pick the block")
+    _add_frame_compat(dataset, frame, task="pick the block")
     dataset.save_episode()
 
     assert dataset.num_episodes == 1, f"Expected 1 episode, got {dataset.num_episodes}"
@@ -287,9 +307,8 @@ def test_dataset_resume(tmp_dir):
         "observation.state.cartesian": np.zeros(6, dtype=np.float32),
         "observation.state.gripper": np.zeros(1, dtype=np.float32),
         "observation.images.wrist": np.zeros((480, 640, 3), dtype=np.uint8),
-        "task": "pick the block",
     }
-    dataset.add_frame(frame)
+    _add_frame_compat(dataset, frame, task="pick the block")
     dataset.save_episode()
     assert dataset.num_episodes == 1
 
@@ -297,7 +316,7 @@ def test_dataset_resume(tmp_dir):
         dataset2 = LeRobotDataset.resume(repo_id=repo_id, root=ds_root)
     else:
         dataset2 = LeRobotDataset(repo_id=repo_id, root=ds_root)
-    dataset2.add_frame(frame)
+    _add_frame_compat(dataset2, frame, task="pick the block")
     dataset2.save_episode()
     assert dataset2.num_episodes == 2, f"Expected 2 episodes after resume, got {dataset2.num_episodes}"
 
@@ -321,9 +340,13 @@ def _make_concrete_rm():
     return ConcreteRM
 
 
+def _unique_repo_id(prefix):
+    import uuid
+    return f"test_user/{prefix}_{uuid.uuid4().hex[:8]}"
+
+
 def test_recording_manager_create(tmp_dir):
     """RecordingManager._create_dataset() creates a new dataset correctly."""
-    from unittest.mock import patch
     from crisp_gym.util.lerobot_features import get_features
     from crisp_gym.record.recording_manager_config import RecordingManagerConfig
 
@@ -333,7 +356,7 @@ def test_recording_manager_create(tmp_dir):
 
     config = RecordingManagerConfig(
         features=features,
-        repo_id="test_user/test_rm_create",
+        repo_id=_unique_repo_id("rm_create"),
         robot_type="franka",
         fps=15,
         num_episodes=2,
@@ -342,19 +365,17 @@ def test_recording_manager_create(tmp_dir):
         use_sound=False,
     )
 
-    rm_root = tmp_dir / "rm_create_home"
-    with patch("crisp_gym.record.recording_manager.HF_LEROBOT_HOME", rm_root):
-        manager = object.__new__(ConcreteRM)
-        manager.config = config
-        dataset = manager._create_dataset()
+    manager = object.__new__(ConcreteRM)
+    manager.config = config
+    dataset = manager._create_dataset()
 
     assert dataset is not None
     assert dataset.num_episodes == 0
 
 
 def test_recording_manager_resume(tmp_dir):
-    """RecordingManager._create_dataset() with resume=True uses LeRobotDataset.resume()."""
-    from unittest.mock import patch
+    """RecordingManager._create_dataset() with resume=True reopens existing dataset."""
+    from pathlib import Path
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
     from crisp_gym.util.lerobot_features import get_features
     from crisp_gym.record.recording_manager_config import RecordingManagerConfig
@@ -362,10 +383,10 @@ def test_recording_manager_resume(tmp_dir):
     ConcreteRM = _make_concrete_rm()
     env = _make_mock_env()
     features = get_features(env, use_video=False)
-    repo_id = "test_user/test_rm_resume"
+    repo_id = _unique_repo_id("rm_resume")
 
-    rm_home = tmp_dir / "rm_resume_home"
-    ds_root = rm_home / repo_id
+    # Pre-create the dataset at the same root that recording_manager will use.
+    ds_root = Path(_LEROBOT_TEST_HOME) / repo_id
     ds = LeRobotDataset.create(
         repo_id=repo_id,
         fps=15,
@@ -380,9 +401,8 @@ def test_recording_manager_resume(tmp_dir):
         "observation.state.cartesian": np.zeros(6, dtype=np.float32),
         "observation.state.gripper": np.zeros(1, dtype=np.float32),
         "observation.images.wrist": np.zeros((480, 640, 3), dtype=np.uint8),
-        "task": "pick the block",
     }
-    ds.add_frame(frame)
+    _add_frame_compat(ds, frame, task="pick the block")
     ds.save_episode()
 
     config = RecordingManagerConfig(
@@ -396,11 +416,10 @@ def test_recording_manager_resume(tmp_dir):
         use_sound=False,
     )
 
-    with patch("crisp_gym.record.recording_manager.HF_LEROBOT_HOME", rm_home):
-        manager = object.__new__(ConcreteRM)
-        manager.config = config
-        manager.episode_count_queue = __import__("multiprocessing").Queue(1)
-        dataset = manager._create_dataset()
+    manager = object.__new__(ConcreteRM)
+    manager.config = config
+    manager.episode_count_queue = __import__("multiprocessing").Queue(1)
+    dataset = manager._create_dataset()
 
     assert dataset.num_episodes == 1, f"Expected 1 existing episode, got {dataset.num_episodes}"
 
