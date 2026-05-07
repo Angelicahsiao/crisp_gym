@@ -46,6 +46,15 @@ if grep -qE '"numpy>=2\.0\.0' "$PYPROJECT"; then
     sed -i.bak2 's/"numpy>=2\.0\.0/"numpy>=1.26.0/g' "$PYPROJECT"
 fi
 
+# rerun-sdk >=0.24.0 requires numpy>=2, conflicting with ROS2 Humble's
+# numpy==1.26.4 pin. crisp_gym does not use rerun; the only lerobot path
+# that uses it is the standalone visualize_dataset.py script — not the
+# recording or inference pipelines. Drop the dependency.
+if grep -qE '^\s*"rerun-sdk' "$PYPROJECT"; then
+    echo "Patching $PYPROJECT: removing rerun-sdk dependency"
+    sed -i.bak3 '/^\s*"rerun-sdk[^"]*",\?\s*$/d' "$PYPROJECT"
+fi
+
 echo ""
 echo "Done. Now run:"
 echo "  rm -f pixi.lock"
