@@ -82,6 +82,8 @@ def _add_frame_compat(dataset, frame, task):
 
 def _test_home_pose(env):
     """Verify env.home() returns the robot to a stable, valid joint pose."""
+    print(">> Waiting for env to be ready...")
+    env.wait_until_ready()
     print(">> Reading joints before home()...")
     obs_before = env.get_obs()
     joints_before = np.asarray(obs_before["observation.state.joints"], dtype=np.float64)
