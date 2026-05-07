@@ -44,9 +44,9 @@ pudb = ">=2025.1.3, <2026"
 
 [feature.lerobot.dependencies]
 pynput = "*"
-rerun-sdk = ">=0.24.0,<0.27.0"
 
 [feature.lerobot.pypi-dependencies]
+rerun-sdk = ">=0.24.0,<0.27.0"
 # === v0.5.1 via local clone with patched pyproject.toml (Python 3.11 compat) ===
 # Run `bash scripts/setup_lerobot.sh` first to clone and patch lerobot.
 lerobot = { path = "../lerobot", editable = true }
