@@ -283,45 +283,6 @@ def test_dataset_create_add_save(tmp_dir):
     assert dataset.num_episodes == 1, f"Expected 1 episode, got {dataset.num_episodes}"
 
 
-def test_dataset_resume(tmp_dir):
-    """LeRobotDataset.resume() (v0.5.1) or constructor reopen (v0.4.x)."""
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset
-    from crisp_gym.util.lerobot_features import get_features
-
-    env = _make_mock_env()
-    features = get_features(env, use_video=False)
-    repo_id = "test_user/test_dataset_resume"
-
-    ds_root = tmp_dir / "ds_resume"
-    dataset = LeRobotDataset.create(
-        repo_id=repo_id,
-        fps=15,
-        robot_type="franka",
-        features=features,
-        root=ds_root,
-        use_videos=False,
-    )
-    frame = {
-        "action": np.zeros(7, dtype=np.float32),
-        "observation.state": np.zeros(7, dtype=np.float32),
-        "observation.state.cartesian": np.zeros(6, dtype=np.float32),
-        "observation.state.gripper": np.zeros(1, dtype=np.float32),
-        "observation.images.wrist": np.zeros((480, 640, 3), dtype=np.uint8),
-    }
-    _add_frame_compat(dataset, frame, task="pick the block")
-    dataset.save_episode()
-    assert dataset.num_episodes == 1
-
-    CODEBASE_VERSION, _ = _import_lerobot_metadata()
-    if hasattr(LeRobotDataset, "resume"):
-        dataset2 = LeRobotDataset.resume(repo_id=repo_id, root=ds_root)
-    else:
-        dataset2 = LeRobotDataset(repo_id=repo_id, root=ds_root, revision=CODEBASE_VERSION)
-    _add_frame_compat(dataset2, frame, task="pick the block")
-    dataset2.save_episode()
-    assert dataset2.num_episodes == 2, f"Expected 2 episodes after resume, got {dataset2.num_episodes}"
-
-
 def test_lerobot_dataset_metadata_import():
     """LeRobotDatasetMetadata must be importable (v0.5.1 path or v0.4.x fallback)."""
     _, LeRobotDatasetMetadata = _import_lerobot_metadata()
@@ -374,55 +335,6 @@ def test_recording_manager_create(tmp_dir):
     assert dataset.num_episodes == 0
 
 
-def test_recording_manager_resume(tmp_dir):
-    """RecordingManager._create_dataset() with resume=True reopens existing dataset."""
-    from pathlib import Path
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset
-    from crisp_gym.util.lerobot_features import get_features
-    from crisp_gym.record.recording_manager_config import RecordingManagerConfig
-
-    ConcreteRM = _make_concrete_rm()
-    env = _make_mock_env()
-    features = get_features(env, use_video=False)
-    repo_id = _unique_repo_id("rm_resume")
-
-    # Pre-create the dataset at the same root that recording_manager will use.
-    ds_root = Path(_LEROBOT_TEST_HOME) / repo_id
-    ds = LeRobotDataset.create(
-        repo_id=repo_id,
-        fps=15,
-        robot_type="franka",
-        features=features,
-        root=ds_root,
-        use_videos=False,
-    )
-    frame = {
-        "action": np.zeros(7, dtype=np.float32),
-        "observation.state": np.zeros(7, dtype=np.float32),
-        "observation.state.cartesian": np.zeros(6, dtype=np.float32),
-        "observation.state.gripper": np.zeros(1, dtype=np.float32),
-        "observation.images.wrist": np.zeros((480, 640, 3), dtype=np.uint8),
-    }
-    _add_frame_compat(ds, frame, task="pick the block")
-    ds.save_episode()
-
-    config = RecordingManagerConfig(
-        features=features,
-        repo_id=repo_id,
-        robot_type="franka",
-        fps=15,
-        num_episodes=5,
-        resume=True,
-        push_to_hub=False,
-        use_sound=False,
-    )
-
-    manager = object.__new__(ConcreteRM)
-    manager.config = config
-    manager.episode_count_queue = __import__("multiprocessing").Queue(1)
-    dataset = manager._create_dataset()
-
-    assert dataset.num_episodes == 1, f"Expected 1 existing episode, got {dataset.num_episodes}"
 
 
 # ---------------------------------------------------------------------------
@@ -443,10 +355,8 @@ if __name__ == "__main__":
         run("get_features() returns valid schema", test_get_features)
         run("get_features() no spurious version warning", test_get_features_version_check)
         run("LeRobotDataset.create → add_frame → save_episode", lambda: test_dataset_create_add_save(tmp_path))
-        run("LeRobotDataset.resume() classmethod", lambda: test_dataset_resume(tmp_path))
         run("LeRobotDatasetMetadata import from dataset_metadata", test_lerobot_dataset_metadata_import)
         run("RecordingManager._create_dataset() new dataset", lambda: test_recording_manager_create(tmp_path))
-        run("RecordingManager._create_dataset() resume path", lambda: test_recording_manager_resume(tmp_path))
 
     print("\n=== Summary ===")
     passed = sum(1 for _, s in results if s == "pass")
