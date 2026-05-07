@@ -1,23 +1,26 @@
 #!/usr/bin/env bash
-# Clone lerobot v0.5.1 to a sibling directory and patch its pyproject.toml
-# to allow Python 3.11. Required because lerobot v0.5.1 declares
-# requires-python>=3.12 in metadata, but uses no 3.12-only syntax.
+# Set up lerobot for crisp_gym.
 #
-# Usage:
-#   bash scripts/setup_lerobot.sh
+# Default: clone lerobot v0.4.4 (Python 3.11 + ROS2 Humble compatible).
+# To use a different version, set LEROBOT_REV before running, e.g.:
+#   LEROBOT_REV=v0.5.1 bash scripts/setup_lerobot.sh
+#
+# v0.5.1 requires Python 3.12 + numpy 2.x and won't work with ROS2 Humble.
+# This script automatically applies relaxation patches if you select v0.5.1.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LEROBOT_DIR="$(cd "$REPO_DIR/.." && pwd)/lerobot"
-LEROBOT_REV="v0.5.1"
+LEROBOT_REV="${LEROBOT_REV:-v0.4.4}"
 
 if [ -d "$LEROBOT_DIR" ]; then
     echo "lerobot already exists at $LEROBOT_DIR — skipping clone."
+    echo "  (delete this directory if you want to re-clone at a different rev)"
 else
     if ! command -v git &>/dev/null; then
-        echo "Error: git not found. Please install git or manually clone lerobot v0.5.1 to $LEROBOT_DIR"
+        echo "Error: git not found. Please install git or manually clone lerobot $LEROBOT_REV to $LEROBOT_DIR"
         exit 1
     fi
     echo "Cloning lerobot $LEROBOT_REV to $LEROBOT_DIR..."
@@ -31,23 +34,16 @@ if [ ! -f "$PYPROJECT" ]; then
     exit 1
 fi
 
+# Patches only needed if running v0.5.1 on Python 3.11 + Humble.
+# v0.4.4 needs no patches — it already supports Python >=3.10.
 if grep -q 'requires-python = ">=3.12"' "$PYPROJECT"; then
     echo "Patching $PYPROJECT: requires-python >=3.12 → >=3.11"
     sed -i.bak 's/requires-python = ">=3.12"/requires-python = ">=3.11"/' "$PYPROJECT"
-else
-    echo "requires-python already patched or unexpected — no change."
 fi
 
-# Relax numpy >= 2.0.0 to >= 1.26 so it can coexist with ROS2 Humble
-# (which pins numpy 1.x via robostack conda packages).
-# WARNING: lerobot may use numpy 2.x-only APIs at runtime. If you see
-# errors like "module 'numpy' has no attribute 'float_'", you'll need
-# to either upgrade ROS to Jazzy or patch the offending numpy calls.
 if grep -qE '"numpy>=2\.0\.0' "$PYPROJECT"; then
     echo "Patching $PYPROJECT: numpy >=2.0.0 → >=1.26.0"
     sed -i.bak2 's/"numpy>=2\.0\.0/"numpy>=1.26.0/g' "$PYPROJECT"
-else
-    echo "numpy constraint already patched or unexpected — no change."
 fi
 
 echo ""

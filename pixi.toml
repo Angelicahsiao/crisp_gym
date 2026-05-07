@@ -47,15 +47,13 @@ pynput = "*"
 
 [feature.lerobot.pypi-dependencies]
 rerun-sdk = ">=0.24.0,<0.27.0"
-# === v0.5.1 via local clone with patched pyproject.toml (Python 3.11 compat) ===
-# Run `bash scripts/setup_lerobot.sh` first to clone and patch lerobot.
+# === local clone (default v0.4.4, ROS2 Humble + Python 3.11 compatible) ===
+# Run `bash scripts/setup_lerobot.sh` first to clone lerobot.
+# To use v0.5.1 instead: LEROBOT_REV=v0.5.1 bash scripts/setup_lerobot.sh
+#   (requires Python 3.12 or numpy/python patches that the script applies)
 lerobot = { path = "../lerobot", editable = true }
-# === v0.5.1 PyPI (requires Python 3.12) ===
+# === v0.5.1 from PyPI (requires Python 3.12) ===
 # lerobot = "==0.5.1"
-# === Working version ===
-# lerobot = { git = "https://github.com/huggingface/lerobot", rev = "dacd1d7f5c719c3e56d7b7154a751bef6d5bd23c", extras = ["smolvla"]}
-# === Newer version ===
-# lerobot = { git = "https://github.com/huggingface/lerobot", rev = "74690e3f56a90b6ea314afbfb3b801a3d842a005", extras = ["smolvla"]}
 
 [feature.humble]
 channels = ["https://prefix.dev/robostack-humble"]
