@@ -162,14 +162,15 @@ def _test_fake_teleop(env, duration_s=1.0, dx_per_step=0.001):
 
 
 def _test_record_via_manager(env):
-    """Drive a full episode through KeyboardRecordingManager.record_episode().
+    """Interactive episode recording through KeyboardRecordingManager.record_episode().
 
-    Mirrors the production flow in scripts/record_lerobot_format_leader_follower.py:
-    make_recording_manager(...) -> wait_until_ready() -> with rm: record_episode(
-    data_fn, task, on_start, on_end). Drives the state machine directly instead
-    of via stdin.
+    Mirrors the production flow in scripts/record_lerobot_format_leader_follower.py.
+    You control the recording with keypresses (then ENTER):
+      r  start / stop recording
+      s  save the current episode
+      d  delete the current episode
+      q  quit (exit after up to 3 episodes)
     """
-    import threading
     import uuid
     from crisp_gym.record.recording_manager import make_recording_manager
     from crisp_gym.record.recording_manager_config import RecordingManagerConfig
@@ -185,7 +186,7 @@ def _test_record_via_manager(env):
         robot_type="ur",
         resume=False,
         fps=fps,
-        num_episodes=1,
+        num_episodes=3,
         push_to_hub=False,
         use_sound=False,
     )
@@ -198,13 +199,7 @@ def _test_record_via_manager(env):
     action_dim = env.action_space.shape[0]
     zero = np.zeros(action_dim, dtype=np.float32)
 
-    n_frames_target = 5
-    frames_emitted = {"n": 0}
-
     def data_fn():
-        if frames_emitted["n"] >= n_frames_target:
-            return None, None
-        frames_emitted["n"] += 1
         return env.get_obs(), zero
 
     on_start_called = {"v": False}
@@ -216,38 +211,26 @@ def _test_record_via_manager(env):
     def on_end():
         on_end_called["v"] = True
 
-    def controller():
-        # Wait for record_episode to enter _wait_for_start_signal, then start.
-        time.sleep(0.5)
-        rm.state = "recording"
-        deadline = time.time() + 10.0
-        while frames_emitted["n"] < n_frames_target and time.time() < deadline:
-            time.sleep(0.05)
-        # Stop recording, then save.
-        rm.state = "paused"
-        time.sleep(0.2)
-        rm.state = "to_be_saved"
-
-    t = threading.Thread(target=controller, daemon=True)
-    t.start()
-
-    print(">> Entering recording manager context and recording one episode...")
+    print(">> Entering recording manager context. Use keys below to control recording.")
     with rm:
-        rm.record_episode(
-            data_fn=data_fn,
-            task="ur_smoke_rm",
-            on_start=on_start,
-            on_end=on_end,
-        )
-    t.join(timeout=2.0)
+        while not rm.done():
+            rm.record_episode(
+                data_fn=data_fn,
+                task="ur_smoke_rm",
+                on_start=on_start,
+                on_end=on_end,
+            )
 
     assert on_start_called["v"], "on_start hook was not invoked"
     assert on_end_called["v"], "on_end hook was not invoked"
-    assert rm.episode_count == 1, f"Expected episode_count=1, got {rm.episode_count}"
 
-    parquet_files = list(Path(rm.dataset_directory).rglob("*.parquet"))
-    assert parquet_files, f"No parquet under {rm.dataset_directory}"
-    print(f"   wrote {len(parquet_files)} parquet under {rm.dataset_directory}")
+    if rm.episode_count == 0:
+        print("   No episodes saved (all deleted or quit before saving).")
+    else:
+        parquet_files = list(Path(rm.dataset_directory).rglob("*.parquet"))
+        assert parquet_files, f"No parquet under {rm.dataset_directory}"
+        print(f"   {rm.episode_count} episode(s) saved, "
+              f"{len(parquet_files)} parquet file(s) under {rm.dataset_directory}")
 
 
 def main():
