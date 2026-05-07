@@ -95,6 +95,18 @@ _sensor_pkg.Sensor = object
 _sensor_cfg = sys.modules["crisp_py.sensors.sensor_config"]
 _sensor_cfg.SensorConfig = object
 
+# crisp_gym.config.path calls importlib.resources.files("crisp_py") at module
+# level — that call fails when crisp_py is a bare ModuleType stub. Stub the
+# entire module so the import chain can proceed.
+import tempfile as _tempfile
+_path_stub = _make_stub("crisp_gym.config.path")
+_path_stub.CRISP_CONFIG_PATH = _tempfile.mkdtemp()
+_path_stub.CRISP_CONFIG_PATHS = [_path_stub.CRISP_CONFIG_PATH]
+_path_stub.find_config = lambda *a, **kw: None
+_path_stub.list_configs_in_folder = lambda *a, **kw: []
+sys.modules["crisp_gym.config"] = _make_stub("crisp_gym.config")
+sys.modules["crisp_gym.config.path"] = _path_stub
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
