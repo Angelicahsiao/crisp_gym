@@ -434,8 +434,8 @@ def _make_tiny_act_policy(state_dim=7, action_dim=7, image_shape=(3, 96, 96)):
             "max": torch.ones(state_dim),
         },
         "observation.images.wrist": {
-            "mean": torch.zeros(image_shape).reshape(3, 1, 1),
-            "std": torch.ones(image_shape).reshape(3, 1, 1),
+            "mean": torch.zeros(3, 1, 1),
+            "std": torch.ones(3, 1, 1),
         },
         "action": {
             "mean": torch.zeros(action_dim),
