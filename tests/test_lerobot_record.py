@@ -243,7 +243,7 @@ def test_dataset_create_add_save(tmp_dir):
         fps=15,
         robot_type="franka",
         features=features,
-        root=tmp_dir,
+        root=tmp_dir / "ds_create",
         use_videos=False,
     )
 
@@ -271,12 +271,13 @@ def test_dataset_resume(tmp_dir):
     features = get_features(env, use_video=False)
     repo_id = "test_user/test_dataset_resume"
 
+    ds_root = tmp_dir / "ds_resume"
     dataset = LeRobotDataset.create(
         repo_id=repo_id,
         fps=15,
         robot_type="franka",
         features=features,
-        root=tmp_dir,
+        root=ds_root,
         use_videos=False,
     )
     frame = {
@@ -291,9 +292,9 @@ def test_dataset_resume(tmp_dir):
     assert dataset.num_episodes == 1
 
     if hasattr(LeRobotDataset, "resume"):
-        dataset2 = LeRobotDataset.resume(repo_id=repo_id, root=tmp_dir)
+        dataset2 = LeRobotDataset.resume(repo_id=repo_id, root=ds_root)
     else:
-        dataset2 = LeRobotDataset(repo_id=repo_id, root=tmp_dir)
+        dataset2 = LeRobotDataset(repo_id=repo_id, root=ds_root)
     dataset2.add_frame(frame)
     dataset2.save_episode()
     assert dataset2.num_episodes == 2, f"Expected 2 episodes after resume, got {dataset2.num_episodes}"
@@ -305,13 +306,26 @@ def test_lerobot_dataset_metadata_import():
     assert LeRobotDatasetMetadata is not None
 
 
+class _ConcreteRecordingManager:
+    """Built lazily via _make_concrete_rm() to avoid importing at module load."""
+
+
+def _make_concrete_rm():
+    from crisp_gym.record.recording_manager import RecordingManager
+
+    class ConcreteRM(RecordingManager):
+        def get_instructions(self):
+            return ""
+    return ConcreteRM
+
+
 def test_recording_manager_create(tmp_dir):
     """RecordingManager._create_dataset() creates a new dataset correctly."""
     from unittest.mock import patch
     from crisp_gym.util.lerobot_features import get_features
-    from crisp_gym.record.recording_manager import RecordingManager
     from crisp_gym.record.recording_manager_config import RecordingManagerConfig
 
+    ConcreteRM = _make_concrete_rm()
     env = _make_mock_env()
     features = get_features(env, use_video=False)
 
@@ -326,9 +340,9 @@ def test_recording_manager_create(tmp_dir):
         use_sound=False,
     )
 
-    with patch("crisp_gym.record.recording_manager.HF_LEROBOT_HOME", tmp_dir):
-        # Instantiate without starting the writer process
-        manager = object.__new__(RecordingManager)
+    rm_root = tmp_dir / "rm_create_home"
+    with patch("crisp_gym.record.recording_manager.HF_LEROBOT_HOME", rm_root):
+        manager = object.__new__(ConcreteRM)
         manager.config = config
         dataset = manager._create_dataset()
 
@@ -341,20 +355,21 @@ def test_recording_manager_resume(tmp_dir):
     from unittest.mock import patch
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
     from crisp_gym.util.lerobot_features import get_features
-    from crisp_gym.record.recording_manager import RecordingManager
     from crisp_gym.record.recording_manager_config import RecordingManagerConfig
 
+    ConcreteRM = _make_concrete_rm()
     env = _make_mock_env()
     features = get_features(env, use_video=False)
     repo_id = "test_user/test_rm_resume"
 
-    # Create dataset first
+    rm_home = tmp_dir / "rm_resume_home"
+    ds_root = rm_home / repo_id
     ds = LeRobotDataset.create(
         repo_id=repo_id,
         fps=15,
         robot_type="franka",
         features=features,
-        root=tmp_dir,
+        root=ds_root,
         use_videos=False,
     )
     frame = {
@@ -378,8 +393,8 @@ def test_recording_manager_resume(tmp_dir):
         use_sound=False,
     )
 
-    with patch("crisp_gym.record.recording_manager.HF_LEROBOT_HOME", tmp_dir):
-        manager = object.__new__(RecordingManager)
+    with patch("crisp_gym.record.recording_manager.HF_LEROBOT_HOME", rm_home):
+        manager = object.__new__(ConcreteRM)
         manager.config = config
         manager.episode_count_queue = __import__("multiprocessing").Queue(1)
         dataset = manager._create_dataset()
