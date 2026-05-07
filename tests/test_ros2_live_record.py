@@ -75,6 +75,35 @@ def _add_frame_compat(dataset, frame, task):
         dataset.add_frame(dict(frame, task=task))
 
 
+def _test_home_pose(env):
+    """Verify env.home() returns the robot to a stable, valid joint pose."""
+    print(">> Reading joints before home()...")
+    obs_before = env.get_obs()
+    joints_before = np.asarray(obs_before["observation.state.joints"], dtype=np.float64)
+    print(f"   joints_before: {np.round(joints_before, 3)}")
+
+    print(">> Calling env.home(blocking=True)...")
+    env.home(blocking=True)
+    time.sleep(0.5)  # let any residual motion settle
+
+    print(">> Reading joints after home()...")
+    obs_after = env.get_obs()
+    joints_after = np.asarray(obs_after["observation.state.joints"], dtype=np.float64)
+    print(f"   joints_after:  {np.round(joints_after, 3)}")
+
+    assert joints_after.shape == joints_before.shape, "Joint shape changed across home()"
+    assert np.all(np.isfinite(joints_after)), f"Non-finite joint values after home: {joints_after}"
+
+    # Verify robot is at rest: sample twice and check delta is small.
+    time.sleep(0.1)
+    joints_resample = np.asarray(env.get_obs()["observation.state.joints"], dtype=np.float64)
+    drift = np.max(np.abs(joints_resample - joints_after))
+    print(f"   drift between two reads after home: {drift:.4f} rad")
+    assert drift < 0.05, f"Robot still moving after home() (drift={drift:.4f} rad)"
+
+    return joints_after
+
+
 def main():
     print("\n=== ROS2 Live Record Test (UR sim) ===\n")
 
@@ -89,6 +118,14 @@ def main():
     tmp = Path(tempfile.mkdtemp(prefix="crisp_live_"))
     failed = False
     try:
+        try:
+            _test_home_pose(env)
+            print(f"  [{PASS}] env.home() returns to a stable pose\n")
+        except Exception:
+            failed = True
+            print(f"  [{FAIL}] env.home() test")
+            traceback.print_exc()
+
         print(">> Reading initial observation...")
         obs = env.get_obs()
         assert isinstance(obs, dict) and len(obs) > 0, "Empty obs"
