@@ -59,7 +59,13 @@ sys.modules["rclpy.executors"].SingleThreadedExecutor = object
 sys.modules["std_msgs.msg"].String = object
 
 _geo = sys.modules["crisp_py.utils.geometry"]
-_geo.OrientationRepresentation = object
+
+class _OrientationRepresentation:
+    EULER = "euler"
+    QUATERNION = "quaternion"
+    ANGLE_AXIS = "angle_axis"
+
+_geo.OrientationRepresentation = _OrientationRepresentation
 _geo.Pose = object
 
 _robot_cfg = sys.modules["crisp_py.robot.robot_config"]
