@@ -338,6 +338,145 @@ def test_recording_manager_create(tmp_dir):
 
 
 # ---------------------------------------------------------------------------
+# Deploy / inference tests
+# ---------------------------------------------------------------------------
+
+def test_concatenate_state_features():
+    """concatenate_state_features should join all observation.state.* into one vector."""
+    from crisp_gym.util.lerobot_features import concatenate_state_features
+
+    obs = {
+        "observation.state.cartesian": np.arange(6, dtype=np.float32),
+        "observation.state.gripper": np.array([0.5], dtype=np.float32),
+        "observation.images.wrist": np.zeros((4, 4, 3), dtype=np.uint8),  # ignored
+    }
+    out = concatenate_state_features(obs)
+    assert out.shape == (7,), f"Expected (7,), got {out.shape}"
+    assert out.dtype == np.float32
+    np.testing.assert_array_equal(out[:6], np.arange(6, dtype=np.float32))
+    assert out[6] == 0.5
+
+
+def test_numpy_obs_to_torch():
+    """numpy_obs_to_torch should produce torch tensors with correct shape and batch dim."""
+    import torch
+    from crisp_gym.util.lerobot_features import numpy_obs_to_torch
+
+    obs = {
+        "observation.state": np.arange(7, dtype=np.float32),
+        "observation.images.wrist": np.zeros((480, 640, 3), dtype=np.uint8),
+        "task": "pick the block",
+    }
+    torch_obs = numpy_obs_to_torch(obs)
+    assert isinstance(torch_obs["observation.state"], torch.Tensor)
+    assert torch_obs["observation.state"].shape == (1, 7)
+    assert torch_obs["observation.state"].dtype == torch.float32
+    assert torch_obs["task"] == "pick the block"
+
+
+def test_make_pre_post_processors_detection():
+    """Verify the USE_LEROBOT_PROCESSORS flag matches actual import availability."""
+    from crisp_gym.policy import lerobot_policy
+
+    try:
+        from lerobot.policies.factory import make_pre_post_processors  # noqa: F401
+        expected = True
+    except ImportError:
+        expected = False
+
+    assert lerobot_policy.USE_LEROBOT_PROCESSORS == expected, (
+        f"USE_LEROBOT_PROCESSORS={lerobot_policy.USE_LEROBOT_PROCESSORS} but actual import={expected}"
+    )
+
+
+def _make_tiny_act_policy(state_dim=7, action_dim=7, image_shape=(3, 96, 96)):
+    """Build a minimal ACTPolicy for round-trip save/load testing."""
+    from lerobot.policies.act.configuration_act import ACTConfig
+    from lerobot.policies.act.modeling_act import ACTPolicy
+
+    # PolicyFeature/FeatureType lives at different places across versions.
+    try:
+        from lerobot.configs.types import PolicyFeature, FeatureType
+    except ImportError:
+        from lerobot.configs.policies import PolicyFeature, FeatureType  # fallback
+
+    input_features = {
+        "observation.state": PolicyFeature(type=FeatureType.STATE, shape=(state_dim,)),
+        "observation.images.wrist": PolicyFeature(type=FeatureType.VISUAL, shape=image_shape),
+    }
+    output_features = {
+        "action": PolicyFeature(type=FeatureType.ACTION, shape=(action_dim,)),
+    }
+
+    cfg = ACTConfig(
+        input_features=input_features,
+        output_features=output_features,
+        n_obs_steps=1,
+        chunk_size=4,
+        n_action_steps=1,
+        # Tiny model to keep the test fast
+        dim_model=64,
+        n_heads=4,
+        dim_feedforward=128,
+        n_encoder_layers=1,
+        n_decoder_layers=1,
+        vision_backbone="resnet18",
+        pretrained_backbone_weights=None,
+    )
+
+    # Dataset stats are needed for normalization layers
+    import torch
+    stats = {
+        "observation.state": {
+            "mean": torch.zeros(state_dim),
+            "std": torch.ones(state_dim),
+            "min": -torch.ones(state_dim),
+            "max": torch.ones(state_dim),
+        },
+        "observation.images.wrist": {
+            "mean": torch.zeros(image_shape).reshape(3, 1, 1),
+            "std": torch.ones(image_shape).reshape(3, 1, 1),
+        },
+        "action": {
+            "mean": torch.zeros(action_dim),
+            "std": torch.ones(action_dim),
+            "min": -torch.ones(action_dim),
+            "max": torch.ones(action_dim),
+        },
+    }
+
+    return ACTPolicy(cfg, dataset_stats=stats)
+
+
+def test_policy_save_load_inference(tmp_dir):
+    """Create a tiny ACT policy, save_pretrained → from_pretrained → select_action."""
+    import torch
+    from lerobot.policies.act.modeling_act import ACTPolicy
+
+    state_dim, action_dim = 7, 7
+    image_shape = (3, 96, 96)
+
+    policy = _make_tiny_act_policy(state_dim, action_dim, image_shape)
+    save_dir = tmp_dir / "tiny_act"
+    save_dir.mkdir(parents=True, exist_ok=True)
+    policy.save_pretrained(str(save_dir))
+
+    loaded = ACTPolicy.from_pretrained(str(save_dir))
+    loaded.eval()
+
+    obs = {
+        "observation.state": torch.zeros(1, state_dim),
+        "observation.images.wrist": torch.zeros(1, *image_shape),
+    }
+    with torch.inference_mode():
+        action = loaded.select_action(obs)
+
+    assert isinstance(action, torch.Tensor)
+    # Shape may be (1, action_dim) or (action_dim,) depending on version
+    assert action.shape[-1] == action_dim, f"Unexpected action shape: {action.shape}"
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -357,6 +496,12 @@ if __name__ == "__main__":
         run("LeRobotDataset.create → add_frame → save_episode", lambda: test_dataset_create_add_save(tmp_path))
         run("LeRobotDatasetMetadata import from dataset_metadata", test_lerobot_dataset_metadata_import)
         run("RecordingManager._create_dataset() new dataset", lambda: test_recording_manager_create(tmp_path))
+
+        print("\n--- Deploy / inference tests ---\n")
+        run("concatenate_state_features", test_concatenate_state_features)
+        run("numpy_obs_to_torch", test_numpy_obs_to_torch)
+        run("USE_LEROBOT_PROCESSORS detection", test_make_pre_post_processors_detection)
+        run("ACT policy save_pretrained → from_pretrained → select_action", lambda: test_policy_save_load_inference(tmp_path))
 
     print("\n=== Summary ===")
     passed = sum(1 for _, s in results if s == "pass")
