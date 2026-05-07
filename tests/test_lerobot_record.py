@@ -1,14 +1,23 @@
 """Test that the lerobot recording pipeline works without a real robot.
 
-Covers the changes made for the LeRobot v0.5.1 upgrade:
-  - CODEBASE_VERSION import from lerobot.datasets.dataset_metadata
+Covers the lerobot upgrade changes; works with both v0.4.x and v0.5.1.
+  - CODEBASE_VERSION import (dataset_metadata in v0.5.1, lerobot_dataset in v0.4.x)
   - LeRobotDataset.create() / add_frame() / save_episode() API
-  - LeRobotDataset.resume() classmethod (replaces plain constructor)
+  - LeRobotDataset.resume() classmethod (v0.5.1+) with v0.4.x fallback
   - get_features() version check accepts v3.x
 
 Run with:
     python tests/test_lerobot_record.py
 """
+
+
+def _import_lerobot_metadata():
+    """Match the production code's version-aware imports."""
+    try:
+        from lerobot.datasets.dataset_metadata import CODEBASE_VERSION, LeRobotDatasetMetadata
+    except ImportError:
+        from lerobot.datasets.lerobot_dataset import CODEBASE_VERSION, LeRobotDatasetMetadata
+    return CODEBASE_VERSION, LeRobotDatasetMetadata
 
 import os
 import sys
@@ -34,7 +43,7 @@ ROS_STUBS = [
     "crisp_py", "crisp_py.robot", "crisp_py.robot.robot_config",
     "crisp_py.gripper", "crisp_py.gripper.gripper",
     "crisp_py.camera", "crisp_py.camera.camera_config",
-    "crisp_py.sensors", "crisp_py.sensors.sensor_config",
+    "crisp_py.sensors", "crisp_py.sensors.sensor", "crisp_py.sensors.sensor_config",
     "crisp_py.utils", "crisp_py.utils.geometry",
     "pynput", "pynput.keyboard",
 ]
@@ -51,6 +60,7 @@ sys.modules["std_msgs.msg"].String = object
 
 _geo = sys.modules["crisp_py.utils.geometry"]
 _geo.OrientationRepresentation = object
+_geo.Pose = object
 
 _robot_cfg = sys.modules["crisp_py.robot.robot_config"]
 _robot_cfg.RobotConfig = object
@@ -58,11 +68,29 @@ _robot_cfg.FrankaConfig = object
 _robot_cfg.URConfig = object
 _robot_cfg.make_robot_config = lambda *a, **kw: None
 
+_robot_pkg = sys.modules["crisp_py.robot"]
+_robot_pkg.Robot = object
+_robot_pkg.RobotConfig = object
+_robot_pkg.FrankaConfig = object
+_robot_pkg.Pose = object
+_robot_pkg.make_robot_config = lambda *a, **kw: None
+
 _gripper_cfg = sys.modules["crisp_py.gripper.gripper"]
 _gripper_cfg.GripperConfig = object
 
+_gripper_pkg = sys.modules["crisp_py.gripper"]
+_gripper_pkg.Gripper = object
+_gripper_pkg.GripperConfig = object
+_gripper_pkg.make_gripper = lambda *a, **kw: None
+
+_cam_pkg = sys.modules["crisp_py.camera"]
+_cam_pkg.Camera = object
+
 _cam_cfg = sys.modules["crisp_py.camera.camera_config"]
 _cam_cfg.CameraConfig = object
+
+_sensor_pkg = sys.modules["crisp_py.sensors.sensor"]
+_sensor_pkg.Sensor = object
 
 _sensor_cfg = sys.modules["crisp_py.sensors.sensor_config"]
 _sensor_cfg.SensorConfig = object
@@ -134,8 +162,8 @@ def _make_mock_env(num_joints=7):
 # ---------------------------------------------------------------------------
 
 def test_codebase_version_import():
-    """CODEBASE_VERSION must import from dataset_metadata in v0.5.1."""
-    from lerobot.datasets.dataset_metadata import CODEBASE_VERSION
+    """CODEBASE_VERSION must be importable (v0.5.1 path or v0.4.x fallback)."""
+    CODEBASE_VERSION, _ = _import_lerobot_metadata()
     assert isinstance(CODEBASE_VERSION, str), "CODEBASE_VERSION should be a string"
     assert CODEBASE_VERSION.startswith("v"), f"Unexpected format: {CODEBASE_VERSION}"
 
@@ -217,7 +245,7 @@ def test_dataset_create_add_save(tmp_dir):
 
 
 def test_dataset_resume(tmp_dir):
-    """LeRobotDataset.resume() should reopen a dataset for continued writing."""
+    """LeRobotDataset.resume() (v0.5.1) or constructor reopen (v0.4.x)."""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
     from crisp_gym.util.lerobot_features import get_features
 
@@ -225,7 +253,6 @@ def test_dataset_resume(tmp_dir):
     features = get_features(env, use_video=False)
     repo_id = "test_user/test_dataset_resume"
 
-    # First: create and save one episode
     dataset = LeRobotDataset.create(
         repo_id=repo_id,
         fps=15,
@@ -245,16 +272,18 @@ def test_dataset_resume(tmp_dir):
     dataset.save_episode()
     assert dataset.num_episodes == 1
 
-    # Second: resume and add another episode
-    dataset2 = LeRobotDataset.resume(repo_id=repo_id, root=tmp_dir)
+    if hasattr(LeRobotDataset, "resume"):
+        dataset2 = LeRobotDataset.resume(repo_id=repo_id, root=tmp_dir)
+    else:
+        dataset2 = LeRobotDataset(repo_id=repo_id, root=tmp_dir)
     dataset2.add_frame(frame)
     dataset2.save_episode()
     assert dataset2.num_episodes == 2, f"Expected 2 episodes after resume, got {dataset2.num_episodes}"
 
 
 def test_lerobot_dataset_metadata_import():
-    """LeRobotDatasetMetadata must import from lerobot.datasets.dataset_metadata."""
-    from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
+    """LeRobotDatasetMetadata must be importable (v0.5.1 path or v0.4.x fallback)."""
+    _, LeRobotDatasetMetadata = _import_lerobot_metadata()
     assert LeRobotDatasetMetadata is not None
 
 
@@ -348,7 +377,7 @@ if __name__ == "__main__":
     import multiprocessing
     multiprocessing.set_start_method("spawn", force=True)
 
-    print("\n=== LeRobot v0.5.1 Record Pipeline Tests ===\n")
+    print("\n=== LeRobot Record Pipeline Tests (v0.4.x / v0.5.1) ===\n")
 
     with tempfile.TemporaryDirectory() as tmp:
         from pathlib import Path
