@@ -174,6 +174,12 @@ def main():
             traceback.print_exc()
 
         try:
+            # env.home(blocking=True) leaves the joint_trajectory_controller
+            # active. Call reset() to switch to the cartesian impedance
+            # controller before sending cartesian deltas.
+            print(">> env.reset() to activate cartesian controller...")
+            env.reset()
+            time.sleep(0.3)
             _test_fake_teleop(env)
             print(f"  [{PASS}] fake teleop streamed deltas tracked by follower\n")
             # Return to home before the record test so frames are consistent.
