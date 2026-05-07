@@ -253,6 +253,7 @@ def test_dataset_create_add_save(tmp_dir):
         "observation.state": np.zeros(7, dtype=np.float32),
         "observation.state.cartesian": np.zeros(6, dtype=np.float32),
         "observation.state.gripper": np.zeros(1, dtype=np.float32),
+        "observation.images.wrist": np.zeros((480, 640, 3), dtype=np.uint8),
         "task": "pick the block",
     }
     dataset.add_frame(frame)
@@ -285,6 +286,7 @@ def test_dataset_resume(tmp_dir):
         "observation.state": np.zeros(7, dtype=np.float32),
         "observation.state.cartesian": np.zeros(6, dtype=np.float32),
         "observation.state.gripper": np.zeros(1, dtype=np.float32),
+        "observation.images.wrist": np.zeros((480, 640, 3), dtype=np.uint8),
         "task": "pick the block",
     }
     dataset.add_frame(frame)
@@ -377,6 +379,7 @@ def test_recording_manager_resume(tmp_dir):
         "observation.state": np.zeros(7, dtype=np.float32),
         "observation.state.cartesian": np.zeros(6, dtype=np.float32),
         "observation.state.gripper": np.zeros(1, dtype=np.float32),
+        "observation.images.wrist": np.zeros((480, 640, 3), dtype=np.uint8),
         "task": "pick the block",
     }
     ds.add_frame(frame)
