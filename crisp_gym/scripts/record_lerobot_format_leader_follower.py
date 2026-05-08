@@ -88,7 +88,7 @@ def main():
     parser.add_argument(
         "--follower-namespace",
         type=str,
-        default="left",
+        default="",
         help="Namespace for the follower robot. This is used to identify the robot in the ROS ecosystem.",
     )
     parser.add_argument(
