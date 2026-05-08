@@ -33,7 +33,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: crisp-gym-pixi:cuda
-    container_name: crisp-gym-deploy
+    container_name: crisp-gym-deploy-lerobot044
     volumes:
       - ~/workspace:/workspace
       - $HOME/.Xauthority:/root/.Xauthority
