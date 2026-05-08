@@ -10,6 +10,7 @@ import numpy as np
 import yaml
 from crisp_py.camera.camera_config import CameraConfig
 from crisp_py.gripper.gripper import GripperConfig
+from crisp_py.gripper.multi_dof_gripper import MultiDofGripperConfig
 from crisp_py.robot.robot_config import FrankaConfig, RobotConfig, URConfig, make_robot_config
 from crisp_py.sensors.sensor_config import SensorConfig
 from crisp_py.utils.geometry import OrientationRepresentation
@@ -39,6 +40,27 @@ ALLOWED_STATE_OBS_KEYS = {
     ObservationKeys.TARGET_OBS,
     ObservationKeys.SENSOR_OBS,
 }
+
+
+def _load_gripper_config_from_dict(gripper_cfg: dict) -> GripperConfig:
+    """Build a GripperConfig (or MultiDofGripperConfig) from a dict.
+
+    Dispatches based on a ``type`` key (currently ``"multi_dof"``).
+    """
+    cfg = dict(gripper_cfg)
+    cfg_type = cfg.pop("type", None)
+    if cfg_type == "multi_dof":
+        return MultiDofGripperConfig(**cfg)
+    return GripperConfig(**cfg)
+
+
+def _load_gripper_config_from_yaml(yaml_path: Path) -> GripperConfig:
+    """Load a GripperConfig (or MultiDofGripperConfig) from a YAML path."""
+    with open(yaml_path, "r") as f:
+        peek = yaml.safe_load(f) or {}
+    if peek.get("type") == "multi_dof":
+        return MultiDofGripperConfig.from_yaml(yaml_path)
+    return GripperConfig.from_yaml(path=yaml_path.resolve())
 
 
 @dataclass(kw_only=True)
@@ -104,6 +126,17 @@ class ManipulatorEnvConfig(ABC):
             ObservationKeys.TARGET_OBS,
         ]
     )
+
+    @property
+    def gripper_action_dim(self) -> int:
+        """Number of action dimensions occupied by the gripper.
+
+        Defaults to 1 for scalar grippers; multi-DOF gripper configs
+        report their ``num_joints``.
+        """
+        if isinstance(self.gripper_config, MultiDofGripperConfig):
+            return int(self.gripper_config.num_joints)
+        return 1
 
     def __post_init__(self):
         """Post-initialization checks."""
@@ -242,9 +275,9 @@ class ManipulatorEnvConfig(ABC):
                     raise FileNotFoundError(
                         f"Gripper config file '{gripper_cfg['from_yaml']}' not found in any CRISP config paths"
                     )
-                data["gripper_config"] = GripperConfig.from_yaml(path=gripper_yaml_path.resolve())
+                data["gripper_config"] = _load_gripper_config_from_yaml(gripper_yaml_path)
             else:
-                data["gripper_config"] = GripperConfig(**gripper_cfg)
+                data["gripper_config"] = _load_gripper_config_from_dict(gripper_cfg)
 
         if "camera_configs" in data and isinstance(data["camera_configs"], list):
             data["camera_configs"] = []  # Reset to fill in properly
@@ -405,17 +438,15 @@ class RobotiqFrankaEnvConfig(FrankaEnvConfig):
 class DG3FFrankaEnvConfig(FrankaEnvConfig):
     """Franka Gym Environment Configuration with the Tesollo Delto DG3F 3-finger gripper.
 
-    The DG3F is a 12-DOF gripper. Since crisp_py's Gripper interface assumes a
-    single normalized [0, 1] value, this config talks to a small bridge node
-    that maps the published 1-element command on `gripper/normalized_cmd` to
-    the 12-element `gripper/target_joint` topic expected by the
-    `delto_3f_driver` ROS2 driver from
+    The DG3F is a 12-DOF gripper. The action space exposes per-joint normalized
+    [0, 1] targets and the env publishes ``Float64MultiArray`` (length 12) to
+    ``gripper/target_joint`` consumed by ``delto_3f_driver`` from
     https://github.com/tesollodelto/delto_b_ros2.
     """
 
     gripper_config: GripperConfig | None = field(
-        default_factory=lambda: GripperConfig.from_yaml(
-            path=(
+        default_factory=lambda: _load_gripper_config_from_yaml(
+            (
                 find_config("grippers/gripper_dg3f.yaml")
                 or CRISP_CONFIG_PATH / "grippers" / "gripper_dg3f.yaml"
             ).resolve()

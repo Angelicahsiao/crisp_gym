@@ -33,7 +33,7 @@ import gymnasium as gym
 import numpy as np
 import rclpy
 from crisp_py.camera import Camera
-from crisp_py.gripper import Gripper
+from crisp_py.gripper import Gripper, MultiDofGripper, MultiDofGripperConfig
 from crisp_py.robot import Pose, Robot
 from crisp_py.sensors.sensor import Sensor
 from crisp_py.utils.geometry import OrientationRepresentation
@@ -86,10 +86,22 @@ class ManipulatorBaseEnv(gym.Env):
             namespace=namespace,
             robot_config=self.config.robot_config,
         )
-        self.gripper = Gripper(
-            namespace=namespace,
-            gripper_config=self.config.gripper_config,
-        )
+
+        # Multi-DOF grippers (e.g. DG3F) need a different ROS client; the env
+        # parameterizes action/observation space by ``config.gripper_action_dim``.
+        if isinstance(self.config.gripper_config, MultiDofGripperConfig):
+            self.gripper = MultiDofGripper(
+                namespace=namespace,
+                gripper_config=self.config.gripper_config,
+            )
+            self._gripper_is_multi_dof = True
+        else:
+            self.gripper = Gripper(
+                namespace=namespace,
+                gripper_config=self.config.gripper_config,
+            )
+            self._gripper_is_multi_dof = False
+
         self.cameras = [
             Camera(
                 namespace=namespace,
@@ -196,6 +208,7 @@ class ManipulatorBaseEnv(gym.Env):
         Returns:
             dict: A dictionary containing the state observation spaces.
         """
+        gripper_dim = self.config.gripper_action_dim
         observation_spaces = {
             # Cartesian pose: position (3D) + rotation (rot_dim)
             ObservationKeys.CARTESIAN_OBS: gym.spaces.Box(
@@ -211,10 +224,10 @@ class ManipulatorBaseEnv(gym.Env):
                 ),
                 dtype=np.float32,
             ),
-            # Gripper state
+            # Gripper state (per-joint normalized for multi-DOF grippers)
             ObservationKeys.GRIPPER_OBS: gym.spaces.Box(
-                low=np.array([0.0], dtype=np.float32),
-                high=np.array([1.0], dtype=np.float32),
+                low=np.zeros((gripper_dim,), dtype=np.float32),
+                high=np.ones((gripper_dim,), dtype=np.float32),
                 dtype=np.float32,
             ),
             # Joint state
@@ -340,11 +353,11 @@ class ManipulatorBaseEnv(gym.Env):
             )
             self._previous_rotation_vector = cartesian_pose[3:]
 
-        gripper_value = (
-            1 - np.array([self.gripper.value])
-            if self.config.gripper_mode != GripperMode.NONE
-            else np.array([0.0])
-        )
+        if self.config.gripper_mode != GripperMode.NONE:
+            current = np.atleast_1d(self.gripper.value).astype(np.float32)
+            gripper_value = 1.0 - current
+        else:
+            gripper_value = np.zeros((self.config.gripper_action_dim,), dtype=np.float32)
 
         # Cartesian pose
         if ObservationKeys.CARTESIAN_OBS in self.config.observations_to_include_to_state:
@@ -370,43 +383,66 @@ class ManipulatorBaseEnv(gym.Env):
 
         return obs
 
-    def _set_gripper_action(self, action: float):
+    def _set_gripper_action(self, action):  # noqa: ANN001
         """Execute the gripper action.
 
-        Args:
-            action (float): Action value for the gripper (0,1).
+        For 1-DOF grippers ``action`` is a scalar (or 1-element array). For
+        multi-DOF grippers ``action`` is an array of shape ``(num_joints,)``.
         """
-        # print("Set gripper action:", action)
-        # print("Gripper mode:", self.config.gripper_mode)
-        # print("Gripper threshold:", self.config.gripper_threshold)
-        logger.debug(f"gripper.value: {self.gripper.value}")
-        # print(action)
-        # print(self.config.gripper_mode)
         if self.config.gripper_mode == GripperMode.NONE:
             return
-        elif self.config.gripper_mode == GripperMode.ABSOLUTE_BINARY:
-            if action < self.config.gripper_threshold and self.gripper.is_open(
+
+        if self._gripper_is_multi_dof:
+            action_arr = np.asarray(action, dtype=np.float64).reshape(-1)
+            if action_arr.shape[0] != self.config.gripper_action_dim:
+                raise ValueError(
+                    f"Multi-DOF gripper expected action shape ({self.config.gripper_action_dim},), got {action_arr.shape}"
+                )
+            if self.config.gripper_mode == GripperMode.ABSOLUTE_CONTINUOUS:
+                self.gripper.set_target(np.clip(action_arr, 0.0, 1.0))
+            elif self.config.gripper_mode == GripperMode.RELATIVE_CONTINUOUS:
+                self.gripper.set_target(np.clip(self.gripper.value + action_arr, 0.0, 1.0))
+            elif self.config.gripper_mode in (GripperMode.ABSOLUTE_BINARY, GripperMode.RELATIVE_BINARY):
+                # For binary modes we collapse to open/close on the mean
+                # because per-joint binary semantics are ill-defined.
+                mean_action = float(np.mean(action_arr))
+                if self.config.gripper_mode == GripperMode.ABSOLUTE_BINARY:
+                    if mean_action < self.config.gripper_threshold:
+                        self.gripper.close()
+                    else:
+                        self.gripper.open()
+                else:  # RELATIVE_BINARY
+                    if mean_action < 0:
+                        self.gripper.close()
+                    elif mean_action > 0:
+                        self.gripper.open()
+            else:
+                raise ValueError(f"Unsupported gripper mode: {self.config.gripper_mode}")
+            return
+
+        # Scalar (1-DOF) gripper path - preserves previous behavior.
+        action_scalar = float(np.asarray(action).reshape(-1)[0])
+        logger.debug(f"gripper.value: {self.gripper.value}")
+        if self.config.gripper_mode == GripperMode.ABSOLUTE_BINARY:
+            if action_scalar < self.config.gripper_threshold and self.gripper.is_open(
                 open_threshold=self.config.gripper_threshold
             ):
-                # print(action)
                 self.gripper.close()
-            elif action >= self.config.gripper_threshold and not self.gripper.is_open(
+            elif action_scalar >= self.config.gripper_threshold and not self.gripper.is_open(
                 open_threshold=self.config.gripper_threshold
             ):
-                # print(action)
                 self.gripper.open()
         elif self.config.gripper_mode == GripperMode.RELATIVE_BINARY:
-            # print("Is gripper open?", self.gripper.is_open())
-            if action < 0 and self.gripper.is_open(open_threshold=self.config.gripper_threshold):
+            if action_scalar < 0 and self.gripper.is_open(open_threshold=self.config.gripper_threshold):
                 self.gripper.close()
-            elif action > 0 and not self.gripper.is_open(
+            elif action_scalar > 0 and not self.gripper.is_open(
                 open_threshold=self.config.gripper_threshold
             ):
                 self.gripper.open()
         elif self.config.gripper_mode == GripperMode.ABSOLUTE_CONTINUOUS:
-            self.gripper.set_target(np.clip(action, 0.0, 1.0))
+            self.gripper.set_target(np.clip(action_scalar, 0.0, 1.0))
         elif self.config.gripper_mode == GripperMode.RELATIVE_CONTINUOUS:
-            self.gripper.set_target(np.clip(self.gripper.value + action, 0.0, 1.0))
+            self.gripper.set_target(np.clip(self.gripper.value + action_scalar, 0.0, 1.0))
         else:
             raise ValueError(f"Unsupported gripper mode: {self.config.gripper_mode}")
 
@@ -610,6 +646,14 @@ class ManipulatorBaseEnv(gym.Env):
         return clipped_position
 
 
+def _gripper_action_bounds(config: ManipulatorEnvConfig) -> Tuple[np.ndarray, np.ndarray]:
+    """Per-element low/high bounds for the gripper portion of the action."""
+    n = config.gripper_action_dim
+    low = np.full((n,), min_action_for_gripper_mode(config.gripper_mode), dtype=np.float32)
+    high = np.full((n,), max_action_for_gripper_mode(config.gripper_mode), dtype=np.float32)
+    return low, high
+
+
 class ManipulatorCartesianEnv(ManipulatorBaseEnv):
     """Manipulator Cartesian Environment.
 
@@ -643,18 +687,17 @@ class ManipulatorCartesianEnv(ManipulatorBaseEnv):
                 },
             )
 
-        # Create action space with appropriate rotation dimension
+        # Create action space with appropriate rotation and gripper dimensions.
         rot_low = -np.ones((rot_dim,), dtype=np.float32) * np.pi
         rot_high = np.ones((rot_dim,), dtype=np.float32) * np.pi
+        gripper_low, gripper_high = _gripper_action_bounds(self.config)
 
         self.action_space = gym.spaces.Box(
             low=np.concatenate(
                 [
                     -np.ones((3,), dtype=np.float32),  # Translation limits [-1, -1, -1]
                     rot_low,  # Rotation limits (dimension-dependent)
-                    np.array(
-                        [min_action_for_gripper_mode(self.config.gripper_mode)], dtype=np.float32
-                    ),
+                    gripper_low,
                 ],
                 axis=0,
             ),
@@ -662,9 +705,7 @@ class ManipulatorCartesianEnv(ManipulatorBaseEnv):
                 [
                     np.ones((3,), dtype=np.float32),  # Translation limits [1, 1, 1]
                     rot_high,  # Rotation limits (dimension-dependent)
-                    np.array(
-                        [max_action_for_gripper_mode(self.config.gripper_mode)], dtype=np.float32
-                    ),
+                    gripper_high,
                 ],
                 axis=0,
             ),
@@ -692,8 +733,9 @@ class ManipulatorCartesianEnv(ManipulatorBaseEnv):
         """Step the environment with a Cartesian action.
 
         Args:
-            action (np.ndarray): Cartesian delta action [dx, dy, dz, *d_rot_action, gripper_action],
-                                where d_rot_action dimension depends on the chosen orientation representation.
+            action (np.ndarray): Cartesian delta action [dx, dy, dz, *d_rot, *gripper],
+                                where d_rot dimension depends on the chosen orientation representation
+                                and the gripper segment has length ``config.gripper_action_dim``.
             block (bool): If True, block to maintain the control rate.
 
         Returns:
@@ -702,9 +744,10 @@ class ManipulatorCartesianEnv(ManipulatorBaseEnv):
         assert action.shape == self.action_space.shape, (
             f"Action shape {action.shape} does not match expected shape {self.action_space.shape}"
         )
+        n_grip = self.config.gripper_action_dim
         if self.config.use_relative_actions:
             translation = action[:3]
-            rotation = self.action_to_rotation(action[3:-1])
+            rotation = self.action_to_rotation(action[3:-n_grip])
 
             target_position = self.clip_position_for_safety(
                 self.robot.target_pose.position + translation
@@ -712,13 +755,13 @@ class ManipulatorCartesianEnv(ManipulatorBaseEnv):
             target_orientation = rotation * self.robot.target_pose.orientation
         else:
             target_position = self.clip_position_for_safety(action[:3])
-            target_orientation = self.action_to_rotation(action[3:-1])
+            target_orientation = self.action_to_rotation(action[3:-n_grip])
 
         target_pose = Pose(position=target_position, orientation=target_orientation)
         self.robot.set_target(pose=target_pose)
 
         if self.config.gripper_mode != GripperMode.NONE:
-            self._set_gripper_action(action[-1])
+            self._set_gripper_action(action[-n_grip:])
 
         if block:
             # FIXME: This control rate sleep is never used and if used by the user
@@ -764,22 +807,20 @@ class ManipulatorJointEnv(ManipulatorBaseEnv):
                 },
             )
 
+        gripper_low, gripper_high = _gripper_action_bounds(self.config)
+
         self.action_space = gym.spaces.Box(
             low=np.concatenate(
                 [
                     np.ones((self.num_joints,), dtype=np.float32) * -np.pi,  # Joint limits
-                    np.array(
-                        [min_action_for_gripper_mode(self.config.gripper_mode)], dtype=np.float32
-                    ),
+                    gripper_low,
                 ],
                 axis=0,
             ),
             high=np.concatenate(
                 [
                     np.ones((self.num_joints,), dtype=np.float32) * np.pi,  # Joint limits
-                    np.array(
-                        [max_action_for_gripper_mode(self.config.gripper_mode)], dtype=np.float32
-                    ),
+                    gripper_high,
                 ],
                 axis=0,
             ),
@@ -798,7 +839,8 @@ class ManipulatorJointEnv(ManipulatorBaseEnv):
         """Step the environment with a Joint action.
 
         Args:
-            action (np.ndarray): Joint delta action [dtheta_1, dtheta_2, ..., dtheta_n, gripper_action].
+            action (np.ndarray): Joint delta action [dtheta_1, ..., dtheta_n, *gripper],
+                                where the gripper segment has length ``config.gripper_action_dim``.
             block (bool): If True, block to maintain the control rate.
 
         Returns:
@@ -813,12 +855,13 @@ class ManipulatorJointEnv(ManipulatorBaseEnv):
         assert action.shape == self.action_space.shape, (
             f"Action shape {action.shape} does not match expected shape {self.action_space.shape}"
         )
+        n_grip = self.config.gripper_action_dim
         target_joint = self.robot.target_joint + action[: self.num_joints]
 
         self.robot.set_target_joint(target_joint)
 
         if self.config.gripper_mode != GripperMode.NONE:
-            self._set_gripper_action(action[-1])
+            self._set_gripper_action(action[-n_grip:])
 
         if block:
             # FIXME: This control rate sleep is never used and if used by the user

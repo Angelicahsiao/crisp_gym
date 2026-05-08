@@ -1,10 +1,42 @@
-min_value: 0.0
-max_value: 1.0
-command_topic: "gripper/normalized_cmd"
+# Tesollo Delto DG3F 3-finger gripper: 12 actuated joints (4 per finger).
+# This config is consumed by crisp_py.gripper.MultiDofGripperConfig and
+# commands the delto_3f_driver from
+# https://github.com/tesollodelto/delto_b_ros2.
+#
+# The min_values / max_values arrays are raw joint positions (radians) used
+# to normalize each joint independently into [0, 1]. Replace the placeholder
+# bounds below with calibrated values from your URDF / hardware.
+
+type: multi_dof
+num_joints: 12
+
 joint_state_topic: "gripper/joint_states"
+command_topic: "gripper/target_joint"
 reboot_service: "gripper/reboot_gripper"
 enable_torque_service: "gripper/set_torque"
-index: 0
-max_delta: 0.3
+
+joint_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+joint_names:
+  - F1J1
+  - F1J2
+  - F1J3
+  - F1J4
+  - F2J1
+  - F2J2
+  - F2J3
+  - F2J4
+  - F3J1
+  - F3J2
+  - F3J3
+  - F3J4
+
+min_values: [-1.5, -1.5, -1.5, -1.5, -1.5, -1.5, -1.5, -1.5, -1.5, -1.5, -1.5, -1.5]
+max_values: [1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5]
+
+# Required by GripperConfig base class but unused in multi-DOF mode.
+min_value: 0.0
+max_value: 1.0
+
 publish_frequency: 30.0
+max_delta: 0.2
 max_joint_delay: 1.0
