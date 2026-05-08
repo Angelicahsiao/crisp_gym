@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
     image: crisp-gym-pixi:test
-    container_name: crisp-gym
+    container_name: crisp-gym-lerobot044
     volumes:
       - ~/workspace:/workspace
       - $HOME/.Xauthority:/root/.Xauthority
