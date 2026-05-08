@@ -402,6 +402,29 @@ class RobotiqFrankaEnvConfig(FrankaEnvConfig):
 
 
 @dataclass
+class DG3FFrankaEnvConfig(FrankaEnvConfig):
+    """Franka Gym Environment Configuration with the Tesollo Delto DG3F 3-finger gripper.
+
+    The DG3F is a 12-DOF gripper. Since crisp_py's Gripper interface assumes a
+    single normalized [0, 1] value, this config talks to a small bridge node
+    that maps the published 1-element command on `gripper/normalized_cmd` to
+    the 12-element `gripper/target_joint` topic expected by the
+    `delto_3f_driver` ROS2 driver from
+    https://github.com/tesollodelto/delto_b_ros2.
+    """
+
+    gripper_config: GripperConfig | None = field(
+        default_factory=lambda: GripperConfig.from_yaml(
+            path=(
+                find_config("grippers/gripper_dg3f.yaml")
+                or CRISP_CONFIG_PATH / "grippers" / "gripper_dg3f.yaml"
+            ).resolve()
+        )
+    )
+    camera_configs: List[CameraConfig] = field(default_factory=lambda: [])
+
+
+@dataclass
 class AlohaFrankaEnvConfig(FrankaEnvConfig):
     """Custom Franka Gym Environment Configuration for Franka with an Aloha gripper and cameras."""
 
@@ -565,6 +588,7 @@ STRING_TO_CONFIG = {
     "left_aloha_franka": LeftAlohaFrankaEnvConfig,
     "franka": FrankaEnvConfig,
     "robotiq_franka": RobotiqFrankaEnvConfig,
+    "dg3f_franka": DG3FFrankaEnvConfig,
     "no_cam_franka": NoCamFrankaEnvConfig,
     "left_no_cam_franka": LeftNoCamFrankaEnvConfig,
     "right_no_cam_franka": RightNoCamFrankaEnvConfig,

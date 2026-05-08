@@ -1,0 +1,10 @@
+min_value: 0.0
+max_value: 1.0
+command_topic: "gripper/normalized_cmd"
+joint_state_topic: "gripper/joint_states"
+reboot_service: "gripper/reboot_gripper"
+enable_torque_service: "gripper/set_torque"
+index: 0
+max_delta: 0.3
+publish_frequency: 30.0
+max_joint_delay: 1.0
