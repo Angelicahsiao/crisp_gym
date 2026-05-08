@@ -26,7 +26,11 @@ services:
     pid: "host"
     privileged: true
     working_dir: /workspace/crisp_gym
-    command: bash -c "if [ ! -d /workspace/crisp_gym/.pixi/envs/humble ]; then pixi install -e humble; fi && exec bash"
+    command: >
+      bash -c "
+        if [ ! -d /workspace/lerobot ]; then bash scripts/setup_lerobot.sh; fi &&
+        if [ ! -d /workspace/crisp_gym/.pixi/envs/humble ]; then pixi install -e humble; fi &&
+        exec bash"
 
   crisp-gym-deploy:
     build:
@@ -57,7 +61,10 @@ services:
     privileged: true
     working_dir: /workspace/crisp_gym
     command: >
-      bash -c "if [ ! -d /workspace/crisp_gym/.pixi/envs/humble ]; then pixi install -e humble-lerobot; fi && exec bash"
+      bash -c "
+        if [ ! -d /workspace/lerobot ]; then bash scripts/setup_lerobot.sh; fi &&
+        if [ ! -d /workspace/crisp_gym/.pixi/envs/humble-lerobot ]; then pixi install -e humble-lerobot; fi &&
+        exec bash"
     deploy:
       resources:
         reservations:
