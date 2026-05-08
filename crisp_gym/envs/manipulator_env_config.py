@@ -70,20 +70,9 @@ class ManipulatorEnvConfig(ABC):
     This class serves as a base configuration for manipulator environments.
     It includes parameters for control frequency, robot configuration,
     gripper configuration, camera configurations, and control parameters.
-
-    Attributes:
-        control_frequency (float): The frequency at which the environment is controlled.
-        robot_config (RobotConfig): Configuration for the robot.
-        gripper_config (GripperConfig | None): Configuration for the gripper, if applicable.
-        camera_configs (List[CameraConfig]): List of camera configurations.
-        cartesian_control_param_config (Path | None): Path to the Cartesian control parameters configuration file.
-        joint_control_param_config (Path | None): Path to the joint control parameters configuration file.
-        gripper_threshold (float): Threshold for gripper actions.
-        gripper_enabled (bool): Whether the gripper is enabled.
-        max_episode_steps (int | None): Maximum number of steps per episode, if applicable.
     """
 
-    control_frequency: float  # FIXME: This is not used if block=False. Remove?
+    control_frequency: float
 
     # === Core Configurations ===
     robot_config: RobotConfig
@@ -115,9 +104,8 @@ class ManipulatorEnvConfig(ABC):
     max_y: None | float = None
     max_z: None | float = None
 
-    max_episode_steps: int | None = None  # FIXME: This is not used. Remove?
+    max_episode_steps: int | None = None
 
-    # Observation configuration (camera and sensor observations are always included if configured)
     observations_to_include_to_state: List[str] = field(
         default_factory=lambda: [
             ObservationKeys.CARTESIAN_OBS,
@@ -129,11 +117,7 @@ class ManipulatorEnvConfig(ABC):
 
     @property
     def gripper_action_dim(self) -> int:
-        """Number of action dimensions occupied by the gripper.
-
-        Defaults to 1 for scalar grippers; multi-DOF gripper configs
-        report their ``num_joints``.
-        """
+        """Number of action dimensions occupied by the gripper."""
         if isinstance(self.gripper_config, MultiDofGripperConfig):
             return int(self.gripper_config.num_joints)
         return 1
@@ -142,11 +126,11 @@ class ManipulatorEnvConfig(ABC):
         """Post-initialization checks."""
         if self.gripper_enabled is not None:
             logging.warning(
-                "Deprecated: 'gripper_enabled' is deprecated, use 'gripper_mode' instead to set the control mode."
+                "Deprecated: 'gripper_enabled' is deprecated, use 'gripper_mode' instead."
             )
         if self.gripper_continuous_control is not None:
             logging.warning(
-                "Deprecated: 'gripper_continuous_control' is deprecated, use 'gripper_mode' instead to set the control mode."
+                "Deprecated: 'gripper_continuous_control' is deprecated, use 'gripper_mode' instead."
             )
 
         if isinstance(self.gripper_mode, str):
@@ -180,7 +164,6 @@ class ManipulatorEnvConfig(ABC):
                 f"Joint control param config file not found: {self.joint_control_param_config}"
             )
 
-        # Validate that the orientation representation is supported
         if isinstance(self.orientation_representation, str):
             self.orientation_representation = OrientationRepresentation(
                 self.orientation_representation
@@ -215,11 +198,6 @@ class ManipulatorEnvConfig(ABC):
         }
 
     def get_metadata(self) -> dict:
-        """Get metadata about the environment configuration.
-
-        Returns:
-            dict: Metadata dictionary containing control frequency, robot type, gripper type, and camera names.
-        """
         return {
             "robot_config": self.robot_config.__dict__,
             "gripper_config": self.gripper_config.__dict__ if self.gripper_config else "None",
@@ -235,21 +213,12 @@ class ManipulatorEnvConfig(ABC):
 
     @classmethod
     def from_yaml(cls, yaml_path: Path, **overrides) -> "ManipulatorEnvConfig":  # noqa: ANN003
-        """Load config from YAML file with optional overrides.
-
-        Args:
-            yaml_path: Path to the YAML configuration file
-            **overrides: Additional parameters to override YAML values
-
-        Returns:
-            ManipulatorEnvConfig: Configured environment instance
-        """
         with open(yaml_path, "r") as f:
             original_data = yaml.safe_load(f) or {}
 
         original_data.update(overrides)
 
-        data = dict(original_data)  # Make a shallow copy to modify
+        data = dict(original_data)
 
         if "robot_config" in data:
             if not isinstance(data["robot_config"], dict):
@@ -280,7 +249,7 @@ class ManipulatorEnvConfig(ABC):
                 data["gripper_config"] = _load_gripper_config_from_dict(gripper_cfg)
 
         if "camera_configs" in data and isinstance(data["camera_configs"], list):
-            data["camera_configs"] = []  # Reset to fill in properly
+            data["camera_configs"] = []
             for camera_cfg in original_data["camera_configs"]:
                 if "from_yaml" in camera_cfg:
                     camera_yaml_path = find_config(camera_cfg["from_yaml"])
@@ -324,7 +293,6 @@ class FrankaEnvConfig(ManipulatorEnvConfig, ABC):
 
     robot_config: RobotConfig = field(default_factory=lambda: FrankaConfig())
 
-    # Default controller configurations for Franka
     cartesian_control_param_config: Path | None = field(
         default_factory=lambda: find_config("control/default_cartesian_impedance.yaml")
         or CRISP_CONFIG_PATH / "control" / "default_cartesian_impedance.yaml"
@@ -335,22 +303,16 @@ class FrankaEnvConfig(ManipulatorEnvConfig, ABC):
     )
 
 
-
 @dataclass
 class NoCamFrankaEnvConfig(FrankaEnvConfig):
-    """Franka Gym Environment Configuration."""
-
     gripper_config: GripperConfig | None = field(
         default_factory=lambda: GripperConfig(min_value=0, max_value=1)
     )
-
     camera_configs: List[CameraConfig] = field(default_factory=lambda: [])
 
 
 @dataclass
 class LeftNoCamFrankaEnvConfig(NoCamFrankaEnvConfig):
-    """Franka Gym Environment Configuration for the left robot without cameras."""
-
     gripper_config: GripperConfig | None = field(
         default_factory=lambda: GripperConfig.from_yaml(
             path=(
@@ -362,8 +324,6 @@ class LeftNoCamFrankaEnvConfig(NoCamFrankaEnvConfig):
 
 @dataclass
 class RightNoCamFrankaEnvConfig(NoCamFrankaEnvConfig):
-    """Franka Gym Environment Configuration for the right robot without cameras."""
-
     gripper_config: GripperConfig | None = field(
         default_factory=lambda: GripperConfig.from_yaml(
             path=(
@@ -375,8 +335,6 @@ class RightNoCamFrankaEnvConfig(NoCamFrankaEnvConfig):
 
 @dataclass
 class OnlyWristCamFrankaEnvConfig(FrankaEnvConfig):
-    """Franka Gym Environment Configuration."""
-
     gripper_config: GripperConfig | None = field(
         default_factory=lambda: GripperConfig(
             min_value=0,
@@ -387,7 +345,6 @@ class OnlyWristCamFrankaEnvConfig(FrankaEnvConfig):
             enable_torque_service="gripper/dynamixel_hardware_interface/set_dxl_torque",
         )
     )
-
     camera_configs: List[CameraConfig] = field(
         default_factory=lambda: [
             CameraConfig(
@@ -400,10 +357,9 @@ class OnlyWristCamFrankaEnvConfig(FrankaEnvConfig):
         ]
     )
 
+
 @dataclass
 class RobotiqFrankaEnvConfig(FrankaEnvConfig):
-    """Franka Gym Environment Configuration."""
-
     gripper_config: GripperConfig | None = field(
         default_factory=lambda: GripperConfig(
             min_value=0,
@@ -414,13 +370,6 @@ class RobotiqFrankaEnvConfig(FrankaEnvConfig):
             enable_torque_service="robotiq_2f85/dynamixel_hardware_interface/set_dxl_torque",
         )
     )
-#   min_value: 0.8
-#   max_value: 0.0
-#   command_topic: "/robotiq_2f85/robotiq_gripper_controller/gripper_cmd"
-#   use_gripper_command_action: True
-#   max_delta: 1.0
-#   max_effort: 5.0
-
     camera_configs: List[CameraConfig] = field(
         default_factory=lambda: [
             CameraConfig(
@@ -436,13 +385,7 @@ class RobotiqFrankaEnvConfig(FrankaEnvConfig):
 
 @dataclass
 class DG3FFrankaEnvConfig(FrankaEnvConfig):
-    """Franka Gym Environment Configuration with the Tesollo Delto DG3F 3-finger gripper.
-
-    The DG3F is a 12-DOF gripper. The action space exposes per-joint normalized
-    [0, 1] targets and the env publishes ``Float64MultiArray`` (length 12) to
-    ``gripper/target_joint`` consumed by ``delto_3f_driver`` from
-    https://github.com/tesollodelto/delto_b_ros2.
-    """
+    """Franka + Tesollo Delto DG3F 3-finger gripper."""
 
     gripper_config: GripperConfig | None = field(
         default_factory=lambda: _load_gripper_config_from_yaml(
@@ -457,11 +400,6 @@ class DG3FFrankaEnvConfig(FrankaEnvConfig):
 
 @dataclass
 class AlohaFrankaEnvConfig(FrankaEnvConfig):
-    """Custom Franka Gym Environment Configuration for Franka with an Aloha gripper and cameras."""
-
-    # The aloha gripper can be controlled in a continuous manner, so we set this to True.
-    # For more information on the gripper, check: https://github.com/TUM-LSY/aloha4franka
-
     gripper_config: GripperConfig | None = field(
         default_factory=lambda: GripperConfig.from_yaml(
             path=(
@@ -470,14 +408,11 @@ class AlohaFrankaEnvConfig(FrankaEnvConfig):
         )
     )
     camera_configs: List[CameraConfig] = field(default_factory=lambda: [])
-
     max_episode_steps: int | None = 1000
 
 
 @dataclass
 class LeftAlohaFrankaEnvConfig(AlohaFrankaEnvConfig):
-    """Custom Franka Gym Environment Configuration for the left robot with an Aloha gripper and cameras."""
-
     gripper_config: GripperConfig | None = field(
         default_factory=lambda: GripperConfig.from_yaml(
             path=(
@@ -485,7 +420,6 @@ class LeftAlohaFrankaEnvConfig(AlohaFrankaEnvConfig):
             ).resolve()
         )
     )
-
     camera_configs: List[CameraConfig] = field(
         default_factory=lambda: [
             CameraConfig(
@@ -508,8 +442,6 @@ class LeftAlohaFrankaEnvConfig(AlohaFrankaEnvConfig):
 
 @dataclass
 class RightAlohaFrankaEnvConfig(AlohaFrankaEnvConfig):
-    """Custom Franka Gym Environment Configuration for the right robot with an Aloha gripper and cameras."""
-
     gripper_config: GripperConfig | None = field(
         default_factory=lambda: GripperConfig.from_yaml(
             path=(
@@ -517,7 +449,6 @@ class RightAlohaFrankaEnvConfig(AlohaFrankaEnvConfig):
             ).resolve()
         )
     )
-
     camera_configs: List[CameraConfig] = field(
         default_factory=lambda: [
             CameraConfig(
@@ -540,19 +471,16 @@ class RightAlohaFrankaEnvConfig(AlohaFrankaEnvConfig):
 
 @dataclass
 class NoCamNoGripperFrankaEnvConfig(FrankaEnvConfig):
-    """Franka Gym Environment Configuration without cameras and gripper."""
-
     gripper_config: GripperConfig | None = field(
         default_factory=lambda: GripperConfig(min_value=0, max_value=1)
     )
     camera_configs: List[CameraConfig] = field(default_factory=lambda: [])
-
     gripper_mode: GripperMode | str = GripperMode.NONE
 
 
 @dataclass(kw_only=True)
 class UREnvConfig(ManipulatorEnvConfig):
-    """Universal Robots (UR) Gym Environment Configuration."""
+    """Universal Robots (UR) Gym Environment Configuration (generic 6-DOF)."""
 
     control_frequency: float = 50.0
 
@@ -572,24 +500,35 @@ class UREnvConfig(ManipulatorEnvConfig):
     )
 
 
+@dataclass
+class DG3FUREnvConfig(UREnvConfig):
+    """Universal Robots e-series arm + Tesollo Delto DG3F 3-finger gripper.
+
+    The crisp_py ``URConfig`` is generic across the UR e-series
+    (UR3e/UR5e/UR10e/UR16e) - all have the same 6 joint names and
+    cartesian frame conventions, so a single env config covers them all.
+    Note: "UR7e" is not a standard Universal Robots model; pick a real
+    UR variant in your launch / URDF stack.
+    """
+
+    gripper_config: GripperConfig | None = field(
+        default_factory=lambda: _load_gripper_config_from_yaml(
+            (
+                find_config("grippers/gripper_dg3f.yaml")
+                or CRISP_CONFIG_PATH / "grippers" / "gripper_dg3f.yaml"
+            ).resolve()
+        )
+    )
+    camera_configs: List[CameraConfig] = field(default_factory=lambda: [])
+    gripper_mode: GripperMode | str = GripperMode.ABSOLUTE_CONTINUOUS
+
+
 def make_env_config(
     env_type: str,
     config_path: Path | str | None = None,
     **overrides,  # noqa: ANN003
 ) -> ManipulatorEnvConfig:
-    """Factory function to create an environment configuration based on the type.
-
-    This function allows for both predefined environment types and custom YAML configurations.
-    It will first check if the type is in the predefined set, and if not, it will look for a YAML config file.
-
-    Args:
-        env_type: Type of environment configuration
-        config_path: Optional path to YAML config file
-        **overrides: Additional parameters to override defaults/YAML values
-
-    Returns:
-        ManipulatorEnvConfig: Configured environment instance
-    """
+    """Factory function to create an environment configuration based on the type."""
     config_class = STRING_TO_CONFIG.get(env_type.lower())
     if config_class is None:
         config_path = find_config("envs/" + env_type.lower() + ".yaml")
@@ -607,7 +546,6 @@ def make_env_config(
 
 
 def list_env_configs() -> list[str]:
-    """List all available environment configurations."""
     predefined = list(STRING_TO_CONFIG.keys())
     other = list_configs_in_folder("envs")
     yaml_configs = [file.stem for file in other if file.suffix == ".yaml"]
@@ -626,4 +564,5 @@ STRING_TO_CONFIG = {
     "only_wrist_cam_franka": OnlyWristCamFrankaEnvConfig,
     "no_cam_no_gripper_franka": NoCamNoGripperFrankaEnvConfig,
     "ur": UREnvConfig,
+    "dg3f_ur": DG3FUREnvConfig,
 }
