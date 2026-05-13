@@ -213,7 +213,7 @@ def main():
             logger.info("Using teleop robot for the leader robot. Leader is ready.")
 
         keys_to_ignore = []
-        features = get_features(env=env, ignore_keys=keys_to_ignore)
+        features = get_features(env=env, ignore_keys=keys_to_ignore, fps=args.fps)
         logger.debug(f"Using the features: {features}")
 
         if args.use_streamed_teleop and ctrl_type != "cartesian":

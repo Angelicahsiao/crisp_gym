@@ -34,6 +34,7 @@ def get_features(
     env: ManipulatorBaseEnv,
     use_video: bool = True,
     ignore_keys: list[str] = None,
+    fps: float | None = None,
 ) -> Dict[str, Dict]:
     """Get the features used by LeRobotDataset.
 
@@ -42,6 +43,8 @@ def get_features(
         ctrl_type (str): The type of control used, either "joint" or "cartesian". Defaults to "cartesian".
         use_video (bool): Whether to include video features. Defaults to True.
         ignore_keys (list[str], optional): List of observation keys to ignore. Defaults to None.
+        fps (float | None): Recording FPS for video features. Should match the fps passed to
+            LeRobotDataset.create(). Defaults to env.config.control_frequency if not provided.
     """
     if not (CODEBASE_VERSION.startswith("v2") or CODEBASE_VERSION.startswith("v3")):
         logger.warning(
@@ -121,7 +124,7 @@ def get_features(
                     "shape": env.observation_space[original_feature_key].shape,
                     "names": ["height", "width", "channels"],
                     "video_info": {
-                        "video.fps": env.config.control_frequency,
+                        "video.fps": fps if fps is not None else env.config.control_frequency,
                         "video.codec": "av1",
                         "video.pix_fmt": "yuv420p",
                         "video.is_depth_map": False,
