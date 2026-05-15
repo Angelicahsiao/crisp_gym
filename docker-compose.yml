@@ -16,8 +16,8 @@ services:
       - ROS_DOMAIN_ID=100
       - RCUTILS_COLORIZED_OUTPUT=1
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      - NETWORK_INTERFACE=${NETWORK_INTERFACE:-lo}
-      - CYCLONEDDS_URI=file:///workspace/crisp_gym/scripts/cyclone_config.xml
+      # - NETWORK_INTERFACE=${NETWORK_INTERFACE:-lo}
+      # - CYCLONEDDS_URI=file:///workspace/crisp_gym/scripts/cyclone_config.xml
       # - CRISP_CONFIG_PATH=/workspace/configs
     network_mode: "host"
     stdin_open: true
@@ -51,8 +51,8 @@ services:
       - ROS_DOMAIN_ID=100
       - RCUTILS_COLORIZED_OUTPUT=1
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      - NETWORK_INTERFACE=${NETWORK_INTERFACE:-lo}
-      - CYCLONEDDS_URI=file:///workspace/crisp_gym/scripts/cyclone_config.xml
+      # - NETWORK_INTERFACE=${NETWORK_INTERFACE:-lo}
+      # - CYCLONEDDS_URI=file:///workspace/crisp_gym/scripts/cyclone_config.xml
     network_mode: "host"
     stdin_open: true
     tty: true
