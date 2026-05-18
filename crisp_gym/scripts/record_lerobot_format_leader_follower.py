@@ -11,7 +11,7 @@ import crisp_gym  # noqa: F401
 from crisp_gym.config.home import HomeConfig
 from crisp_gym.envs.manipulator_env import ManipulatorCartesianEnv, make_env, ManipulatorJointEnv
 from crisp_gym.envs.manipulator_env_config import list_env_configs, FrankaEnvConfig
-from crisp_gym.record.record_functions import make_teleop_fn, make_teleop_streamer_fn
+from crisp_gym.record.record_functions import make_teleop_fn, make_teleop_manus_fn, make_teleop_streamer_fn
 from crisp_gym.record.recording_manager import make_recording_manager
 from crisp_gym.teleop.teleop_robot import TeleopRobot, make_leader
 from crisp_gym.teleop.teleop_robot_config import list_leader_configs
@@ -77,25 +77,25 @@ def main():
         "--leader-config",
         type=str,
         default="right_leader",
-        help="Configuration name for the leader robot. You can define your own configurations, please check https://utiasdsl.github.io/crisp_controllers/misc/create_own_config/.",
+        help="Configuration name for the leader robot.",
     )
     parser.add_argument(
         "--follower-config",
         type=str,
         default="left_robot_env",
-        help="Configuration name for the follower robot. You can define your own configurations, please check https://utiasdsl.github.io/crisp_controllers/misc/create_own_config/.",
+        help="Configuration name for the follower robot.",
     )
     parser.add_argument(
         "--follower-namespace",
         type=str,
         default="",
-        help="Namespace for the follower robot. This is used to identify the robot in the ROS ecosystem.",
+        help="Namespace for the follower robot.",
     )
     parser.add_argument(
         "--leader-namespace",
         type=str,
         default="right",
-        help="Namespace for the leader robot. This is used to identify the robot in the ROS ecosystem.",
+        help="Namespace for the leader robot.",
     )
     parser.add_argument(
         "--joint-control",
@@ -109,17 +109,38 @@ def main():
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Set the logger level.",
     )
-
     parser.add_argument(
         "--use-streamed-teleop",
         action="store_true",
-        help="Whether to use streamed teleop (e.g., from a phone or VR device) for the leader robot.",
+        help="Use streamed teleop (phone / VR) for the arm leader.",
     )
     parser.add_argument(
         "--home-config-noise",
         type=float,
         default=0.0,
-        help="Noise to add to the home configuration when homing the robots to randomize the position a bit.",
+        help="Noise to add to the home configuration.",
+    )
+    # --- Manus glove ---
+    parser.add_argument(
+        "--use-manus-glove",
+        action="store_true",
+        help=(
+            "Use a Manus glove for gripper control instead of the leader robot's gripper. "
+            "Arm control still comes from --leader-config or --use-streamed-teleop. "
+            "Requires a multi-DOF gripper config (e.g. --follower-config dg3f_ur)."
+        ),
+    )
+    parser.add_argument(
+        "--glove-topic",
+        type=str,
+        default="/manus_glove_0",
+        help="ROS2 topic for the Manus glove (default: /manus_glove_0).",
+    )
+    parser.add_argument(
+        "--manus-retargeting-config",
+        type=str,
+        default="retargeting/manus_ergonomics_dg3f.yaml",
+        help="Retargeting config path relative to crisp_gym/config/.",
     )
 
     args = parser.parse_args()
@@ -167,25 +188,15 @@ def main():
 
     # Add Franka-specific setup logic
     if args.follower_config == "franka":
-        # Set up Franka's custom environment config
         CTRL_FREQ = 50
         BASE_DIR = Path(crisp_gym.__file__).parent
         env_config = FrankaEnvConfig(control_frequency=CTRL_FREQ, gripper_config=None, camera_configs=[])
-        # env_config.cartesian_control_param_config = str(
-        #     BASE_DIR / "config/control/default_cartesian_impedance.yaml"
-        # )
-        # env_config.joint_control_param_config = str(
-        #     BASE_DIR / "config/control/joint_control.yaml"
-        # )
         ctrl_type = "cartesian" if not args.joint_control else "joint"
         print("change path")
-        # Choose the environment based on joint or cartesian control
-        if args.joint_control:  # If joint control is enabled
+        if args.joint_control:
             env = ManipulatorJointEnv(namespace=args.follower_namespace, config=env_config)
-        else:  # Default to cartesian control
+        else:
             env = ManipulatorCartesianEnv(namespace=args.follower_namespace, config=env_config)
-
-    # If the follower config is not "franka", proceed with default logic
     else:
         ctrl_type = "cartesian" if not args.joint_control else "joint"
         env = make_env(
@@ -193,24 +204,57 @@ def main():
             control_type=ctrl_type,
             namespace=args.follower_namespace,
         )
-        print("Cartesian config:",
-            env.config.cartesian_control_param_config)
-
-        print("Joint config:",
-            env.config.joint_control_param_config)
+        print("Cartesian config:", env.config.cartesian_control_param_config)
+        print("Joint config:", env.config.joint_control_param_config)
         print("Config class:", type(env.config))
         print("Your env_type:", args.follower_config)
 
     try:
-
         leader: TeleopRobot | TeleopStreamedPose | None = None
         if args.use_streamed_teleop:
             leader = TeleopStreamedPose()
-            logger.info("Using streamed teleop for the leader robot.")
+            logger.info("Using streamed teleop for the arm.")
         else:
             leader = make_leader(args.leader_config, namespace=args.leader_namespace)
             leader.wait_until_ready()
-            logger.info("Using teleop robot for the leader robot. Leader is ready.")
+            logger.info("Leader robot is ready.")
+
+        # --- Manus glove (optional, replaces leader gripper) ---
+        glove = None
+        if args.use_manus_glove:
+            from crisp_py.gripper import MultiDofGripperConfig
+            from crisp_gym.teleop.retargeting.ergonomics_retargeter import ErgonomicsRetargeter
+            from crisp_gym.teleop.teleop_manus_glove import ManusGloveTeleop
+
+            gripper_cfg = env.config.gripper_config
+            if not isinstance(gripper_cfg, MultiDofGripperConfig):
+                raise ValueError(
+                    "--use-manus-glove requires a multi-DOF gripper config. "
+                    f"Got {type(gripper_cfg).__name__}. "
+                    "Use a follower config with a DG3F gripper (e.g. dg3f_ur)."
+                )
+            retarget_yaml = (
+                Path(crisp_gym.__file__).parent / "config" / args.manus_retargeting_config
+            )
+            if not retarget_yaml.exists():
+                raise FileNotFoundError(
+                    f"Retargeting config not found: {retarget_yaml}"
+                )
+            retargeter = ErgonomicsRetargeter.from_yaml(
+                retarget_yaml,
+                min_values=gripper_cfg.min_values,
+                max_values=gripper_cfg.max_values,
+            )
+            glove = ManusGloveTeleop(
+                retargeter=retargeter,
+                topic=args.glove_topic,
+                namespace=args.follower_namespace,
+            )
+            glove.wait_until_ready(timeout=10.0)
+            logger.info(
+                f"Manus glove ready: {retargeter.num_joints} joints, "
+                f"topic={args.glove_topic}"
+            )
 
         keys_to_ignore = []
         features = get_features(env=env, ignore_keys=keys_to_ignore, fps=args.fps)
@@ -235,17 +279,15 @@ def main():
         logger.info("Recording manager is ready.")
 
         env_metadata = env.get_metadata()
-
         with open(recording_manager.dataset_directory / "meta" / "crisp_meta.json", "w") as f:
             json.dump(env_metadata, f, indent=4)
-
         logger.info(
-            f"Environment metadata saved to {recording_manager.dataset_directory / 'meta' / 'crisp_meta.json'}"
+            f"Environment metadata saved to "
+            f"{recording_manager.dataset_directory / 'meta' / 'crisp_meta.json'}"
         )
 
         logger.info("Homing both robots before starting with recording.")
 
-        # Prepare environment and leader
         if isinstance(leader, TeleopRobot):
             leader.prepare_for_teleop()
             logger.debug("[DEBUG] leader.prepare_for_teleop() done")
@@ -263,13 +305,9 @@ def main():
         tasks = list(args.tasks)
 
         def on_start():
-            """Hook function to be called when starting a new episode."""
             env.robot.reset_targets()
             env.reset()
-
             if isinstance(leader, TeleopRobot):
-                # TODO: @danielsanjosepro: allow user to change controllers based on config
-
                 leader.robot.reset_targets()
                 leader.robot.cartesian_controller_parameters_client.load_param_config(
                     leader.config.gravity_compensation_controller
@@ -277,19 +315,15 @@ def main():
                 leader.robot.controller_switcher_client.switch_controller(
                     "cartesian_impedance_controller"
                 )
-
-                if leader.gripper is not None:
+                if leader.gripper is not None and glove is None:
                     leader.gripper.disable_torque()
 
         def on_end():
-            """Hook function to be called when stopping the recording."""
             env.robot.reset_targets()
             random_home = HomeConfig.OPEN_POSE.randomize(noise=args.home_config_noise)
             env.robot.home(blocking=False, home_config=random_home)
             if isinstance(leader, TeleopRobot):
                 leader.robot.reset_targets()
-                # Activate incase leader should go to the same position as the follower
-                # leader.robot.home(blocking=False, home_config=random_home)
                 leader.robot.home(blocking=False)
             env.gripper.open()
 
@@ -299,9 +333,11 @@ def main():
                     f"→ Episode {recording_manager.episode_count + 1} / {recording_manager.num_episodes}"
                 )
 
-                # Create a new teleop function for each episode to reset internal variables
+                # Fresh teleop fn per episode resets internal reference pose/joints.
                 teleop_fn = None
-                if isinstance(leader, TeleopRobot):
+                if glove is not None:
+                    teleop_fn = make_teleop_manus_fn(env, glove, arm_leader=leader)
+                elif isinstance(leader, TeleopRobot):
                     teleop_fn = make_teleop_fn(env, leader)
                 elif isinstance(leader, TeleopStreamedPose) and isinstance(
                     env, ManipulatorCartesianEnv
@@ -309,7 +345,8 @@ def main():
                     teleop_fn = make_teleop_streamer_fn(env, leader)
                 else:
                     raise ValueError(
-                        "Streamed teleop is only compatible with Cartesian control. Please disable joint control."
+                        "Streamed teleop is only compatible with Cartesian control. "
+                        "Please disable joint control."
                     )
 
                 task = tasks[np.random.randint(0, len(tasks))] if tasks else "No task specified."
@@ -327,10 +364,8 @@ def main():
             leader.robot.home()
         logger.info("Homing follower.")
         env.home()
-
         logger.info("Closing the environment.")
         env.close()
-
         logger.info("Finished recording.")
 
     except TimeoutError as e:
@@ -339,10 +374,8 @@ def main():
             "Please check if the robot container is running and the namespace is correct."
             "\nYou can check the topics using `ros2 topic list` command."
         )
-
     except Exception as e:
         logger.exception(f"An error occurred during recording: {e}.")
-
     finally:
         if rclpy.ok():
             rclpy.shutdown()

@@ -6,7 +6,7 @@ This module should be used in conjunction with the `RecordingManager` class.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Callable, Union
+from typing import TYPE_CHECKING, Callable, Optional, Union
 
 import numpy as np
 
@@ -15,6 +15,7 @@ from crisp_gym.util.gripper_mode import GripperMode
 
 if TYPE_CHECKING:
     from crisp_gym.envs.manipulator_env import ManipulatorBaseEnv, ManipulatorCartesianEnv
+    from crisp_gym.teleop.teleop_manus_glove import ManusGloveTeleop
     from crisp_gym.teleop.teleop_robot import TeleopRobot
     from crisp_gym.teleop.teleop_sensor_stream import TeleopStreamedPose
 
@@ -82,15 +83,6 @@ def make_teleop_streamer_fn(env: ManipulatorCartesianEnv, leader: TeleopStreamed
     first_step = True
 
     def _fn() -> tuple:
-        """Teleoperation function to be called in each step.
-
-        This function computes the action based on the current end-effector pose
-        or joint values of the leader robot, updates the gripper value, and steps
-        the environment.
-
-        Returns:
-            tuple: A tuple containing the observation from the environment and the action taken.
-        """
         nonlocal prev_pose, first_step
         if first_step:
             first_step = False
@@ -134,15 +126,6 @@ def make_teleop_fn(env: ManipulatorBaseEnv, leader: TeleopRobot) -> Callable:
     first_step = True
 
     def _fn() -> tuple:
-        """Teleoperation function to be called in each step.
-
-        This function computes the action based on the current end-effector pose
-        or joint values of the leader robot, updates the gripper value, and steps
-        the environment.
-
-        Returns:
-            tuple: A tuple containing the observation from the environment and the action taken.
-        """
         nonlocal prev_pose, prev_joint, first_step
         if first_step:
             first_step = False
@@ -172,7 +155,6 @@ def make_teleop_fn(env: ManipulatorBaseEnv, leader: TeleopRobot) -> Callable:
 
         action = None
         if env.ctrl_type is ControlType.CARTESIAN:
-            # Use the environment's orientation representation for the rotation part
             action_pose_vector = action_pose.to_array(env.config.orientation_representation)
             action = np.concatenate([action_pose_vector, gripper_arr])
         elif env.ctrl_type is ControlType.JOINT:
@@ -183,6 +165,92 @@ def make_teleop_fn(env: ManipulatorBaseEnv, leader: TeleopRobot) -> Callable:
                 "Supported types are 'cartesian' and 'joint' for delta actions."
             )
 
+        obs, *_ = env.step(action, block=False)
+        return obs, action
+
+    return _fn
+
+
+def make_teleop_manus_fn(
+    env: ManipulatorBaseEnv,
+    glove: ManusGloveTeleop,
+    arm_leader: Optional[Union[TeleopRobot, TeleopStreamedPose]] = None,
+) -> Callable:
+    """Create a teleoperation function that uses a Manus glove for gripper control.
+
+    The gripper action is taken from the glove's retargeted joint targets and
+    routed through the env's gripper mode (absolute / relative / binary).
+    The arm action comes from ``arm_leader``:
+
+    * ``TeleopRobot``        — Cartesian or joint delta from physical leader arm.
+    * ``TeleopStreamedPose`` — Cartesian delta from phone / VR stream
+                               (CARTESIAN control only).
+    * ``None``               — arm stays fixed (zero action); gripper-only recording.
+
+    Args:
+        env: Follower manipulator environment.
+        glove: Manus glove teleop instance exposing ``last_gripper_joints``.
+        arm_leader: Optional arm pose / joint source.
+
+    Returns:
+        Callable that steps the env and returns ``(obs, action)``.
+    """
+    first_step = True
+    prev_pose = None
+    prev_joint = None
+    arm_dim = env.action_space.shape[0] - env.config.gripper_action_dim
+
+    def _fn() -> tuple:
+        nonlocal first_step, prev_pose, prev_joint
+
+        if first_step:
+            first_step = False
+            if arm_leader is not None:
+                if hasattr(arm_leader, "robot"):  # TeleopRobot
+                    prev_pose = arm_leader.robot.end_effector_pose
+                    prev_joint = arm_leader.robot.joint_values
+                else:  # TeleopStreamedPose
+                    prev_pose = arm_leader.last_pose
+            return None, None
+
+        # --- arm ---
+        if arm_leader is None:
+            arm_vec = np.zeros(arm_dim, dtype=np.float32)
+        elif hasattr(arm_leader, "robot"):  # TeleopRobot
+            if env.ctrl_type is ControlType.CARTESIAN:
+                pose = arm_leader.robot.end_effector_pose
+                arm_vec = (pose - prev_pose).to_array(
+                    env.config.orientation_representation
+                ).astype(np.float32)
+                prev_pose = pose
+            else:  # JOINT
+                joint = arm_leader.robot.joint_values
+                arm_vec = (
+                    (joint - prev_joint).astype(np.float32)
+                    if env.config.use_relative_actions
+                    else joint.astype(np.float32)
+                )
+                prev_joint = joint
+        else:  # TeleopStreamedPose
+            if env.ctrl_type is not ControlType.CARTESIAN:
+                raise ValueError(
+                    "TeleopStreamedPose arm source requires CARTESIAN control."
+                )
+            pose = arm_leader.last_pose
+            arm_vec = (pose - prev_pose).to_array(
+                env.config.orientation_representation
+            ).astype(np.float32)
+            prev_pose = pose
+
+        # --- gripper ---
+        gripper_raw = _leader_gripper_to_action(
+            leader_value=glove.last_gripper_joints,
+            follower_value=env.gripper.value if env.gripper is not None else 0.0,
+            control_mode=env.config.gripper_mode,
+        )
+        gripper_arr = _fit_gripper_action_dim(gripper_raw, env.config.gripper_action_dim)
+
+        action = np.concatenate([arm_vec, gripper_arr])
         obs, *_ = env.step(action, block=False)
         return obs, action
 
