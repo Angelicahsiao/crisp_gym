@@ -6,7 +6,7 @@ This module should be used in conjunction with the `RecordingManager` class.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Callable, Union
 
 import numpy as np
 
@@ -21,21 +21,27 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+GripperValue = Union[float, np.ndarray]
+
 
 def _leader_gripper_to_action(
-    leader_value: float,
-    follower_value: float,
+    leader_value: GripperValue,
+    follower_value: GripperValue,
     control_mode: GripperMode | str,
-) -> float:
+) -> GripperValue:
     """Convert the leader gripper value to an action for the follower gripper.
 
+    Works element-wise for both scalar (1-DOF) and ``np.ndarray`` (multi-DOF)
+    inputs. Output shape matches the leader's shape; ``GripperMode.NONE``
+    returns zeros of the same shape.
+
     Args:
-        leader_value (float): The current value of the leader gripper.
-        follower_value (float): The current value of the follower gripper.
-        control_mode (GripperMode): The control mode of the gripper.
+        leader_value: Current value of the leader gripper (scalar or array).
+        follower_value: Current value of the follower gripper (same shape).
+        control_mode: Gripper control mode.
 
     Returns:
-        float: The computed gripper action for the follower.
+        Gripper action matching the leader's shape.
     """
     if isinstance(control_mode, str):
         control_mode = GripperMode(control_mode)
@@ -45,9 +51,29 @@ def _leader_gripper_to_action(
     elif control_mode in [GripperMode.RELATIVE_BINARY, GripperMode.RELATIVE_CONTINUOUS]:
         return leader_value - follower_value
     elif control_mode == GripperMode.NONE:
+        if isinstance(leader_value, np.ndarray):
+            return np.zeros_like(leader_value)
         return 0.0
     else:
         raise ValueError(f"Unsupported gripper control mode: {control_mode}")
+
+
+def _fit_gripper_action_dim(gripper_action: GripperValue, expected_dim: int) -> np.ndarray:
+    """Reshape a gripper action to match the env's expected gripper action dim.
+
+    - Scalar or ``(1,)`` input + ``expected_dim > 1``: broadcast (same value for
+      every joint; e.g. a phone open/close slider applied to all 12 DG3F joints).
+    - ``(expected_dim,)`` input: passed through as float32.
+    - Anything else: raises ``ValueError``.
+    """
+    arr = np.atleast_1d(np.asarray(gripper_action, dtype=np.float32))
+    if arr.shape[0] == expected_dim:
+        return arr
+    if arr.shape[0] == 1:
+        return np.full(expected_dim, arr[0], dtype=np.float32)
+    raise ValueError(
+        f"Gripper action has {arr.shape[0]} dim(s), env expects {expected_dim}."
+    )
 
 
 def make_teleop_streamer_fn(env: ManipulatorCartesianEnv, leader: TeleopStreamedPose) -> Callable:
@@ -78,13 +104,9 @@ def make_teleop_streamer_fn(env: ManipulatorCartesianEnv, leader: TeleopStreamed
         gripper = leader.last_gripper if leader.last_gripper is not None else 0.0
 
         action_pose_vector = action_pose.to_array(env.config.orientation_representation)
+        gripper_arr = _fit_gripper_action_dim(gripper, env.config.gripper_action_dim)
 
-        action = np.concatenate(
-            [
-                action_pose_vector,
-                [gripper],
-            ]
-        )
+        action = np.concatenate([action_pose_vector, gripper_arr])
         obs, *_ = env.step(action, block=False)
         return obs, action
 
@@ -146,14 +168,15 @@ def make_teleop_fn(env: ManipulatorBaseEnv, leader: TeleopRobot) -> Callable:
             follower_value=env.gripper.value if env.gripper is not None else 0.0,
             control_mode=env.config.gripper_mode,
         )
+        gripper_arr = _fit_gripper_action_dim(gripper_action, env.config.gripper_action_dim)
 
         action = None
         if env.ctrl_type is ControlType.CARTESIAN:
             # Use the environment's orientation representation for the rotation part
             action_pose_vector = action_pose.to_array(env.config.orientation_representation)
-            action = np.concatenate([action_pose_vector, [gripper_action]])
+            action = np.concatenate([action_pose_vector, gripper_arr])
         elif env.ctrl_type is ControlType.JOINT:
-            action = np.concatenate([action_joint, [gripper_action]])
+            action = np.concatenate([action_joint, gripper_arr])
         else:
             raise ValueError(
                 f"Unsupported control type: {env.ctrl_type}. "
