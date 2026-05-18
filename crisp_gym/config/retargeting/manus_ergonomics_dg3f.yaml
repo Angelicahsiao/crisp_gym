@@ -1,0 +1,32 @@
+# Manus glove ergonomics → DG3F joint targets (rule-based, joint-space).
+#
+# Each DG3F finger (F1, F2, F3) is mapped to a Manus finger. Per-joint scale
+# amplifies (>1) or attenuates (<1) the human → robot motion; direction
+# flips the sign when the glove and gripper axes disagree.
+#
+# Joint order within each finger (must match joint_suffixes):
+#   J1 = lateral spread at base   (MCPSpread)
+#   J2 = flexion at base          (MCPStretch)
+#   J3 = flexion at middle joint  (PIPStretch)
+#   J4 = flexion at tip joint     (DIPStretch)
+type: ergonomics
+target_gripper: dg3f
+
+finger_mapping:
+  F1: Thumb
+  F2: Index
+  F3: Middle
+
+joint_suffixes: [MCPSpread, MCPStretch, PIPStretch, DIPStretch]
+
+scale:
+  F1: [1.0, 1.0, 1.0, 1.0]
+  F2: [1.0, 1.0, 1.0, 1.0]
+  F3: [1.0, 1.0, 1.0, 1.0]
+
+direction:
+  F1: [1, 1, 1, 1]
+  F2: [1, 1, 1, 1]
+  F3: [1, 1, 1, 1]
+
+offset_deg: 0.0
