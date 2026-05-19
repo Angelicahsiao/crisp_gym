@@ -5,11 +5,9 @@ observation.state.umilike = concat(observation.state.cartesian, observation.stat
 This UMI-style flat state vector (end-effector pose + gripper) is useful for training
 policies that expect a compact proprioceptive input rather than the full state vector.
 
-The script works on lerobot 0.4.4 datasets recorded with crisp_gym. It supports both:
-- Datasets that have individual observation.state.cartesian / observation.state.gripper
-  columns (the normal crisp_gym recording path).
-- Older datasets that only expose a flat observation.state vector; in that case the
-  cartesian and gripper slices are identified via the feature ``names`` metadata.
+Datasets recorded with crisp_gym always store individual sub-keys
+(observation.state.cartesian, observation.state.gripper, observation.state.joints, …)
+alongside the flat observation.state, so this script reads those columns directly.
 
 Usage
 -----
@@ -42,59 +40,10 @@ _ADD_FRAME_HAS_TASK = "task" in signature(LeRobotDataset.add_frame).parameters
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _cartesian_meta(features: dict) -> tuple[list[str], int]:
-    """Return (names, dim) for the cartesian observation."""
-    if "observation.state.cartesian" in features:
-        info = features["observation.state.cartesian"]
-        return list(info["names"]), int(info["shape"][0])
-    # Fall back: infer from the flat observation.state names
-    state_names = features["observation.state"]["names"]
-    cart_names = [n for n in state_names if n in {"x", "y", "z", "roll", "pitch", "yaw"}]
-    return cart_names, len(cart_names)
-
-
-def _gripper_meta(features: dict) -> tuple[list[str], int]:
-    """Return (names, dim) for the gripper observation."""
-    if "observation.state.gripper" in features:
-        info = features["observation.state.gripper"]
-        return list(info["names"]), int(info["shape"][0])
-    return ["gripper"], 1
-
-
-def _flat_indices(features: dict) -> tuple[list[int], list[int]]:
-    """Return the cartesian and gripper index positions within the flat observation.state."""
-    state_names = features["observation.state"]["names"]
-    cart_set = {"x", "y", "z", "roll", "pitch", "yaw"}
-    cart_idx = [i for i, n in enumerate(state_names) if n in cart_set]
-    grip_idx = [i for i, n in enumerate(state_names) if n == "gripper"]
-    return cart_idx, grip_idx
-
-
-def _build_umilike(
-    frame: dict,
-    features: dict,
-    flat_cart_idx: list[int],
-    flat_grip_idx: list[int],
-) -> np.ndarray:
-    """Compute observation.state.umilike for a single frame."""
-    if "observation.state.cartesian" in frame and "observation.state.gripper" in frame:
-        cart = np.asarray(frame["observation.state.cartesian"], dtype=np.float32).ravel()
-        grip = np.asarray(frame["observation.state.gripper"], dtype=np.float32).ravel()
-        return np.concatenate([cart, grip])
-
-    # Fallback: slice from the flat state vector
-    state = np.asarray(frame["observation.state"], dtype=np.float32).ravel()
-    indices = flat_cart_idx + flat_grip_idx
-    return state[indices].astype(np.float32)
-
-
-def _copy_frame_value(frame: dict, key: str) -> np.ndarray:
-    """Copy a scalar-or-array state value from a frame dict to a plain numpy array."""
-    val = frame[key]
-    arr = np.asarray(val, dtype=np.float32)
-    if arr.ndim == 0:
-        return arr.reshape(1)
-    return arr.ravel()
+def _copy_state_value(frame: dict, key: str) -> np.ndarray:
+    """Return a state feature as a flat float32 array (handles scalar tensors)."""
+    arr = np.asarray(frame[key], dtype=np.float32)
+    return arr.reshape(1) if arr.ndim == 0 else arr.ravel()
 
 
 # ---------------------------------------------------------------------------
@@ -143,28 +92,22 @@ def main() -> None:
     print(f"  FPS            : {dataset.fps}")
     print(f"  Features       : {list(dataset.features.keys())}")
 
-    if "observation.state" not in dataset.features:
-        raise ValueError("Dataset does not contain 'observation.state'.")
+    # ── Validate required sub-keys are present ───────────────────────────────
+    for required in ("observation.state.cartesian", "observation.state.gripper"):
+        if required not in dataset.features:
+            raise ValueError(
+                f"Dataset is missing '{required}'. "
+                "Ensure it was recorded with crisp_gym, which stores individual "
+                "observation.state sub-keys alongside the flat observation.state."
+            )
 
-    # ── Resolve cartesian / gripper metadata ────────────────────────────────
-    cart_names, cart_dim = _cartesian_meta(dataset.features)
-    grip_names, grip_dim = _gripper_meta(dataset.features)
-    flat_cart_idx, flat_grip_idx = _flat_indices(dataset.features)
+    cart_info = dataset.features["observation.state.cartesian"]
+    grip_info = dataset.features["observation.state.gripper"]
 
-    if not flat_cart_idx and "observation.state.cartesian" not in dataset.features:
-        raise ValueError(
-            "Cannot locate cartesian dimensions (x, y, z, roll, pitch, yaw) in the "
-            "dataset. Make sure the dataset was recorded with crisp_gym and that "
-            "observation.state.cartesian or named state entries exist."
-        )
-    if not flat_grip_idx and "observation.state.gripper" not in dataset.features:
-        raise ValueError(
-            "Cannot locate 'gripper' in the dataset. Make sure observation.state.gripper "
-            "or a named 'gripper' entry in observation.state exists."
-        )
-
-    umilike_dim = cart_dim + grip_dim
+    cart_names: list[str] = list(cart_info["names"])
+    grip_names: list[str] = list(grip_info["names"])
     umilike_names = cart_names + grip_names
+    umilike_dim = int(cart_info["shape"][0]) + int(grip_info["shape"][0])
 
     print(f"\n[bold]observation.state.umilike[/bold] → {umilike_dim}D")
     print(f"  names : {umilike_names}")
@@ -196,7 +139,6 @@ def main() -> None:
         for frame in dataset:
             episode_idx = int(frame["episode_index"])
 
-            # Episode boundary: save the completed episode
             if episode_idx > current_episode:
                 new_dataset.save_episode()
                 progress.update(task_bar, advance=1)
@@ -204,7 +146,6 @@ def main() -> None:
 
             new_frame: dict = {}
 
-            # Copy every original feature
             for key in dataset.features:
                 if key == "action":
                     new_frame[key] = np.asarray(frame[key], dtype=np.float32)
@@ -212,18 +153,15 @@ def main() -> None:
                     # LeRobot stores images as (C, H, W); add_frame expects (H, W, C)
                     new_frame[key] = einops.rearrange(frame[key], "c h w -> h w c")
                 elif key.startswith("observation.state"):
-                    new_frame[key] = _copy_frame_value(frame, key)
+                    new_frame[key] = _copy_state_value(frame, key)
                 else:
                     new_frame[key] = frame[key]
 
-            # Add the new umilike feature
-            new_frame["observation.state.umilike"] = _build_umilike(
-                frame, dataset.features, flat_cart_idx, flat_grip_idx
-            )
+            cart = _copy_state_value(frame, "observation.state.cartesian")
+            grip = _copy_state_value(frame, "observation.state.gripper")
+            new_frame["observation.state.umilike"] = np.concatenate([cart, grip])
 
-            task_label: str = ""
-            if isinstance(frame, dict) and "task" in frame:
-                task_label = frame["task"]
+            task_label: str = frame["task"] if "task" in frame else ""
 
             if _ADD_FRAME_HAS_TASK:
                 new_dataset.add_frame(new_frame, task=task_label)
@@ -231,7 +169,6 @@ def main() -> None:
                 new_frame["task"] = task_label
                 new_dataset.add_frame(new_frame)
 
-        # Save the last episode
         new_dataset.save_episode()
         progress.update(task_bar, advance=1)
 
