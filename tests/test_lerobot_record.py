@@ -5,6 +5,7 @@ Covers the lerobot upgrade changes; works with both v0.4.x and v0.5.1.
   - LeRobotDataset.create() / add_frame() / save_episode() API
   - LeRobotDataset.resume() classmethod (v0.5.1+) with v0.4.x fallback
   - get_features() version check accepts v3.x
+  - get_features() expands gripper dims for multi-DOF grippers (DG3F)
 
 Run with:
     python tests/test_lerobot_record.py
@@ -99,6 +100,8 @@ _gripper_cfg.GripperConfig = object
 _gripper_pkg = sys.modules["crisp_py.gripper"]
 _gripper_pkg.Gripper = object
 _gripper_pkg.GripperConfig = object
+_gripper_pkg.MultiDofGripper = object
+_gripper_pkg.MultiDofGripperConfig = object
 _gripper_pkg.make_gripper = lambda *a, **kw: None
 
 _cam_pkg = sys.modules["crisp_py.camera"]
@@ -154,8 +157,13 @@ def run(label, fn):
 # Mock environment
 # ---------------------------------------------------------------------------
 
-def _make_mock_env(num_joints=7):
-    """Return a mock ManipulatorBaseEnv-like object with a realistic obs space."""
+def _make_mock_env(num_joints=7, gripper_action_dim=1):
+    """Return a mock ManipulatorBaseEnv-like object with a realistic obs space.
+
+    Args:
+        num_joints: arm joints (7 for Franka, 6 for UR).
+        gripper_action_dim: 1 for scalar grippers, N for multi-DOF (e.g. 12 for DG3F).
+    """
     import gymnasium
 
     obs_space = gymnasium.spaces.Dict({
@@ -163,7 +171,7 @@ def _make_mock_env(num_joints=7):
             low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32
         ),
         "observation.state.gripper": gymnasium.spaces.Box(
-            low=0.0, high=1.0, shape=(1,), dtype=np.float32
+            low=0.0, high=1.0, shape=(gripper_action_dim,), dtype=np.float32
         ),
         "observation.images.wrist": gymnasium.spaces.Box(
             low=0, high=255, shape=(480, 640, 3), dtype=np.uint8
@@ -174,6 +182,7 @@ def _make_mock_env(num_joints=7):
     config = types.SimpleNamespace(
         robot_config=robot_config,
         control_frequency=15,
+        gripper_action_dim=gripper_action_dim,
     )
 
     from crisp_gym.util.control_type import ControlType
@@ -209,6 +218,52 @@ def test_get_features():
     assert "observation.images.wrist" in features
     assert features["observation.images.wrist"]["dtype"] == "video"
     assert features["action"]["shape"] == (7,)  # 6 cartesian + 1 gripper
+    assert features["action"]["names"] == ["x", "y", "z", "roll", "pitch", "yaw", "gripper"]
+    assert features["observation.state.gripper"]["names"] == ["gripper"]
+
+
+def test_get_features_multi_dof_gripper_cartesian():
+    """get_features() should expand gripper dims for multi-DOF grippers (DG3F: 12 joints)."""
+    from crisp_gym.util.lerobot_features import get_features
+    env = _make_mock_env(num_joints=7, gripper_action_dim=12)
+    features = get_features(env, use_video=True)
+
+    # Action: 6 cartesian + 12 gripper joints = 18 dims
+    assert features["action"]["shape"] == (18,), (
+        f"Expected action shape (18,) for DG3F cartesian, got {features['action']['shape']}"
+    )
+    expected_action_names = (
+        ["x", "y", "z", "roll", "pitch", "yaw"]
+        + [f"gripper_{i}" for i in range(12)]
+    )
+    assert features["action"]["names"] == expected_action_names
+
+    # Gripper obs feature should have 12 per-joint names
+    gripper_feat = features["observation.state.gripper"]
+    assert gripper_feat["shape"] == (12,), f"Expected (12,), got {gripper_feat['shape']}"
+    assert gripper_feat["names"] == [f"gripper_{i}" for i in range(12)]
+
+    # Flat observation.state should include all gripper dims (6 cart + 12 grip = 18)
+    assert features["observation.state"]["shape"] == (18,)
+
+
+def test_get_features_multi_dof_gripper_joint():
+    """get_features() multi-DOF gripper in joint control: 7 joints + 12 gripper = 19 action dims."""
+    from crisp_gym.util.lerobot_features import get_features
+    from crisp_gym.util.control_type import ControlType
+
+    env = _make_mock_env(num_joints=7, gripper_action_dim=12)
+    env.ctrl_type = ControlType.JOINT
+    features = get_features(env, use_video=True)
+
+    assert features["action"]["shape"] == (19,), (
+        f"Expected action shape (19,) for DG3F joint, got {features['action']['shape']}"
+    )
+    expected_action_names = (
+        [f"joint_{i}" for i in range(7)]
+        + [f"gripper_{i}" for i in range(12)]
+    )
+    assert features["action"]["names"] == expected_action_names
 
 
 def test_get_features_version_check():
@@ -283,6 +338,43 @@ def test_dataset_create_add_save(tmp_dir):
     assert dataset.num_episodes == 1, f"Expected 1 episode, got {dataset.num_episodes}"
 
 
+def test_dataset_create_add_save_multi_dof(tmp_dir):
+    """End-to-end: dataset create + frame write for DG3F (12-DOF gripper)."""
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+    from crisp_gym.util.lerobot_features import get_features
+
+    env = _make_mock_env(num_joints=7, gripper_action_dim=12)
+    features = get_features(env, use_video=False)
+
+    # Schema sanity
+    assert features["action"]["shape"] == (18,)
+    assert features["observation.state.gripper"]["shape"] == (12,)
+
+    repo_id = "test_user/test_dataset_create_dg3f"
+    dataset = LeRobotDataset.create(
+        repo_id=repo_id,
+        fps=15,
+        robot_type="franka",
+        features=features,
+        root=tmp_dir / "ds_create_dg3f",
+        use_videos=False,
+    )
+
+    # 18-dim action and 12-dim gripper obs must round-trip through add_frame
+    frame = {
+        "action": np.zeros(18, dtype=np.float32),
+        "observation.state": np.zeros(18, dtype=np.float32),  # 6 cart + 12 grip
+        "observation.state.cartesian": np.zeros(6, dtype=np.float32),
+        "observation.state.gripper": np.zeros(12, dtype=np.float32),
+        "observation.images.wrist": np.zeros((480, 640, 3), dtype=np.uint8),
+    }
+    _add_frame_compat(dataset, frame, task="grasp the cube with DG3F")
+    _add_frame_compat(dataset, frame, task="grasp the cube with DG3F")
+    dataset.save_episode()
+
+    assert dataset.num_episodes == 1
+
+
 def test_lerobot_dataset_metadata_import():
     """LeRobotDatasetMetadata must be importable (v0.5.1 path or v0.4.x fallback)."""
     _, LeRobotDatasetMetadata = _import_lerobot_metadata()
@@ -355,6 +447,21 @@ def test_concatenate_state_features():
     assert out.dtype == np.float32
     np.testing.assert_array_equal(out[:6], np.arange(6, dtype=np.float32))
     assert out[6] == 0.5
+
+
+def test_concatenate_state_features_multi_dof():
+    """concatenate_state_features handles multi-DOF gripper obs (12 joints)."""
+    from crisp_gym.util.lerobot_features import concatenate_state_features
+
+    gripper_vec = np.linspace(0.0, 1.0, 12, dtype=np.float32)
+    obs = {
+        "observation.state.cartesian": np.arange(6, dtype=np.float32),
+        "observation.state.gripper": gripper_vec,
+    }
+    out = concatenate_state_features(obs)
+    assert out.shape == (18,), f"Expected (18,) for DG3F state, got {out.shape}"
+    np.testing.assert_array_equal(out[:6], np.arange(6, dtype=np.float32))
+    np.testing.assert_array_equal(out[6:], gripper_vec)
 
 
 def test_numpy_obs_to_torch():
@@ -491,14 +598,18 @@ if __name__ == "__main__":
         tmp_path = Path(tmp)
 
         run("CODEBASE_VERSION import from dataset_metadata", test_codebase_version_import)
-        run("get_features() returns valid schema", test_get_features)
+        run("get_features() returns valid schema (1-DOF gripper)", test_get_features)
+        run("get_features() expands gripper dims for DG3F (cartesian)", test_get_features_multi_dof_gripper_cartesian)
+        run("get_features() expands gripper dims for DG3F (joint)", test_get_features_multi_dof_gripper_joint)
         run("get_features() no spurious version warning", test_get_features_version_check)
-        run("LeRobotDataset.create → add_frame → save_episode", lambda: test_dataset_create_add_save(tmp_path))
+        run("LeRobotDataset.create → add_frame → save_episode (1-DOF)", lambda: test_dataset_create_add_save(tmp_path))
+        run("LeRobotDataset.create → add_frame → save_episode (DG3F 12-DOF)", lambda: test_dataset_create_add_save_multi_dof(tmp_path))
         run("LeRobotDatasetMetadata import from dataset_metadata", test_lerobot_dataset_metadata_import)
         run("RecordingManager._create_dataset() new dataset", lambda: test_recording_manager_create(tmp_path))
 
         print("\n--- Deploy / inference tests ---\n")
-        run("concatenate_state_features", test_concatenate_state_features)
+        run("concatenate_state_features (1-DOF)", test_concatenate_state_features)
+        run("concatenate_state_features (DG3F 12-DOF)", test_concatenate_state_features_multi_dof)
         run("numpy_obs_to_torch", test_numpy_obs_to_torch)
         run("USE_LEROBOT_PROCESSORS detection", test_make_pre_post_processors_detection)
         run("ACT policy save_pretrained → from_pretrained → select_action", lambda: test_policy_save_load_inference(tmp_path))
