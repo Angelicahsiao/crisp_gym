@@ -41,6 +41,21 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _add_umilike_obs(obs: dict) -> None:
+    """Add observation.state.umilike = concat(cartesian, gripper) to obs in-place.
+
+    Called after the flat observation.state is already built so that umilike is
+    not folded into the flat concatenation.  No-op when either sub-key is absent.
+    """
+    if (
+        "observation.state.cartesian" in obs
+        and "observation.state.gripper" in obs
+    ):
+        cart = np.asarray(obs["observation.state.cartesian"], dtype=np.float32).ravel()
+        grip = np.asarray(obs["observation.state.gripper"], dtype=np.float32).ravel()
+        obs["observation.state.umilike"] = np.concatenate([cart, grip])
+
+
 @register_policy("lerobot_policy")
 class LerobotPolicy(Policy):
     """A policy implementation that wraps a LeRobot policy for use in CRISP environments.
@@ -96,6 +111,7 @@ class LerobotPolicy(Policy):
             obs_raw: Observation = self.env.get_obs()
 
             obs_raw["observation.state"] = concatenate_state_features(obs_raw)
+            _add_umilike_obs(obs_raw)
 
             self.parent_conn.send(obs_raw)
             action: Action = self.parent_conn.recv().squeeze(0).to("cpu").numpy()
@@ -189,6 +205,7 @@ def inference_worker(
 
         warmup_obs_raw = env.observation_space.sample()
         warmup_obs_raw["observation.state"] = concatenate_state_features(warmup_obs_raw)
+        _add_umilike_obs(warmup_obs_raw)
         warmup_obs = numpy_obs_to_torch(warmup_obs_raw)
         if USE_LEROBOT_PROCESSORS:
             warmup_obs = preprocessor(warmup_obs)
