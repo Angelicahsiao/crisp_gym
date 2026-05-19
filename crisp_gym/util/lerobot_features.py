@@ -40,7 +40,6 @@ def get_features(
 
     Args:
         env (ManipulatorBaseEnv): The environment configuration object.
-        ctrl_type (str): The type of control used, either "joint" or "cartesian". Defaults to "cartesian".
         use_video (bool): Whether to include video features. Defaults to True.
         ignore_keys (list[str], optional): List of observation keys to ignore. Defaults to None.
         fps (float | None): Recording FPS for video features. Should match the fps passed to
@@ -51,10 +50,16 @@ def get_features(
             f"Feature generation for LeRobot has been implemented for v2.x/v3.x of LeRobotDataset. Got {CODEBASE_VERSION}. Expect unexpected behaviour."
         )
 
+    n_grip = env.config.gripper_action_dim
+    gripper_action_names = (
+        ["gripper"] if n_grip == 1 else [f"gripper_{i}" for i in range(n_grip)]
+    )
+
     ctrl_dims: dict[ControlType, list[str]] = {
-        ControlType.JOINT: [f"joint_{idx}" for idx in range(env.config.robot_config.num_joints())]
-        + ["gripper"],
-        ControlType.CARTESIAN: ["x", "y", "z", "roll", "pitch", "yaw", "gripper"],
+        ControlType.JOINT: [
+            f"joint_{idx}" for idx in range(env.config.robot_config.num_joints())
+        ] + gripper_action_names,
+        ControlType.CARTESIAN: ["x", "y", "z", "roll", "pitch", "yaw"] + gripper_action_names,
     }
 
     if env.ctrl_type not in ctrl_dims:
@@ -84,17 +89,18 @@ def get_features(
 
             names = []
             if "joint" in feature_key:
-                names = ctrl_dims[ControlType.JOINT][:-1]  # Exclude gripper from joint state
+                # Arm joint state — excludes gripper
+                names = [f"joint_{idx}" for idx in range(env.config.robot_config.num_joints())]
             elif "cartesian" in feature_key:
-                names = ctrl_dims[ControlType.CARTESIAN][
-                    :-1
-                ]  # Exclude gripper from cartesian state
+                names = ["x", "y", "z", "roll", "pitch", "yaw"]  # Excludes gripper
             elif "gripper" in feature_key:
-                names = ["gripper"]
+                # Per-joint names for multi-DOF grippers; single name for 1-DOF
+                n: int = feature_shape[0] if feature_shape else 1
+                names = ["gripper"] if n == 1 else [f"gripper_{i}" for i in range(n)]
             elif "target" in feature_key:
-                names = ["target_" + dim for dim in ctrl_dims[env.ctrl_type][:-1]]
+                names = ["target_" + dim for dim in ctrl_dims[env.ctrl_type][:-n_grip]]
             else:
-                n: int = feature_shape[0] if feature_shape is not None else 1
+                n = feature_shape[0] if feature_shape is not None else 1
                 feature_key_name = feature_key.split(".")[-1]
                 names = [f"{feature_key_name}_{i}" for i in range(n)]
 
@@ -118,7 +124,6 @@ def get_features(
                 }
             else:
                 original_feature_key = feature_key
-                # feature_key = feature_key.replace("images", "video")
                 features[feature_key] = {
                     "dtype": "video",
                     "shape": env.observation_space[original_feature_key].shape,
@@ -147,7 +152,7 @@ def get_features(
         state_feature_length, state_feature_names
     )
 
-    # Action
+    # Action: arm dims + per-joint gripper dims
     features["action"] = {
         "dtype": "float32",
         "shape": (len(ctrl_dims[env.ctrl_type]),),
@@ -239,11 +244,9 @@ def convert_observation_to_features(
 
     for feature_name, feature_config in features.items():
         if feature_name == "action":
-            # Actions are handled separately
-            continue
+            continue  # Already added above
 
         if feature_name in obs:
-            # Direct feature match
             value = obs[feature_name]
             if isinstance(value, np.ndarray) and feature_name.startswith("observation.state"):
                 converted_obs[feature_name] = value.astype(np.float32)
