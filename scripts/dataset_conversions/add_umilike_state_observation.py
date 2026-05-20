@@ -18,14 +18,19 @@ Usage
 
 The output dataset preserves every original feature unchanged and appends a new
 ``observation.state.umilike`` column.
+
+Dependencies
+------------
+    pip install lerobot einops rich
+    (no crisp_gym install required)
 """
 
 import argparse
 from inspect import signature
 
+import einops
 import numpy as np
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.envs.utils import einops
 from rich import print
 from rich.progress import Progress
 
