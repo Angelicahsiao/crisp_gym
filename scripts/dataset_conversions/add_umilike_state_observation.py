@@ -14,6 +14,7 @@ Usage
     python add_umilike_state_observation.py \\
         --source-dataset <repo_id> \\
         [--output-dataset <repo_id>] \\
+        [--root <path>] \\
         [--push-to-hub]
 
 The output dataset preserves every original feature unchanged and appends a new
@@ -27,6 +28,7 @@ Dependencies
 
 import argparse
 from inspect import signature
+from pathlib import Path
 
 import einops
 import numpy as np
@@ -72,6 +74,15 @@ def main() -> None:
         help=(
             "repo_id for the output dataset. "
             "Defaults to <source>_umilike (or replaces the last _vN suffix)."
+        ),
+    )
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help=(
+            "Local directory where the output dataset will be stored. "
+            "Defaults to HF_LEROBOT_HOME / <output-dataset> when not set."
         ),
     )
     parser.add_argument(
@@ -125,13 +136,16 @@ def main() -> None:
         "names": umilike_names,
     }
 
-    print(f"\nOutput dataset: [bold]{output_id}[/bold]")
+    root_msg = str(args.root) if args.root else "HF_LEROBOT_HOME (default)"
+    print(f"\nOutput dataset : [bold]{output_id}[/bold]")
+    print(f"Output root    : {root_msg}")
 
     # ── Create output dataset ────────────────────────────────────────────────
     new_dataset = LeRobotDataset.create(
         repo_id=output_id,
         features=new_features,
         fps=dataset.fps,
+        root=args.root,
     )
 
     # ── Iterate and copy frames ──────────────────────────────────────────────
@@ -178,6 +192,7 @@ def main() -> None:
         progress.update(task_bar, advance=1)
 
     print(f"\n[green]Done.[/green] Output dataset: [bold]{output_id}[/bold]")
+    print(f"Stored at: {new_dataset.root}")
 
     if args.push_to_hub:
         print("Pushing to Hugging Face Hub…")
