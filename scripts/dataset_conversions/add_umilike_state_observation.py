@@ -14,7 +14,7 @@ Usage
     python add_umilike_state_observation.py \\
         --source-dataset <repo_id> \\
         [--output-dataset <repo_id>] \\
-        [--root <path>] \\
+        [--output-dir <path>] \\
         [--push-to-hub]
 
 The output dataset preserves every original feature unchanged and appends a new
@@ -77,7 +77,7 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--root",
+        "--output-dir",
         type=Path,
         default=None,
         help=(
@@ -136,16 +136,16 @@ def main() -> None:
         "names": umilike_names,
     }
 
-    root_msg = str(args.root) if args.root else "HF_LEROBOT_HOME (default)"
+    dir_msg = str(args.output_dir) if args.output_dir else "HF_LEROBOT_HOME (default)"
     print(f"\nOutput dataset : [bold]{output_id}[/bold]")
-    print(f"Output root    : {root_msg}")
+    print(f"Output dir     : {dir_msg}")
 
     # ── Create output dataset ────────────────────────────────────────────────
     new_dataset = LeRobotDataset.create(
         repo_id=output_id,
         features=new_features,
         fps=dataset.fps,
-        root=args.root,
+        root=args.output_dir,
     )
 
     # ── Iterate and copy frames ──────────────────────────────────────────────
