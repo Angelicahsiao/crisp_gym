@@ -1,0 +1,41 @@
+# lerobot-train config for ACT trained with observation.state.umilike
+#
+# Usage:
+#   lerobot-train --config scripts/training_configs/act_umilike.yaml
+#
+# Before running, verify shapes against your dataset's meta/info.json:
+#   - observation.state.umilike shape  (7 for euler, 8 for quaternion)
+#   - observation.images.* shape       (typically [3, 256, 256])
+#   - action shape                     (7 for cartesian+gripper euler, 8 for franka joint+gripper)
+#
+# Camera keys depend on your env config:
+#   - AlohaFrankaEnvConfig (left/right): observation.images.primary, observation.images.wrist
+#   - OnlyWristCamFrankaEnvConfig:       observation.images.camera
+#   - RobotiqFrankaEnvConfig:            observation.images.camera
+
+dataset:
+  repo_id: "your_user/your_dataset_umilike"   # <-- set to your processed dataset
+  delta_timestamps:
+    observation.state.umilike: [0.0]
+    observation.images.primary: [0.0]          # remove if your setup has no primary camera
+    observation.images.wrist: [0.0]            # remove if your setup has no wrist camera
+    # action chunk: adjust length and spacing to match your control frequency
+    # example below: 16 steps at 25 Hz (0.04s per step) = 0.6s horizon
+    action: [0.0, 0.04, 0.08, 0.12, 0.16, 0.20, 0.24, 0.28, 0.32, 0.36, 0.40, 0.44, 0.48, 0.52, 0.56, 0.60]
+
+policy:
+  type: act
+  input_features:
+    observation.state.umilike:
+      type: STATE
+      shape: [7]              # 6D cartesian (euler) + 1D gripper; use [8] for quaternion
+    observation.images.primary:
+      type: VISUAL
+      shape: [3, 256, 256]    # remove if your setup has no primary camera
+    observation.images.wrist:
+      type: VISUAL
+      shape: [3, 256, 256]    # remove if your setup has no wrist camera
+  output_features:
+    action:
+      type: ACTION
+      shape: [7]              # match your action dim (same as state dim for cartesian+gripper)
