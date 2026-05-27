@@ -9,6 +9,9 @@ Datasets recorded with crisp_gym always store individual sub-keys
 (observation.state.cartesian, observation.state.gripper, observation.state.joints, …)
 alongside the flat observation.state, so this script reads those columns directly.
 
+The script works by copying the source dataset directory and patching only the parquet
+data files — video files are copied as-is without any re-encoding.
+
 Usage
 -----
     python add_umilike_state_observation.py \\
@@ -22,51 +25,26 @@ The output dataset preserves every original feature unchanged and appends a new
 
 Dependencies
 ------------
-    pip install lerobot einops rich
+    pip install lerobot pandas einops rich
     (no crisp_gym install required)
 """
 
 import argparse
-from inspect import signature
+import json
+import shutil
 from pathlib import Path
 
-import einops
 import numpy as np
+import pandas as pd
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from rich import print
 from rich.progress import Progress
 
-# ---------------------------------------------------------------------------
-# Compatibility shim: lerobot >= v3.0 passes ``task`` as an explicit argument
-# to add_frame; older versions expect it as a key inside the frame dict.
-# ---------------------------------------------------------------------------
-_ADD_FRAME_HAS_TASK = "task" in signature(LeRobotDataset.add_frame).parameters
+try:
+    from lerobot.utils.constants import HF_LEROBOT_HOME
+except ImportError:
+    from lerobot.constants import HF_LEROBOT_HOME
 
-# Metadata columns that lerobot manages internally and must not be passed to
-# add_frame (their presence in dataset.features varies by lerobot version).
-_LEROBOT_METADATA_KEYS = {
-    "episode_index",
-    "frame_index",
-    "index",
-    "timestamp",
-    "task_index",
-    "next.done",
-}
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _copy_state_value(frame: dict, key: str) -> np.ndarray:
-    """Return a state feature as a flat float32 array (handles scalar tensors)."""
-    arr = np.asarray(frame[key], dtype=np.float32)
-    return arr.reshape(1) if arr.ndim == 0 else arr.ravel()
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -114,12 +92,13 @@ def main() -> None:
     # ── Load source dataset ──────────────────────────────────────────────────
     print(f"\nLoading source dataset: [bold]{source_id}[/bold]")
     dataset = LeRobotDataset(repo_id=source_id)
+    source_root: Path = dataset.root
 
     print(f"  Total episodes : {dataset.meta.total_episodes}")
     print(f"  FPS            : {dataset.fps}")
     print(f"  Features       : {list(dataset.features.keys())}")
 
-    # ── Validate required sub-keys are present ───────────────────────────────
+    # ── Validate required sub-keys ───────────────────────────────────────────
     for required in ("observation.state.cartesian", "observation.state.gripper"):
         if required not in dataset.features:
             raise ValueError(
@@ -128,90 +107,100 @@ def main() -> None:
                 "observation.state sub-keys alongside the flat observation.state."
             )
 
-    cart_info = dataset.features["observation.state.cartesian"]
-    grip_info = dataset.features["observation.state.gripper"]
-
-    cart_names: list[str] = list(cart_info["names"])
-    grip_names: list[str] = list(grip_info["names"])
+    cart_names: list[str] = list(dataset.features["observation.state.cartesian"]["names"])
+    grip_names: list[str] = list(dataset.features["observation.state.gripper"]["names"])
     umilike_names = cart_names + grip_names
-    umilike_dim = int(cart_info["shape"][0]) + int(grip_info["shape"][0])
+    umilike_dim = (
+        int(dataset.features["observation.state.cartesian"]["shape"][0])
+        + int(dataset.features["observation.state.gripper"]["shape"][0])
+    )
 
     print(f"\n[bold]observation.state.umilike[/bold] → {umilike_dim}D")
     print(f"  names : {umilike_names}")
 
-    # ── Build output feature spec (exclude lerobot-managed metadata keys) ────
-    new_features = {
-        k: v for k, v in dataset.features.items() if k not in _LEROBOT_METADATA_KEYS
-    }
-    new_features["observation.state.umilike"] = {
+    # ── Resolve output path ──────────────────────────────────────────────────
+    output_root: Path = args.output_dir if args.output_dir else HF_LEROBOT_HOME / output_id
+    if output_root.exists():
+        raise FileExistsError(
+            f"Output directory already exists: {output_root}\n"
+            "Remove it or choose a different --output-dir / --output-dataset."
+        )
+
+    print(f"\nOutput dataset : [bold]{output_id}[/bold]")
+    print(f"Output dir     : {output_root}")
+
+    # ── Step 1: copy the entire source dataset ───────────────────────────────
+    # Videos are copied as-is; no re-encoding occurs.
+    print("\nCopying dataset (videos are not re-encoded)…")
+    shutil.copytree(source_root, output_root)
+
+    # ── Step 2: patch every parquet file under data/ ─────────────────────────
+    parquet_files = sorted((output_root / "data").glob("**/*.parquet"))
+    print(f"Found {len(parquet_files)} parquet file(s) to patch.")
+
+    all_umilike: list[np.ndarray] = []
+
+    with Progress() as progress:
+        task_bar = progress.add_task("Patching parquet files…", total=len(parquet_files))
+
+        for parquet_path in parquet_files:
+            df = pd.read_parquet(parquet_path)
+
+            cart = np.stack(df["observation.state.cartesian"].values).astype(np.float32)
+            grip = np.stack(df["observation.state.gripper"].values).astype(np.float32)
+            if grip.ndim == 1:
+                grip = grip.reshape(-1, 1)
+
+            umilike = np.concatenate([cart, grip], axis=1)
+            df["observation.state.umilike"] = list(umilike)
+            all_umilike.append(umilike)
+
+            df.to_parquet(parquet_path, index=False)
+            progress.advance(task_bar)
+
+    # ── Step 3: update meta/info.json ────────────────────────────────────────
+    info_path = output_root / "meta" / "info.json"
+    with open(info_path) as f:
+        info = json.load(f)
+
+    info["features"]["observation.state.umilike"] = {
         "dtype": "float32",
-        "shape": (umilike_dim,),
+        "shape": [umilike_dim],
         "names": umilike_names,
     }
 
-    dir_msg = str(args.output_dir) if args.output_dir else "HF_LEROBOT_HOME (default)"
-    print(f"\nOutput dataset : [bold]{output_id}[/bold]")
-    print(f"Output dir     : {dir_msg}")
+    with open(info_path, "w") as f:
+        json.dump(info, f, indent=2)
 
-    # ── Create output dataset ────────────────────────────────────────────────
-    new_dataset = LeRobotDataset.create(
-        repo_id=output_id,
-        features=new_features,
-        fps=dataset.fps,
-        root=args.output_dir,
-    )
+    # ── Step 4: update stats.json if present ─────────────────────────────────
+    stats_path = output_root / "meta" / "stats.json"
+    if stats_path.exists():
+        all_data = np.concatenate(all_umilike, axis=0)
 
-    # ── Iterate and copy frames ──────────────────────────────────────────────
-    with Progress() as progress:
-        task_bar = progress.add_task(
-            "Processing episodes…", total=dataset.meta.total_episodes
-        )
-        current_episode = 0
+        with open(stats_path) as f:
+            stats = json.load(f)
 
-        for frame in dataset:
-            episode_idx = int(frame["episode_index"])
+        stats["observation.state.umilike"] = {
+            "mean": all_data.mean(axis=0).tolist(),
+            "std": all_data.std(axis=0).tolist(),
+            "min": all_data.min(axis=0).tolist(),
+            "max": all_data.max(axis=0).tolist(),
+        }
 
-            if episode_idx > current_episode:
-                new_dataset.save_episode()
-                progress.update(task_bar, advance=1)
-                current_episode = episode_idx
+        with open(stats_path, "w") as f:
+            json.dump(stats, f, indent=2)
 
-            new_frame: dict = {}
-
-            for key in new_features:
-                if key == "observation.state.umilike":
-                    continue  # built separately below
-                if key == "action":
-                    new_frame[key] = np.asarray(frame[key], dtype=np.float32)
-                elif key.startswith("observation.images"):
-                    # LeRobot stores images as (C, H, W); add_frame expects (H, W, C)
-                    new_frame[key] = einops.rearrange(frame[key], "c h w -> h w c")
-                elif key.startswith("observation.state"):
-                    new_frame[key] = _copy_state_value(frame, key)
-                else:
-                    new_frame[key] = frame[key]
-
-            cart = _copy_state_value(frame, "observation.state.cartesian")
-            grip = _copy_state_value(frame, "observation.state.gripper")
-            new_frame["observation.state.umilike"] = np.concatenate([cart, grip])
-
-            task_label: str = frame["task"] if "task" in frame else ""
-
-            if _ADD_FRAME_HAS_TASK:
-                new_dataset.add_frame(new_frame, task=task_label)
-            else:
-                new_frame["task"] = task_label
-                new_dataset.add_frame(new_frame)
-
-        new_dataset.save_episode()
-        progress.update(task_bar, advance=1)
+        print("Updated meta/stats.json with umilike statistics.")
+    else:
+        print("[yellow]meta/stats.json not found — stats not updated.[/yellow]")
 
     print(f"\n[green]Done.[/green] Output dataset: [bold]{output_id}[/bold]")
-    print(f"Stored at: {new_dataset.root}")
+    print(f"Stored at: {output_root}")
 
     if args.push_to_hub:
         print("Pushing to Hugging Face Hub…")
-        new_dataset.push_to_hub()
+        output_dataset = LeRobotDataset(repo_id=output_id, root=output_root)
+        output_dataset.push_to_hub()
         print(f"[green]Pushed:[/green] {output_id}")
     else:
         print("[yellow]Tip:[/yellow] add --push-to-hub to upload the dataset.")
