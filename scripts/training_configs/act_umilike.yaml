@@ -3,10 +3,13 @@
 # Usage:
 #   lerobot-train --config scripts/training_configs/act_umilike.yaml
 #
+# CLI args override YAML values, e.g.:
+#   lerobot-train --config act_umilike.yaml --dataset.root /data --output-dir /runs/run1
+#
 # Before running, verify shapes against your dataset's meta/info.json:
 #   - observation.state.umilike shape  (7 for euler, 8 for quaternion)
 #   - observation.images.* shape       (typically [3, 256, 256])
-#   - action shape                     (7 for cartesian+gripper euler, 8 for franka joint+gripper)
+#   action shape is read automatically from the dataset, no need to set it here
 #
 # Camera keys depend on your env config:
 #   - AlohaFrankaEnvConfig (left/right): observation.images.primary, observation.images.wrist
@@ -44,7 +47,4 @@ policy:
     observation.images.wrist:
       type: VISUAL
       shape: [3, 256, 256]    # remove if your setup has no wrist camera
-  output_features:
-    action:
-      type: ACTION
-      shape: [7]              # match your action dim (same as state dim for cartesian+gripper)
+  # output_features (action) is auto-detected from the dataset's meta/info.json
