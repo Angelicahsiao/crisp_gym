@@ -42,6 +42,17 @@ from rich.progress import Progress
 # ---------------------------------------------------------------------------
 _ADD_FRAME_HAS_TASK = "task" in signature(LeRobotDataset.add_frame).parameters
 
+# Metadata columns that lerobot manages internally and must not be passed to
+# add_frame (their presence in dataset.features varies by lerobot version).
+_LEROBOT_METADATA_KEYS = {
+    "episode_index",
+    "frame_index",
+    "index",
+    "timestamp",
+    "task_index",
+    "next.done",
+}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -128,8 +139,10 @@ def main() -> None:
     print(f"\n[bold]observation.state.umilike[/bold] → {umilike_dim}D")
     print(f"  names : {umilike_names}")
 
-    # ── Build output feature spec ────────────────────────────────────────────
-    new_features = dict(dataset.features)
+    # ── Build output feature spec (exclude lerobot-managed metadata keys) ────
+    new_features = {
+        k: v for k, v in dataset.features.items() if k not in _LEROBOT_METADATA_KEYS
+    }
     new_features["observation.state.umilike"] = {
         "dtype": "float32",
         "shape": (umilike_dim,),
@@ -165,7 +178,9 @@ def main() -> None:
 
             new_frame: dict = {}
 
-            for key in dataset.features:
+            for key in new_features:
+                if key == "observation.state.umilike":
+                    continue  # built separately below
                 if key == "action":
                     new_frame[key] = np.asarray(frame[key], dtype=np.float32)
                 elif key.startswith("observation.images"):
