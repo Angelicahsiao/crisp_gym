@@ -14,7 +14,16 @@
 #   - RobotiqFrankaEnvConfig:            observation.images.camera
 
 dataset:
-  repo_id: "your_user/your_dataset_umilike"   # <-- set to your processed dataset
+  # --- Option A: dataset is in the default HF cache (~/.cache/huggingface/lerobot/) ---
+  repo_id: "your_user/your_dataset_umilike"   # <-- set to your dataset name
+  local_files_only: true
+
+  # --- Option B: dataset is at a custom path (e.g. used --output-dir /data/datasets/your_user/your_dataset_umilike) ---
+  # lerobot looks for <root>/<repo_id>, so set root to the parent directory:
+  # repo_id: "your_user/your_dataset_umilike"
+  # root: "/data/datasets"                    # dataset must be at root/repo_id
+  # local_files_only: true
+
   delta_timestamps:
     observation.state.umilike: [0.0]
     observation.images.primary: [0.0]          # remove if your setup has no primary camera
