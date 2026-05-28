@@ -5,8 +5,8 @@ max_delta_tau: 1.0
 
 nullspace.projector_type: none
 
-nullspace.stiffness: 40.0
-nullspace.damping: 12.0
+nullspace.stiffness: 10.0
+nullspace.damping: 20.0
 nullspace.max_tau: 450.0
 nullspace.regularization: 1.0e-06
 nullspace.weights.shoulder_pan_joint.value: 150.0
