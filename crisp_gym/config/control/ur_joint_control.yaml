@@ -5,8 +5,8 @@ max_delta_tau: 1.0
 
 nullspace.projector_type: none
 
-nullspace.stiffness: 10.0
-nullspace.damping: 20.0
+nullspace.stiffness: 50.0
+nullspace.damping: 14.0
 nullspace.max_tau: 450.0
 nullspace.regularization: 1.0e-06
 nullspace.weights.shoulder_pan_joint.value: 150.0
@@ -16,8 +16,8 @@ nullspace.weights.wrist_1_joint.value: 28.0
 nullspace.weights.wrist_2_joint.value: 28.0
 nullspace.weights.wrist_3_joint.value: 28.0
 
-filter.dq: 0.3
-filter.output_torque: 0.3
+filter.dq: 0.5
+filter.output_torque: 0.5
 
 stop_commands: false
 
@@ -41,7 +41,7 @@ task.error_clip.x: 0.1
 task.error_clip.y: 0.1
 task.error_clip.z: 0.1
 
-use_coriolis_compensation: false
+use_coriolis_compensation: true
 use_friction: false
 use_local_jacobian: true
 use_gravity_compensation: false
