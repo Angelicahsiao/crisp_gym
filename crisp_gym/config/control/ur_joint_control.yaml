@@ -11,10 +11,10 @@ nullspace.max_tau: 450.0
 nullspace.regularization: 1.0e-06
 nullspace.weights.shoulder_pan_joint.value: 180.0
 nullspace.weights.shoulder_lift_joint.value: 180.0
-nullspace.weights.elbow_joint.value: 290.0
-nullspace.weights.wrist_1_joint.value: 300.0
-nullspace.weights.wrist_2_joint.value: 300.0
-nullspace.weights.wrist_3_joint.value: 300.0
+nullspace.weights.elbow_joint.value: 150.0
+nullspace.weights.wrist_1_joint.value: 20.0
+nullspace.weights.wrist_2_joint.value: 20.0
+nullspace.weights.wrist_3_joint.value: 20.0
 
 filter.dq: 0.3
 filter.output_torque: 0.3
