@@ -1,18 +1,18 @@
-# lerobot-train config for ACT trained with umilike observation.state
+# lerobot-train config for diffusion policy trained with umilike observation.state
 #
 # observation.state has been replaced with concat(cartesian, gripper) by
 # add_umilike_state_observation.py, so no special input_features mapping is needed
 # — lerobot policies find 'observation.state' automatically.
 #
 # Usage:
-#   lerobot-train --config scripts/training_configs/act_umilike.yaml
+#   lerobot-train --config scripts/training_configs/diffusion_umilike.yaml
 #
 # CLI args override YAML values, e.g.:
-#   HF_LEROBOT_HOME=/path/to/datasets lerobot-train --config act_umilike.yaml --output-dir /runs/run1
+#   HF_LEROBOT_HOME=/path/to/datasets lerobot-train --config diffusion_umilike.yaml --output-dir /runs/run1
 #
 # Local dataset:
 #   Set HF_LEROBOT_HOME to the parent of <user>/<dataset> before running:
-#     HF_LEROBOT_HOME=/dric_workspaces/lerobot_ws/test_dataset_hf lerobot-train --config act_umilike.yaml
+#     HF_LEROBOT_HOME=/dric_workspaces/lerobot_ws/test_dataset_hf lerobot-train --config diffusion_umilike.yaml
 #   Then repo_id should be just "dric/franka_dual_open_panel_mix1_2_3_umi" (not the full path).
 #
 # Before running, verify shapes against your dataset's meta/info.json:
@@ -36,7 +36,7 @@ dataset:
     action: [0.0, 0.04, 0.08, 0.12, 0.16, 0.20, 0.24, 0.28, 0.32, 0.36, 0.40, 0.44, 0.48, 0.52, 0.56, 0.60]
 
 policy:
-  type: act
+  type: diffusion
   input_features:
     observation.state:
       type: STATE

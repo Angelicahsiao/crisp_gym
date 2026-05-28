@@ -1,13 +1,18 @@
-"""Post-process a crisp_gym LeRobot dataset to add observation.state.umilike.
+"""Post-process a crisp_gym LeRobot dataset to replace observation.state with umilike.
 
-observation.state.umilike = concat(observation.state.cartesian, observation.state.gripper)
+observation.state = concat(observation.state.cartesian, observation.state.gripper)
 
-This UMI-style flat state vector (end-effector pose + gripper) is useful for training
-policies that expect a compact proprioceptive input rather than the full state vector.
+This UMI-style flat state vector (end-effector pose + gripper) replaces the original
+observation.state (which was a concatenation of all sub-keys including joints, etc.).
+The individual sub-keys (observation.state.cartesian, observation.state.gripper,
+observation.state.joints, …) are left unchanged.
 
-Datasets recorded with crisp_gym always store individual sub-keys
-(observation.state.cartesian, observation.state.gripper, observation.state.joints, …)
-alongside the flat observation.state, so this script reads those columns directly.
+Replacing observation.state rather than adding a new column means standard lerobot
+policies (ACT, diffusion, etc.) will use the umilike state without any config changes,
+since they all look for the key 'observation.state' for robot_state_feature.
+
+Datasets recorded with crisp_gym always store individual sub-keys alongside the flat
+observation.state, so this script reads those columns directly.
 
 The script works by copying the source dataset directory and patching only the parquet
 data files — video files are copied as-is without any re-encoding.
@@ -20,12 +25,9 @@ Usage
         [--output-dir <path>] \\
         [--push-to-hub]
 
-The output dataset preserves every original feature unchanged and appends a new
-``observation.state.umilike`` column.
-
 Dependencies
 ------------
-    pip install lerobot pandas einops rich
+    pip install lerobot pandas rich
     (no crisp_gym install required)
 """
 
@@ -48,7 +50,7 @@ except ImportError:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Add observation.state.umilike to a crisp_gym LeRobot dataset.",
+        description="Replace observation.state with umilike (cartesian+gripper) in a crisp_gym LeRobot dataset.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -89,7 +91,7 @@ def main() -> None:
     else:
         output_id = source_id + "_umilike"
 
-    # ── Load source dataset ──────────────────────────────────────────────────
+    # ── Load source dataset ────────────────────────────────────────────────────────────────────────
     print(f"\nLoading source dataset: [bold]{source_id}[/bold]")
     dataset = LeRobotDataset(repo_id=source_id)
     source_root: Path = dataset.root
@@ -98,7 +100,7 @@ def main() -> None:
     print(f"  FPS            : {dataset.fps}")
     print(f"  Features       : {list(dataset.features.keys())}")
 
-    # ── Validate required sub-keys ───────────────────────────────────────────
+    # ── Validate required sub-keys ───────────────────────────────────────────────────────────────────────
     for required in ("observation.state.cartesian", "observation.state.gripper"):
         if required not in dataset.features:
             raise ValueError(
@@ -115,10 +117,12 @@ def main() -> None:
         + int(dataset.features["observation.state.gripper"]["shape"][0])
     )
 
-    print(f"\n[bold]observation.state.umilike[/bold] → {umilike_dim}D")
+    old_state_dim = int(dataset.features["observation.state"]["shape"][0])
+    print(f"\nOriginal observation.state dim : {old_state_dim}")
+    print(f"New observation.state (umilike): {umilike_dim}D")
     print(f"  names : {umilike_names}")
 
-    # ── Resolve output path ──────────────────────────────────────────────────
+    # ── Resolve output path ────────────────────────────────────────────────────────────────────────────
     output_root: Path = args.output_dir if args.output_dir else HF_LEROBOT_HOME / output_id
     if output_root.exists():
         raise FileExistsError(
@@ -129,12 +133,11 @@ def main() -> None:
     print(f"\nOutput dataset : [bold]{output_id}[/bold]")
     print(f"Output dir     : {output_root}")
 
-    # ── Step 1: copy the entire source dataset ───────────────────────────────
-    # Videos are copied as-is; no re-encoding occurs.
+    # ── Step 1: copy the entire source dataset ─────────────────────────────────────────────────────────────────────
     print("\nCopying dataset (videos are not re-encoded)…")
     shutil.copytree(source_root, output_root)
 
-    # ── Step 2: patch every parquet file under data/ ─────────────────────────
+    # ── Step 2: patch every parquet file under data/ ─────────────────────────────────────────────────────────
     parquet_files = sorted((output_root / "data").glob("**/*.parquet"))
     print(f"Found {len(parquet_files)} parquet file(s) to patch.")
 
@@ -152,18 +155,21 @@ def main() -> None:
                 grip = grip.reshape(-1, 1)
 
             umilike = np.concatenate([cart, grip], axis=1)
-            df["observation.state.umilike"] = list(umilike)
+            # Overwrite observation.state with the umilike data so lerobot policies
+            # that look for 'observation.state' get the compact umilike vector.
+            df["observation.state"] = list(umilike)
             all_umilike.append(umilike)
 
             df.to_parquet(parquet_path, index=False)
             progress.advance(task_bar)
 
-    # ── Step 3: update meta/info.json ────────────────────────────────────────
+    # ── Step 3: update meta/info.json ──────────────────────────────────────────────────────────────────────────────
     info_path = output_root / "meta" / "info.json"
     with open(info_path) as f:
         info = json.load(f)
 
-    info["features"]["observation.state.umilike"] = {
+    # Replace the observation.state feature definition with umilike dimensions.
+    info["features"]["observation.state"] = {
         "dtype": "float32",
         "shape": [umilike_dim],
         "names": umilike_names,
@@ -172,7 +178,7 @@ def main() -> None:
     with open(info_path, "w") as f:
         json.dump(info, f, indent=2)
 
-    # ── Step 4: update stats.json if present ─────────────────────────────────
+    # ── Step 4: update stats.json if present ────────────────────────────────────────────────────────────────────────
     stats_path = output_root / "meta" / "stats.json"
     if stats_path.exists():
         all_data = np.concatenate(all_umilike, axis=0)
@@ -180,7 +186,8 @@ def main() -> None:
         with open(stats_path) as f:
             stats = json.load(f)
 
-        stats["observation.state.umilike"] = {
+        # Replace observation.state stats with umilike stats.
+        stats["observation.state"] = {
             "mean": all_data.mean(axis=0).tolist(),
             "std": all_data.std(axis=0).tolist(),
             "min": all_data.min(axis=0).tolist(),
@@ -196,6 +203,10 @@ def main() -> None:
 
     print(f"\n[green]Done.[/green] Output dataset: [bold]{output_id}[/bold]")
     print(f"Stored at: {output_root}")
+    print(
+        f"[dim]observation.state is now {umilike_dim}D (was {old_state_dim}D). "
+        "Sub-keys (cartesian, gripper, joints…) are unchanged.[/dim]"
+    )
 
     if args.push_to_hub:
         print("Pushing to Hugging Face Hub…")
