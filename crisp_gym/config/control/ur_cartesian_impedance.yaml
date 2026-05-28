@@ -14,4 +14,4 @@ nullspace.stiffness: 2.0
 use_friction: false
 use_coriolis_compensation: true
 use_local_jacobian: true
-use_gravity_compensation: true
+use_gravity_compensation: false
