@@ -7,7 +7,7 @@ nullspace.projector_type: none
 
 nullspace.stiffness: 5.0
 nullspace.damping: 3.0
-nullspace.max_tau: 450.0
+nullspace.max_tau: 1000.0
 nullspace.regularization: 1.0e-06
 nullspace.weights.shoulder_pan_joint.value: 180.0
 nullspace.weights.shoulder_lift_joint.value: 180.0
