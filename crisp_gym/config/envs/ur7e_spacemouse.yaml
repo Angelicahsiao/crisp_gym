@@ -1,0 +1,17 @@
+control_frequency: 50.0
+gripper_enabled: false
+gripper_continuous_control: false
+
+cartesian_control_param_config: null
+joint_control_param_config: null
+
+robot_config:
+  robot_type: "ur"
+  base_frame: "base_link"
+  target_frame: "tool0"
+  current_pose_topic: "/cartesian_motion_controller/current_pose"
+  target_pose_topic: "/cartesian_motion_controller/target_frame"
+  joint_states_topic: "/joint_states"
+
+camera_configs: []
+sensor_configs: []
