@@ -26,7 +26,11 @@ from typing_extensions import override
 
 from crisp_gym.envs.manipulator_env import ManipulatorBaseEnv
 from crisp_gym.policy.policy import Action, Observation, Policy, register_policy
-from crisp_gym.util.lerobot_features import concatenate_state_features, numpy_obs_to_torch
+from crisp_gym.util.lerobot_features import (
+    concatenate_state_features,
+    get_features,
+    numpy_obs_to_torch,
+)
 from crisp_gym.util.setup_logger import setup_logging
 
 try:
@@ -54,36 +58,98 @@ def _apply_umilike_state(obs: dict) -> dict:
     return obs
 
 
-def _detect_umilike(policy, env: ManipulatorBaseEnv, logger: logging.Logger) -> bool:
+def _umilike_names_and_dim(env: ManipulatorBaseEnv) -> tuple[list[str], int] | None:
+    """Return (names, dim) of the umilike state for this env, or None if unavailable.
+
+    The umilike state is concat(observation.state.cartesian, observation.state.gripper).
+    Names and shapes are derived exactly the way the recording pipeline / the
+    add_umilike_state_observation.py script produce them, so they can be compared
+    against the training dataset's stored observation.state names.
+    """
+    try:
+        env_features = get_features(env, use_video=True)
+    except Exception:
+        return None
+
+    cart = env_features.get("observation.state.cartesian")
+    grip = env_features.get("observation.state.gripper")
+    if cart is None or grip is None:
+        return None
+
+    names = list(cart["names"]) + list(grip["names"])
+    dim = int(np.prod(cart["shape"])) + int(np.prod(grip["shape"]))
+    return names, dim
+
+
+def _detect_umilike(
+    policy,
+    env: ManipulatorBaseEnv,
+    train_config: TrainPipelineConfig,
+    logger: logging.Logger,
+) -> bool:
     """Return True if the loaded policy expects umilike state.
 
-    Compares the model's expected observation.state dim against the umilike dim
-    (cartesian + gripper) derived from the environment's observation space.
-    Falls back to full concatenated state if sub-keys are absent or dims differ.
+    Detection order:
+      1. Name-based (most reliable): compare the training dataset's stored
+         observation.state names against the env's umilike names
+         (cartesian + gripper).  Requires the training dataset to be reachable.
+      2. Dim-based fallback: compare the model's expected observation.state dim
+         against the umilike dim.  Works offline with only the model + env.
+
+    Falls back to the full concatenated state when neither check confirms umilike.
     """
-    if not (hasattr(policy.config, "robot_state_feature") and policy.config.robot_state_feature is not None):
+    feat = getattr(policy.config, "robot_state_feature", None)
+    if feat is None:
+        logger.info("[Inference] Policy has no robot_state_feature; using full state.")
         return False
+    expected_dim = int(feat.shape[0])
 
-    expected_dim = policy.config.robot_state_feature.shape[0]
-    sample = env.observation_space.sample()
-
-    if "observation.state.cartesian" not in sample or "observation.state.gripper" not in sample:
+    umilike = _umilike_names_and_dim(env)
+    if umilike is None:
+        logger.info(
+            "[Inference] cartesian/gripper features unavailable in env; using full state."
+        )
         return False
+    umilike_names, umilike_dim = umilike
 
-    cart_dim = int(np.asarray(sample["observation.state.cartesian"]).size)
-    grip_dim = int(np.asarray(sample["observation.state.gripper"]).size)
-    umilike_dim = cart_dim + grip_dim
+    # 1) Name-based check against the training dataset metadata.
+    try:
+        meta = LeRobotDatasetMetadata(repo_id=train_config.dataset.repo_id)
+        state_feature = meta.info["features"].get("observation.state", {})
+        state_names = state_feature.get("names")
+        if state_names is not None:
+            if list(state_names) == umilike_names:
+                logger.info(
+                    f"[Inference] Training observation.state names {list(state_names)} "
+                    f"match umilike. Using umilike state."
+                )
+                return True
+            logger.info(
+                f"[Inference] Training observation.state names {list(state_names)} "
+                f"do not match umilike names {umilike_names}. Using full state."
+            )
+            return False
+        logger.info(
+            "[Inference] Training metadata has no observation.state names; "
+            "falling back to dim comparison."
+        )
+    except Exception as e:
+        logger.info(
+            f"[Inference] Could not read training dataset metadata ({e}); "
+            "falling back to dim comparison."
+        )
 
+    # 2) Dim-based fallback.
     if expected_dim == umilike_dim:
         logger.info(
-            f"[Inference] Model expects {expected_dim}D state = umilike "
-            f"(cartesian {cart_dim}D + gripper {grip_dim}D). Using umilike state."
+            f"[Inference] Model expects {expected_dim}D state = umilike dim "
+            f"({umilike_names}). Using umilike state."
         )
         return True
 
     logger.info(
-        f"[Inference] Model expects {expected_dim}D state (umilike would be {umilike_dim}D). "
-        "Using full concatenated state."
+        f"[Inference] Model expects {expected_dim}D state (umilike would be "
+        f"{umilike_dim}D). Using full concatenated state."
     )
     return False
 
@@ -236,7 +302,7 @@ def inference_worker(
 
         # Detect whether the model was trained with umilike state.
         # If so, the worker rewrites observation.state before calling select_action.
-        use_umilike = _detect_umilike(policy, env, logger)
+        use_umilike = _detect_umilike(policy, env, train_config, logger)
 
         # ── Warm-up ───────────────────────────────────────────────────────────
         warmup_obs_raw = env.observation_space.sample()
