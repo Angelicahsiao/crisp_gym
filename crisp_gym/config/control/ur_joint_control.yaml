@@ -1,20 +1,23 @@
 limit_error: true
 limit_torques: true
 
-max_delta_tau: 0.5
+max_delta_tau: 2.0
 
 nullspace.projector_type: none
 
 nullspace.stiffness: 5.0
-nullspace.damping: 1.0
-nullspace.max_tau: 100.0
+nullspace.damping: 3.0
+nullspace.max_tau: 1000.0
 nullspace.regularization: 1.0e-06
-nullspace.weights.shoulder_pan_joint.value: 100.0
-nullspace.weights.shoulder_lift_joint.value: 100.0
-nullspace.weights.elbow_joint.value: 100.0
-nullspace.weights.wrist_1_joint.value: 50.0
-nullspace.weights.wrist_2_joint.value: 50.0
-nullspace.weights.wrist_3_joint.value: 20.0
+nullspace.weights.shoulder_pan_joint.value: 180.0
+nullspace.weights.shoulder_lift_joint.value: 180.0
+nullspace.weights.elbow_joint.value: 150.0
+nullspace.weights.wrist_1_joint.value: 5.0
+nullspace.weights.wrist_2_joint.value: 5.0
+nullspace.weights.wrist_3_joint.value: 5.0
+
+filter.dq: 0.3
+filter.output_torque: 0.3
 
 stop_commands: false
 
@@ -38,8 +41,8 @@ task.error_clip.x: 0.1
 task.error_clip.y: 0.1
 task.error_clip.z: 0.1
 
-use_coriolis_compensation: true
+use_coriolis_compensation: false
 use_friction: false
 use_local_jacobian: true
-use_gravity_compensation: true
+use_gravity_compensation: false
 use_operational_space: false
