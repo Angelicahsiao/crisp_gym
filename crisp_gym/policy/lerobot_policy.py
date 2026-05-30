@@ -41,19 +41,51 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-def _add_umilike_obs(obs: dict) -> None:
-    """Add observation.state.umilike = concat(cartesian, gripper) to obs in-place.
+def _apply_umilike_state(obs: dict) -> dict:
+    """Overwrite observation.state with concat(cartesian, gripper) in-place.
 
-    Called after the flat observation.state is already built so that umilike is
-    not folded into the flat concatenation.  No-op when either sub-key is absent.
+    Called inside the inference worker when the loaded model was trained with
+    umilike state (observation.state = cartesian + gripper).  The individual
+    sub-keys remain untouched so the recording side is unaffected.
     """
-    if (
-        "observation.state.cartesian" in obs
-        and "observation.state.gripper" in obs
-    ):
-        cart = np.asarray(obs["observation.state.cartesian"], dtype=np.float32).ravel()
-        grip = np.asarray(obs["observation.state.gripper"], dtype=np.float32).ravel()
-        obs["observation.state.umilike"] = np.concatenate([cart, grip])
+    cart = np.asarray(obs["observation.state.cartesian"], dtype=np.float32).ravel()
+    grip = np.asarray(obs["observation.state.gripper"], dtype=np.float32).ravel()
+    obs["observation.state"] = np.concatenate([cart, grip])
+    return obs
+
+
+def _detect_umilike(policy, env: ManipulatorBaseEnv, logger: logging.Logger) -> bool:
+    """Return True if the loaded policy expects umilike state.
+
+    Compares the model's expected observation.state dim against the umilike dim
+    (cartesian + gripper) derived from the environment's observation space.
+    Falls back to full concatenated state if sub-keys are absent or dims differ.
+    """
+    if not (hasattr(policy.config, "robot_state_feature") and policy.config.robot_state_feature is not None):
+        return False
+
+    expected_dim = policy.config.robot_state_feature.shape[0]
+    sample = env.observation_space.sample()
+
+    if "observation.state.cartesian" not in sample or "observation.state.gripper" not in sample:
+        return False
+
+    cart_dim = int(np.asarray(sample["observation.state.cartesian"]).size)
+    grip_dim = int(np.asarray(sample["observation.state.gripper"]).size)
+    umilike_dim = cart_dim + grip_dim
+
+    if expected_dim == umilike_dim:
+        logger.info(
+            f"[Inference] Model expects {expected_dim}D state = umilike "
+            f"(cartesian {cart_dim}D + gripper {grip_dim}D). Using umilike state."
+        )
+        return True
+
+    logger.info(
+        f"[Inference] Model expects {expected_dim}D state (umilike would be {umilike_dim}D). "
+        "Using full concatenated state."
+    )
+    return False
 
 
 @register_policy("lerobot_policy")
@@ -95,23 +127,16 @@ class LerobotPolicy(Policy):
         self.inf_proc.start()
 
     @override
-    def make_data_fn(self) -> Callable[[], Tuple[Observation, Action]]:  # noqa: ANN002, ANN003
+    def make_data_fn(self) -> Callable[[], Tuple[Observation, Action]]:
         """Generate observation and action by communicating with the inference worker."""
 
         def _fn() -> tuple:
-            """Function to apply the policy in the environment.
-
-            This function observes the current state of the environment, sends the observation
-            to the inference worker, receives the action, and steps the environment.
-
-            Returns:
-                tuple: A tuple containing the observation from the environment and the action taken.
-            """
             logger.debug("Requesting action from policy...")
             obs_raw: Observation = self.env.get_obs()
 
+            # Build the full flat state; the inference worker will overwrite
+            # observation.state with the umilike vector if the model needs it.
             obs_raw["observation.state"] = concatenate_state_features(obs_raw)
-            _add_umilike_obs(obs_raw)
 
             self.parent_conn.send(obs_raw)
             action: Action = self.parent_conn.recv().squeeze(0).to("cpu").numpy()
@@ -143,11 +168,18 @@ def inference_worker(
     pretrained_path: str,
     env: ManipulatorBaseEnv,
     overrides: dict | None = None,
-):  # noqa: ANN001
-    """Policy inference process: loads policy on GPU, receives observations via conn, returns actions, and exits on None.
+):
+    """Policy inference process.
+
+    Loads the policy on GPU, receives observations via conn, returns actions,
+    and exits on None.
+
+    For models trained with umilike state (observation.state = cartesian + gripper),
+    the worker automatically rewrites observation.state before calling select_action.
+    Models trained with the full concatenated state work unchanged.
 
     Args:
-        conn (Connection): The connection to the parent process for sending and receiving data.
+        conn (Connection): The connection to the parent process.
         pretrained_path (str): Path to the pretrained policy model.
         env (ManipulatorBaseEnv): The environment in which the policy will be applied.
         overrides (dict | None): Optional overrides for the policy configuration.
@@ -169,13 +201,9 @@ def inference_worker(
         logger.info(f"[Inference] Using device: {device}")
 
         logger.info(f"[Inference] Loading training config from {pretrained_path}...")
-
         train_config = TrainPipelineConfig.from_pretrained(pretrained_path)
-
         _check_dataset_metadata(train_config, env, logger)
-
         logger.info("[Inference] Loaded training config.")
-
         logger.debug(f"[Inference] Train config: {train_config}")
 
         if train_config.policy is None:
@@ -190,7 +218,8 @@ def inference_worker(
 
         for override_key, override_value in (overrides or {}).items():
             logger.warning(
-                f"[Inference] Overriding policy config: {override_key} = {getattr(policy.config, override_key)} -> {override_value}"
+                f"[Inference] Overriding policy config: {override_key} = "
+                f"{getattr(policy.config, override_key)} -> {override_value}"
             )
             setattr(policy.config, override_key, override_value)
 
@@ -201,11 +230,19 @@ def inference_worker(
         policy.to(device).eval()
 
         if USE_LEROBOT_PROCESSORS:
-            preprocessor, postprocessor = make_pre_post_processors(policy_cfg=policy.config, pretrained_path=pretrained_path)
+            preprocessor, postprocessor = make_pre_post_processors(
+                policy_cfg=policy.config, pretrained_path=pretrained_path
+            )
 
+        # Detect whether the model was trained with umilike state.
+        # If so, the worker rewrites observation.state before calling select_action.
+        use_umilike = _detect_umilike(policy, env, logger)
+
+        # ── Warm-up ───────────────────────────────────────────────────────────
         warmup_obs_raw = env.observation_space.sample()
         warmup_obs_raw["observation.state"] = concatenate_state_features(warmup_obs_raw)
-        _add_umilike_obs(warmup_obs_raw)
+        if use_umilike:
+            warmup_obs_raw = _apply_umilike_state(warmup_obs_raw)
         warmup_obs = numpy_obs_to_torch(warmup_obs_raw)
         if USE_LEROBOT_PROCESSORS:
             warmup_obs = preprocessor(warmup_obs)
@@ -219,22 +256,20 @@ def inference_worker(
                 start = time.time()
                 _ = policy.select_action(warmup_obs)
                 end = time.time()
-                elapsed = end - start
-                elapsed_list.append(elapsed)
+                elapsed_list.append(end - start)
 
             torch.cuda.synchronize()
 
         avg_elapsed = sum(elapsed_list) / len(elapsed_list)
         std_elapsed = np.std(elapsed_list)
-        max_elapsed = max(elapsed_list)
-        min_elapsed = min(elapsed_list)
         logger.info(
             f"[Inference] Warm-up timing over 100 runs: "
-            f"avg={avg_elapsed * 1000:.2f}ms, std={std_elapsed * 1000:.2f}ms, max={max_elapsed * 1000:.2f}ms, min={min_elapsed * 1000:.2f}ms"
+            f"avg={avg_elapsed * 1000:.2f}ms, std={std_elapsed * 1000:.2f}ms, "
+            f"max={max(elapsed_list) * 1000:.2f}ms, min={min(elapsed_list) * 1000:.2f}ms"
         )
-
         logger.info("[Inference] Warm-up complete")
 
+        # ── Inference loop ────────────────────────────────────────────────────
         while True:
             obs_raw = conn.recv()
             if obs_raw is None:
@@ -246,6 +281,9 @@ def inference_worker(
                     preprocessor.reset()
                     postprocessor.reset()
                 continue
+
+            if use_umilike:
+                obs_raw = _apply_umilike_state(obs_raw)
 
             with torch.inference_mode():
                 obs = numpy_obs_to_torch(obs_raw)
