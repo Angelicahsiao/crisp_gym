@@ -9,9 +9,10 @@ task.k_rot_x: 30.0
 task.k_rot_y: 30.0
 task.k_rot_z: 30.0
 
-nullspace.stiffness: 2.0
+nullspace.stiffness: 0.0
 
 use_friction: false
 use_coriolis_compensation: true
 use_local_jacobian: true
-use_gravity_compensation: true
+use_gravity_compensation: false
+use_operational_space: true
