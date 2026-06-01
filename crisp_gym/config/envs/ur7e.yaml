@@ -2,6 +2,7 @@ control_frequency: 50.0
 
 robot_config:
   robot_type: "ur"
+  has_effort_feedback: true
 
 gripper_config: null
 camera_configs: []

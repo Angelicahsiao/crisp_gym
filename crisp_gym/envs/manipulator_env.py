@@ -223,6 +223,12 @@ class ManipulatorBaseEnv(gym.Env):
                 high=np.ones((self.config.robot_config.num_joints(),), dtype=np.float32) * np.pi,
                 dtype=np.float32,
             ),
+            # Joint effort (only included if robot supports it)
+            ObservationKeys.EFFORT_OBS: gym.spaces.Box(
+                low=np.full((self.config.robot_config.num_joints(),), -np.inf, dtype=np.float32),
+                high=np.full((self.config.robot_config.num_joints(),), np.inf, dtype=np.float32),
+                dtype=np.float32,
+            ),
         }
         selected_observations = {}
         for key in observation_spaces:
@@ -357,6 +363,10 @@ class ManipulatorBaseEnv(gym.Env):
         # Joint state
         if ObservationKeys.JOINT_OBS in self.config.observations_to_include_to_state:
             obs[ObservationKeys.JOINT_OBS] = self.robot.joint_values
+
+        # Joint effort
+        if ObservationKeys.EFFORT_OBS in self.config.observations_to_include_to_state:
+            obs[ObservationKeys.EFFORT_OBS] = self.robot.current_joint_effort
 
         # Camera images
         for camera in self.cameras:
