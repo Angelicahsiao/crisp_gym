@@ -45,21 +45,28 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _is_local_path(path: str) -> bool:
+    """Return True if path looks like a local filesystem path rather than a HF repo-id."""
+    return path.startswith("/") or path.startswith("./") or path.startswith("../")
+
+
 def _resolve_checkpoint_paths(pretrained_path: str) -> tuple[str, str]:
     """Resolve a checkpoint path to (train_config_path, model_load_path).
 
     lerobot training produces this layout::
 
         {run}/
-          train_config.json          <- training config
           {step}/
             pretrained_model/        <- HF-format model dir
-            training_state/          <- optimizer / scheduler state
+              train_config.json      <- training config
+              config.json            <- policy config
+              model.safetensors
+            training_state/
 
-    ``TrainPipelineConfig.from_pretrained`` only accepts a *file* path for
-    local checkpoints (not a directory).  ``policy.from_pretrained`` accepts
-    a directory but expects HF-format content, i.e. the ``pretrained_model``
-    subdirectory, not the step directory.
+    ``TrainPipelineConfig.from_pretrained`` uses ``os.path.isfile()`` to
+    detect a local path, so it must receive the actual ``.json`` file, not a
+    directory.  ``policy.from_pretrained`` accepts a directory and expects
+    HF-format content (the ``pretrained_model`` subdirectory).
 
     For HuggingFace repo-ids (e.g. ``"user/repo"``) both values are the
     original string unchanged.
@@ -67,13 +74,26 @@ def _resolve_checkpoint_paths(pretrained_path: str) -> tuple[str, str]:
     Returns:
         (train_config_path, model_load_path)
     """
-    p = Path(pretrained_path)
-    if not p.is_dir():
-        # HF repo-id or direct file path — leave unchanged
+    if not _is_local_path(pretrained_path):
+        # HF repo-id — leave unchanged
         return pretrained_path, pretrained_path
 
-    # --- Locate the train config file ---
-    # Search order: step dir itself, pretrained_model subdir, parent (run) dir
+    p = Path(pretrained_path)
+
+    if not p.exists():
+        raise FileNotFoundError(
+            f"Checkpoint path does not exist: {pretrained_path}\n"
+            "Check that the path is correct and that the filesystem is mounted.\n"
+            "Hint: if the path starts with '/workspaces', the Docker bind mount "
+            "may be at '/workspace' (no trailing 's') instead."
+        )
+
+    if p.is_file():
+        # Caller already pointed at the config file directly
+        return str(p), str(p.parent)
+
+    # p is a directory — search for the train config file.
+    # lerobot saves train_config.json inside pretrained_model/ within the step dir.
     train_config_candidates = [
         p / "train_config.json",
         p / "config.json",
@@ -93,10 +113,9 @@ def _resolve_checkpoint_paths(pretrained_path: str) -> tuple[str, str]:
             f"Searched:\n  {searched}"
         )
 
-    # --- Locate the HF model directory for policy.from_pretrained ---
-    # Prefer the pretrained_model/ subdir when present
+    # Use the pretrained_model/ subdirectory for policy.from_pretrained when present
     pretrained_model_subdir = p / "pretrained_model"
-    model_load_path = str(pretrained_model_subdir) if pretrained_model_subdir.is_dir() else pretrained_path
+    model_load_path = str(pretrained_model_subdir) if pretrained_model_subdir.is_dir() else str(p)
 
     return train_config_path, model_load_path
 
