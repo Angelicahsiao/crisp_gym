@@ -21,7 +21,11 @@ except ImportError:
 from typing_extensions import override
 
 from crisp_gym.envs.manipulator_env import ManipulatorBaseEnv
-from crisp_gym.policy.lerobot_policy import _resolve_checkpoint_paths
+from crisp_gym.policy.lerobot_policy import (
+    _apply_umilike_state,
+    _detect_umilike,
+    _resolve_checkpoint_paths,
+)
 from crisp_gym.policy.policy import Action, Observation, Policy, register_policy
 from crisp_gym.util.lerobot_features import concatenate_state_features, numpy_obs_to_torch
 
@@ -143,6 +147,7 @@ def inference_worker(  # noqa: D417
         inpainting (bool): Whether to use inpainting in the prediction of a new chunk or not
         replan_time (int): After how many steps to start predicting a new action chunk
     """
+    logger = logging.getLogger(__name__)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     train_config_path, model_load_path = _resolve_checkpoint_paths(pretrained_path)
@@ -190,6 +195,12 @@ def inference_worker(  # noqa: D417
             policy_cfg=policy.config, pretrained_path=model_load_path
         )
 
+    # Detect whether the model was trained with umilike state
+    # (observation.state = cartesian + gripper).  If so, rewrite observation.state
+    # before feeding it to the policy.  Models trained with the full concatenated
+    # state are unaffected.
+    use_umilike = _detect_umilike(policy, env, train_config, logger)
+
     # Read policy config to know obs/action window sizes
     cfg = policy.config
     n_obs = int(cfg.n_obs_steps)
@@ -224,6 +235,8 @@ def inference_worker(  # noqa: D417
             for idx in range(len(obs_seq)):
                 obs = obs_seq[idx]
                 obs["observation.state"] = concatenate_state_features(obs)
+                if use_umilike:
+                    obs = _apply_umilike_state(obs)
                 batch = numpy_obs_to_torch(obs)
                 if USE_LEROBOT_PROCESSORS:
                     batch = preprocessor(batch)
