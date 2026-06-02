@@ -19,6 +19,7 @@ except ImportError:
 from typing_extensions import override
 
 from crisp_gym.envs.manipulator_env import ManipulatorBaseEnv
+from crisp_gym.policy.lerobot_policy import _resolve_checkpoint_paths
 from crisp_gym.policy.policy import Action, Observation, Policy, register_policy
 from crisp_gym.util.lerobot_features import concatenate_state_features, numpy_obs_to_torch
 
@@ -141,7 +142,9 @@ def inference_worker(  # noqa: D417
         replan_time (int): After how many steps to start predicting a new action chunk
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    train_config = TrainPipelineConfig.from_pretrained(pretrained_path)
+
+    train_config_path, model_load_path = _resolve_checkpoint_paths(pretrained_path)
+    train_config = TrainPipelineConfig.from_pretrained(train_config_path)
     if train_config.policy is None:
         raise ValueError(
             f"Policy configuration is missing in the pretrained path: {pretrained_path}. "
@@ -149,7 +152,7 @@ def inference_worker(  # noqa: D417
         )
     policy_cls = get_policy_class(train_config.policy.type)
 
-    policy_config = PreTrainedConfig.from_pretrained(pretrained_path)
+    policy_config = PreTrainedConfig.from_pretrained(model_load_path)
 
     if steps is not None:
         # Check if the number of steps make sense
@@ -166,7 +169,7 @@ def inference_worker(  # noqa: D417
             0, int(policy_config.n_action_steps) - int(replan_time)
         )
 
-    policy = policy_cls.from_pretrained(pretrained_path, config=policy_config)
+    policy = policy_cls.from_pretrained(model_load_path, config=policy_config)
 
     logging.info(
         f"[Inference] Loaded {policy.name} policy with {pretrained_path} on device {device}."
