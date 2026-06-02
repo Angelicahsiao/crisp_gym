@@ -45,6 +45,30 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+def _resolve_train_config_path(pretrained_path: str) -> str:
+    """Resolve a local checkpoint directory to the train config file path.
+
+    TrainPipelineConfig.from_pretrained() only handles a local path when it
+    points directly to a file.  When given a directory it falls through to
+    hf_hub_download, which rejects absolute paths (multiple slashes) as
+    invalid repo-ids.  This helper detects that case and returns the path to
+    the config file inside the directory.
+
+    For HuggingFace repo-ids (e.g. "user/repo") the input is returned as-is.
+    """
+    p = Path(pretrained_path)
+    if not p.is_dir():
+        return pretrained_path
+    for candidate in ("train_config.json", "config.json"):
+        candidate_path = p / candidate
+        if candidate_path.exists():
+            return str(candidate_path)
+    raise FileNotFoundError(
+        f"Could not find train_config.json or config.json in {pretrained_path}. "
+        "Ensure the checkpoint directory contains a valid training config."
+    )
+
+
 def _apply_umilike_state(obs: dict) -> dict:
     """Overwrite observation.state with concat(cartesian, gripper) in-place.
 
@@ -267,7 +291,10 @@ def inference_worker(
         logger.info(f"[Inference] Using device: {device}")
 
         logger.info(f"[Inference] Loading training config from {pretrained_path}...")
-        train_config = TrainPipelineConfig.from_pretrained(pretrained_path)
+        # from_pretrained only handles a local *file* path, not a directory.
+        # Resolve the checkpoint directory to the actual config file.
+        train_config_path = _resolve_train_config_path(pretrained_path)
+        train_config = TrainPipelineConfig.from_pretrained(train_config_path)
         _check_dataset_metadata(train_config, env, logger)
         logger.info("[Inference] Loaded training config.")
         logger.debug(f"[Inference] Train config: {train_config}")
@@ -304,7 +331,7 @@ def inference_worker(
         # If so, the worker rewrites observation.state before calling select_action.
         use_umilike = _detect_umilike(policy, env, train_config, logger)
 
-        # ── Warm-up ───────────────────────────────────────────────────────────
+        # ── Warm-up ──────────────────────────────────────────────────────────────────────────
         warmup_obs_raw = env.observation_space.sample()
         warmup_obs_raw["observation.state"] = concatenate_state_features(warmup_obs_raw)
         if use_umilike:
@@ -335,7 +362,7 @@ def inference_worker(
         )
         logger.info("[Inference] Warm-up complete")
 
-        # ── Inference loop ────────────────────────────────────────────────────
+        # ── Inference loop ──────────────────────────────────────────────────────────────
         while True:
             obs_raw = conn.recv()
             if obs_raw is None:
