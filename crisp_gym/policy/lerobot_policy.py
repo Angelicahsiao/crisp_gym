@@ -45,28 +45,60 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-def _resolve_train_config_path(pretrained_path: str) -> str:
-    """Resolve a local checkpoint directory to the train config file path.
+def _resolve_checkpoint_paths(pretrained_path: str) -> tuple[str, str]:
+    """Resolve a checkpoint path to (train_config_path, model_load_path).
 
-    TrainPipelineConfig.from_pretrained() only handles a local path when it
-    points directly to a file.  When given a directory it falls through to
-    hf_hub_download, which rejects absolute paths (multiple slashes) as
-    invalid repo-ids.  This helper detects that case and returns the path to
-    the config file inside the directory.
+    lerobot training produces this layout::
 
-    For HuggingFace repo-ids (e.g. "user/repo") the input is returned as-is.
+        {run}/
+          train_config.json          <- training config
+          {step}/
+            pretrained_model/        <- HF-format model dir
+            training_state/          <- optimizer / scheduler state
+
+    ``TrainPipelineConfig.from_pretrained`` only accepts a *file* path for
+    local checkpoints (not a directory).  ``policy.from_pretrained`` accepts
+    a directory but expects HF-format content, i.e. the ``pretrained_model``
+    subdirectory, not the step directory.
+
+    For HuggingFace repo-ids (e.g. ``"user/repo"``) both values are the
+    original string unchanged.
+
+    Returns:
+        (train_config_path, model_load_path)
     """
     p = Path(pretrained_path)
     if not p.is_dir():
-        return pretrained_path
-    for candidate in ("train_config.json", "config.json"):
-        candidate_path = p / candidate
-        if candidate_path.exists():
-            return str(candidate_path)
-    raise FileNotFoundError(
-        f"Could not find train_config.json or config.json in {pretrained_path}. "
-        "Ensure the checkpoint directory contains a valid training config."
-    )
+        # HF repo-id or direct file path — leave unchanged
+        return pretrained_path, pretrained_path
+
+    # --- Locate the train config file ---
+    # Search order: step dir itself, pretrained_model subdir, parent (run) dir
+    train_config_candidates = [
+        p / "train_config.json",
+        p / "config.json",
+        p / "pretrained_model" / "train_config.json",
+        p / "pretrained_model" / "config.json",
+        p.parent / "train_config.json",
+    ]
+    train_config_path = None
+    for candidate in train_config_candidates:
+        if candidate.exists():
+            train_config_path = str(candidate)
+            break
+    if train_config_path is None:
+        searched = "\n  ".join(str(c) for c in train_config_candidates)
+        raise FileNotFoundError(
+            f"Could not find a training config for checkpoint {pretrained_path}.\n"
+            f"Searched:\n  {searched}"
+        )
+
+    # --- Locate the HF model directory for policy.from_pretrained ---
+    # Prefer the pretrained_model/ subdir when present
+    pretrained_model_subdir = p / "pretrained_model"
+    model_load_path = str(pretrained_model_subdir) if pretrained_model_subdir.is_dir() else pretrained_path
+
+    return train_config_path, model_load_path
 
 
 def _apply_umilike_state(obs: dict) -> dict:
@@ -291,9 +323,10 @@ def inference_worker(
         logger.info(f"[Inference] Using device: {device}")
 
         logger.info(f"[Inference] Loading training config from {pretrained_path}...")
-        # from_pretrained only handles a local *file* path, not a directory.
-        # Resolve the checkpoint directory to the actual config file.
-        train_config_path = _resolve_train_config_path(pretrained_path)
+        train_config_path, model_load_path = _resolve_checkpoint_paths(pretrained_path)
+        logger.info(f"[Inference] Resolved train config: {train_config_path}")
+        logger.info(f"[Inference] Resolved model path:   {model_load_path}")
+
         train_config = TrainPipelineConfig.from_pretrained(train_config_path)
         _check_dataset_metadata(train_config, env, logger)
         logger.info("[Inference] Loaded training config.")
@@ -307,7 +340,7 @@ def inference_worker(
 
         logger.info("[Inference] Loading policy...")
         policy_cls = get_policy_class(train_config.policy.type)
-        policy = policy_cls.from_pretrained(pretrained_path)
+        policy = policy_cls.from_pretrained(model_load_path)
 
         for override_key, override_value in (overrides or {}).items():
             logger.warning(
@@ -324,7 +357,7 @@ def inference_worker(
 
         if USE_LEROBOT_PROCESSORS:
             preprocessor, postprocessor = make_pre_post_processors(
-                policy_cfg=policy.config, pretrained_path=pretrained_path
+                policy_cfg=policy.config, pretrained_path=model_load_path
             )
 
         # Detect whether the model was trained with umilike state.
