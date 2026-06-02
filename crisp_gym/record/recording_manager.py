@@ -2,6 +2,7 @@
 
 import logging
 import multiprocessing as mp
+import select
 import subprocess
 import threading
 import time
@@ -129,6 +130,16 @@ class RecordingManager(ABC):
     def get_instructions(self) -> str:
         """Return the instructions to use the recording manager."""
         raise NotImplementedError()
+
+    def _pause_stdin(self) -> None:
+        """Pause stdin consumption before on_end() / evaluate() runs.
+
+        Subclasses that read stdin in a background thread must override this
+        so that ``input()`` calls in on_end() are not starved.
+        """
+
+    def _resume_stdin(self) -> None:
+        """Resume stdin consumption after on_end() / evaluate() returns."""
 
     def _create_dataset(self) -> LeRobotDataset:
         """Factory function to create a dataset object."""
@@ -333,7 +344,14 @@ class RecordingManager(ABC):
         logger.debug("Finished recording...")
 
         if on_end:
-            on_end()
+            # Pause the background stdin reader (KeyboardRecordingManager) so
+            # that input() calls inside on_end() (e.g. evaluation prompts) are
+            # not starved by the keyboard listener thread.
+            self._pause_stdin()
+            try:
+                on_end()
+            finally:
+                self._resume_stdin()
 
         self._handle_post_episode()
 
@@ -477,66 +495,6 @@ class ROSRecordingManager(RecordingManager):
                 self.state = "to_be_deleted"
 
 
-# class KeyboardRecordingManager(RecordingManager):
-#     """Keyboard-based recording manager for controlling episode recording."""
-
-#     def __init__(self, config: RecordingManagerConfig | None = None, **kwargs) -> None:  # noqa: ANN003
-#         """Initialize keyboard recording manager.
-
-#         Args:
-#             config: RecordingManagerConfig instance. If provided, **kwargs are ignored except for backwards compatibility.
-#             **kwargs: Individual parameters for backwards compatibility.
-#         """
-#         super().__init__(config=config, **kwargs)
-#         self.listener = keyboard.Listener(on_press=self._on_press)
-
-#     @override
-#     def get_instructions(self) -> str:
-#         """Returns the instructions to use the recording manager."""
-#         return "[b]Keys for recording:[/b]\n<r> To start/stop [b]R[/b]ecording.\n<s> To [b]S[/b]ave the current recorded episode.\n<d> to [b]D[/b]elete the current episode.\n<q> To [b]Q[/b]uit the recording."
-
-#     def _on_press(self, key: keyboard.KeyCode | keyboard.Key | None) -> None:
-#         """Handle keyboard press events.
-
-#         Args:
-#             key: The keyboard key that was pressed
-#         """
-#         if key is None:
-#             return
-
-#         if isinstance(key, keyboard.Key):
-#             return
-
-#         try:
-#             if self.state == "is_waiting":
-#                 if key.char == "r":
-#                     self.state = "recording"
-#                 if key.char == "q":
-#                     self.state = "exit"
-#             elif self.state == "recording":
-#                 if key.char == "r":
-#                     self.state = "paused"
-#             elif self.state == "paused":
-#                 if key.char == "q":
-#                     self.state = "exit"
-#                 if key.char == "s":
-#                     self.state = "to_be_saved"
-#                 if key.char == "d":
-#                     self.state = "to_be_deleted"
-#         except AttributeError:
-#             pass
-
-#     def stop(self) -> None:
-#         """Stop the keyboard listener."""
-#         self.listener.stop()
-
-#     def __enter__(self) -> "RecordingManager":  # noqa: D105
-#         self.listener.start()
-#         return super().__enter__()
-
-#     def __exit__(self, exc_type, exc_value, traceback) -> None:  # noqa: ANN001, D105
-#         self.listener.stop()
-#         super().__exit__(exc_type, exc_value, traceback)
 class KeyboardRecordingManager(RecordingManager):
     """Stdin-based recording manager for controlling episode recording."""
 
@@ -544,6 +502,10 @@ class KeyboardRecordingManager(RecordingManager):
         super().__init__(config=config, **kwargs)
         self._running = False
         self._thread: threading.Thread | None = None
+        # When cleared, _input_loop yields stdin to the main thread (e.g. for
+        # evaluation prompts).  Set by default so keyboard control works.
+        self._keyboard_active = threading.Event()
+        self._keyboard_active.set()
 
     @override
     def get_instructions(self) -> str:
@@ -557,14 +519,22 @@ class KeyboardRecordingManager(RecordingManager):
         )
 
     def _input_loop(self) -> None:
-        """Background thread reading stdin."""
+        """Background thread: read keyboard commands from stdin.
+
+        Uses select() with a short timeout so the loop can check
+        _keyboard_active without blocking indefinitely.
+        """
         while self._running:
+            if not self._keyboard_active.is_set():
+                # Evaluation prompt is active — yield stdin to main thread
+                time.sleep(0.05)
+                continue
             try:
-                user_input = sys.stdin.readline().strip().lower()
-                if not user_input:
-                    continue
-                key = user_input[0]
-                self._handle_key(key)
+                readable, _, _ = select.select([sys.stdin], [], [], 0.1)
+                if readable and self._keyboard_active.is_set():
+                    line = sys.stdin.readline().strip().lower()
+                    if line:
+                        self._handle_key(line[0])
             except Exception:
                 break
 
@@ -587,6 +557,18 @@ class KeyboardRecordingManager(RecordingManager):
             elif key == "d":
                 self.state = "to_be_deleted"
 
+    @override
+    def _pause_stdin(self) -> None:
+        """Pause keyboard listener so main-thread input() calls work correctly."""
+        self._keyboard_active.clear()
+        # Give the loop one iteration to exit its select() call
+        time.sleep(0.15)
+
+    @override
+    def _resume_stdin(self) -> None:
+        """Resume keyboard listener after main-thread input() is done."""
+        self._keyboard_active.set()
+
     def stop(self) -> None:
         """Stop stdin listener thread."""
         self._running = False
@@ -602,6 +584,7 @@ class KeyboardRecordingManager(RecordingManager):
         if self._thread is not None:
             self._thread.join(timeout=1.0)
         super().__exit__(exc_type, exc_value, traceback)
+
 
 def make_recording_manager(
     recording_manager_type: Literal["keyboard", "ros"],
