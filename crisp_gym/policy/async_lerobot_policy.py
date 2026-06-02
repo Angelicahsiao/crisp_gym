@@ -13,6 +13,11 @@ from lerobot.policies.factory import get_policy_class
 from lerobot.policies.utils import populate_queues
 
 try:
+    from lerobot.utils.constants import OBS_IMAGES
+except ImportError:
+    from lerobot.constants import OBS_IMAGES
+
+try:
     from lerobot.policies.factory import make_pre_post_processors
     USE_LEROBOT_PROCESSORS = True
 except ImportError:
@@ -185,9 +190,10 @@ def inference_worker(  # noqa: D417
     policy.reset()
     policy.to(device).eval()
 
-    # lerobot 0.4.4 moved normalization / device placement / image stacking out of
-    # the policy and into a processor pipeline.  Build it the same way the sync
-    # LerobotPolicy does so predict_action_chunk receives correctly prepared input.
+    # lerobot 0.4.4 moved normalization / device placement out of the policy and
+    # into a processor pipeline.  Build it the same way the sync LerobotPolicy does.
+    # NOTE: image-feature stacking into OBS_IMAGES is NOT done by the preprocessor;
+    # select_action() does it just before populate_queues, so we replicate that here.
     preprocessor = None
     postprocessor = None
     if USE_LEROBOT_PROCESSORS:
@@ -225,12 +231,13 @@ def inference_worker(  # noqa: D417
         # We are recieving a list of dictonaries with the last observations
         obs_seq = msg["obs_seq"]
 
-        # Make the policy predict an action chunk for the current observation history.
-        # In lerobot 0.4.4 the preprocessor handles normalization, device transfer
-        # and image-feature stacking (OBS_IMAGES).  predict_action_chunk only STACKS
-        # the already-filled observation queue (it does not populate it), mirroring
-        # select_action() which populates the queue first.  So we populate the queue
-        # with every observation, then generate the chunk from the latest batch.
+        # Generate an action chunk for the current observation history, mirroring
+        # the internals of DiffusionPolicy.select_action():
+        #   1. preprocess each observation (normalize + device transfer)
+        #   2. stack the individual image features into the single OBS_IMAGES key
+        #      (predict_action_chunk reads OBS_IMAGES from the queue)
+        #   3. populate the observation queue
+        #   4. predict_action_chunk() stacks the queue and generates the chunk
         with torch.inference_mode():
             batch = None
             for idx in range(len(obs_seq)):
@@ -241,8 +248,13 @@ def inference_worker(  # noqa: D417
                 batch = numpy_obs_to_torch(obs)
                 if USE_LEROBOT_PROCESSORS:
                     batch = preprocessor(batch)
-                # Fill the observation history queue (predict_action_chunk reads,
-                # but does not populate, the queue).
+                # Replicate select_action: combine image features into OBS_IMAGES
+                # before populating the queue.
+                if policy.config.image_features:
+                    batch = dict(batch)  # shallow copy so we don't mutate the original
+                    batch[OBS_IMAGES] = torch.stack(
+                        [batch[key] for key in policy.config.image_features], dim=-4
+                    )
                 policy._queues = populate_queues(policy._queues, batch)
 
             # Generate the full action chunk from the populated queue.
