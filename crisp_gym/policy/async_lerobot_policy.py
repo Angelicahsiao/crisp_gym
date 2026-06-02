@@ -13,9 +13,11 @@ from lerobot.policies.factory import get_policy_class
 from lerobot.policies.utils import populate_queues
 
 try:
-    from lerobot.utils.constants import OBS_IMAGES
+    from lerobot.policies.factory import make_pre_post_processors
+    USE_LEROBOT_PROCESSORS = True
 except ImportError:
-    from lerobot.constants import OBS_IMAGES
+    USE_LEROBOT_PROCESSORS = False
+    logging.warning("No lerobot pre/post processor support found.")
 from typing_extensions import override
 
 from crisp_gym.envs.manipulator_env import ManipulatorBaseEnv
@@ -178,6 +180,16 @@ def inference_worker(  # noqa: D417
     policy.reset()
     policy.to(device).eval()
 
+    # lerobot 0.4.4 moved normalization / device placement / image stacking out of
+    # the policy and into a processor pipeline.  Build it the same way the sync
+    # LerobotPolicy does so predict_action_chunk receives correctly prepared input.
+    preprocessor = None
+    postprocessor = None
+    if USE_LEROBOT_PROCESSORS:
+        preprocessor, postprocessor = make_pre_post_processors(
+            policy_cfg=policy.config, pretrained_path=model_load_path
+        )
+
     # Read policy config to know obs/action window sizes
     cfg = policy.config
     n_obs = int(cfg.n_obs_steps)
@@ -191,6 +203,9 @@ def inference_worker(  # noqa: D417
         if msg == "reset":
             logging.info("[Inference] Resetting policy")
             policy.reset()
+            if USE_LEROBOT_PROCESSORS:
+                preprocessor.reset()
+                postprocessor.reset()
             continue
         if not (isinstance(msg, dict) and msg.get("type") == "OBS_SEQ"):
             logging.warning(f"[Inference] Unknown message: {type(msg)}")
@@ -199,27 +214,27 @@ def inference_worker(  # noqa: D417
         # We are recieving a list of dictonaries with the last observations
         obs_seq = msg["obs_seq"]
 
-        # Make the policy predict an action chunk for the current observation.
-        # Therefore we follow the implementation on the Lerobot side for select_action() which calls predict_action_chunk()
+        # Make the policy predict an action chunk for the current observation history.
+        # In lerobot 0.4.4 the preprocessor handles normalization, device transfer
+        # and image-feature stacking (OBS_IMAGES); predict_action_chunk manages the
+        # observation queue internally.  We fill the queue with all but the last
+        # observation, then generate the chunk from the most recent one.
         with torch.inference_mode():
-            for i in range(n_obs):
-                last = obs_seq[i]
+            batch = None
+            for idx in range(len(obs_seq)):
+                obs = obs_seq[idx]
+                obs["observation.state"] = concatenate_state_features(obs)
+                batch = numpy_obs_to_torch(obs)
+                if USE_LEROBOT_PROCESSORS:
+                    batch = preprocessor(batch)
+                if idx < len(obs_seq) - 1:
+                    # Fill the observation history queue without generating a chunk
+                    policy._queues = populate_queues(policy._queues, batch)
 
-                last["observation.state"] = concatenate_state_features(last)
-                batch = numpy_obs_to_torch(last)
-
-                # This mirrors Lerobot `select_action()` pre-processing so queues are filled correctly
-                batch_norm = policy.normalize_inputs(batch)
-                if policy.config.image_features:
-                    batch_norm = dict(batch_norm)  # shallow copy then add OBS_IMAGES stack
-                    batch_norm[OBS_IMAGES] = torch.stack(
-                        [batch_norm[k] for k in policy.config.image_features], dim=-4
-                    )
-                # Note: It's important that this happens after stacking the images into a single key.
-                policy._queues = populate_queues(policy._queues, batch_norm)
-
-            # Now get a fresh chunk
-            chunk = policy.predict_action_chunk(batch_norm)
+            # Final observation: predict the full action chunk
+            chunk = policy.predict_action_chunk(batch)
+            if USE_LEROBOT_PROCESSORS:
+                chunk = postprocessor(chunk)
             chunk = chunk.squeeze(0).to(device="cpu").numpy()
 
         logging.debug(f"[Inference] Computed chunk with shape {tuple(chunk.shape)}")
