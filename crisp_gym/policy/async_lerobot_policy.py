@@ -227,9 +227,10 @@ def inference_worker(  # noqa: D417
 
         # Make the policy predict an action chunk for the current observation history.
         # In lerobot 0.4.4 the preprocessor handles normalization, device transfer
-        # and image-feature stacking (OBS_IMAGES); predict_action_chunk manages the
-        # observation queue internally.  We fill the queue with all but the last
-        # observation, then generate the chunk from the most recent one.
+        # and image-feature stacking (OBS_IMAGES).  predict_action_chunk only STACKS
+        # the already-filled observation queue (it does not populate it), mirroring
+        # select_action() which populates the queue first.  So we populate the queue
+        # with every observation, then generate the chunk from the latest batch.
         with torch.inference_mode():
             batch = None
             for idx in range(len(obs_seq)):
@@ -240,11 +241,11 @@ def inference_worker(  # noqa: D417
                 batch = numpy_obs_to_torch(obs)
                 if USE_LEROBOT_PROCESSORS:
                     batch = preprocessor(batch)
-                if idx < len(obs_seq) - 1:
-                    # Fill the observation history queue without generating a chunk
-                    policy._queues = populate_queues(policy._queues, batch)
+                # Fill the observation history queue (predict_action_chunk reads,
+                # but does not populate, the queue).
+                policy._queues = populate_queues(policy._queues, batch)
 
-            # Final observation: predict the full action chunk
+            # Generate the full action chunk from the populated queue.
             chunk = policy.predict_action_chunk(batch)
             if USE_LEROBOT_PROCESSORS:
                 chunk = postprocessor(chunk)
