@@ -6,7 +6,10 @@ robot_config:
 
 gripper_config: null
 camera_configs: []
-sensor_configs: []
+sensor_configs:
+  - sensor_type: "force_torque"
+    name: "ft_sensor"
+    data_topic: "/force_torque_sensor_broadcaster/wrench"
 
 gripper_mode: "none"
 
