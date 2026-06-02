@@ -13,9 +13,9 @@ from lerobot.policies.factory import get_policy_class
 from lerobot.policies.utils import populate_queues
 
 try:
-    from lerobot.utils.constants import OBS_IMAGES
+    from lerobot.utils.constants import ACTION, OBS_IMAGES
 except ImportError:
-    from lerobot.constants import OBS_IMAGES
+    from lerobot.constants import ACTION, OBS_IMAGES
 
 try:
     from lerobot.policies.factory import make_pre_post_processors
@@ -234,10 +234,12 @@ def inference_worker(  # noqa: D417
         # Generate an action chunk for the current observation history, mirroring
         # the internals of DiffusionPolicy.select_action():
         #   1. preprocess each observation (normalize + device transfer)
-        #   2. stack the individual image features into the single OBS_IMAGES key
+        #   2. pop any ACTION key (the preprocessor may leave a None placeholder;
+        #      otherwise it pollutes the ACTION queue and breaks predict_action_chunk)
+        #   3. stack the individual image features into the single OBS_IMAGES key
         #      (predict_action_chunk reads OBS_IMAGES from the queue)
-        #   3. populate the observation queue
-        #   4. predict_action_chunk() stacks the queue and generates the chunk
+        #   4. populate the observation queue
+        #   5. predict_action_chunk() stacks the queue and generates the chunk
         with torch.inference_mode():
             batch = None
             for idx in range(len(obs_seq)):
@@ -248,10 +250,12 @@ def inference_worker(  # noqa: D417
                 batch = numpy_obs_to_torch(obs)
                 if USE_LEROBOT_PROCESSORS:
                     batch = preprocessor(batch)
+                batch = dict(batch)  # shallow copy so we don't mutate the original
+                # Drop the action placeholder so it doesn't pollute the ACTION queue.
+                batch.pop(ACTION, None)
                 # Replicate select_action: combine image features into OBS_IMAGES
                 # before populating the queue.
                 if policy.config.image_features:
-                    batch = dict(batch)  # shallow copy so we don't mutate the original
                     batch[OBS_IMAGES] = torch.stack(
                         [batch[key] for key in policy.config.image_features], dim=-4
                     )
