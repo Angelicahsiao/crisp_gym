@@ -9,6 +9,7 @@ camera_configs: []
 sensor_configs:
   - sensor_type: "force_torque"
     name: "ft_sensor"
+    shape: [6]
     data_topic: "/force_torque_sensor_broadcaster/wrench"
 
 gripper_mode: "none"
