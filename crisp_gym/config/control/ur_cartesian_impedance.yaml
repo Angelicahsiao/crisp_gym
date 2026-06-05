@@ -2,12 +2,12 @@ filter.q: 0.5
 filter.dq: 0.5
 filter.output_torque: 0.5
 
-task.k_pos_x: 400.0
-task.k_pos_y: 400.0
-task.k_pos_z: 400.0
-task.k_rot_x: 30.0
-task.k_rot_y: 30.0
-task.k_rot_z: 30.0
+task.k_pos_x: 200.0
+task.k_pos_y: 200.0
+task.k_pos_z: 200.0
+task.k_rot_x: 60.0
+task.k_rot_y: 60.0
+task.k_rot_z: 60.0
 
 nullspace.stiffness: 0.0
 
