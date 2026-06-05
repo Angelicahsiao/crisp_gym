@@ -1,0 +1,18 @@
+# Robotiq 2F-140 on a UR7e (integrated into the UR controller_manager).
+# Normalized value: 0.0 = closed, 1.0 = open.
+# finger_joint range: 0.0 (open) .. 0.695 (closed) rad, so min_value (closed)
+# is the larger raw number and max_value (open) is 0.0.
+min_value: 0.695
+max_value: 0.0
+
+# GripperCommand action exposed by position_controllers/GripperActionController.
+command_topic: "/robotiq_gripper_controller/gripper_cmd"
+use_gripper_command_action: True
+
+# Dedicated broadcaster publishes only finger_joint, so it sits at index 0.
+# crisp_py's Gripper reads feedback by index, so it must not share the arm /joint_states.
+joint_state_topic: "/robotiq_joint_state_broadcaster/joint_states"
+index: 0
+
+max_delta: 1.0
+max_effort: 50.0

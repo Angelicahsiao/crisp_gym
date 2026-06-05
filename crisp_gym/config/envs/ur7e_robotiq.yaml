@@ -1,0 +1,26 @@
+# UR7e + Robotiq 2F-140 gripper + wrist F/T sensor.
+# Bring up the robot with the gripper attached:
+#   ros2 launch crisp_controllers_robot_demos ur.launch.py \
+#       ur_type:=ur7e use_gripper:=true com_port:=/dev/ttyUSB0
+control_frequency: 50.0
+
+robot_config:
+  robot_type: "ur"
+  has_effort_feedback: true
+
+gripper_config:
+  from_yaml: "grippers/gripper_robotiq_2f140.yaml"
+
+camera_configs: []
+
+sensor_configs:
+  - sensor_type: "force_torque"
+    name: "ft_sensor"
+    shape: [6]
+    data_topic: "/force_torque_sensor_broadcaster/wrench"
+
+gripper_mode: "absolute_continuous"
+gripper_threshold: 0.1
+
+cartesian_control_param_config: "control/ur_cartesian_impedance.yaml"
+joint_control_param_config: "control/ur_joint_control.yaml"
