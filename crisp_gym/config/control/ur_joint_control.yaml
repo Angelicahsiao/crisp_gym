@@ -16,8 +16,8 @@ nullspace.weights.wrist_1_joint.value: 5.0
 nullspace.weights.wrist_2_joint.value: 5.0
 nullspace.weights.wrist_3_joint.value: 5.0
 
-filter.dq: 0.3
-filter.output_torque: 0.3
+filter.dq: 0.4
+filter.output_torque: 0.4
 
 stop_commands: false
 
