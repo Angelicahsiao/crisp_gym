@@ -11,7 +11,7 @@ nullspace.max_tau: 1000.0
 nullspace.regularization: 1.0e-06
 nullspace.weights.shoulder_pan_joint.value: 180.0
 nullspace.weights.shoulder_lift_joint.value: 180.0
-nullspace.weights.elbow_joint.value: 150.0
+nullspace.weights.elbow_joint.value: 120.0
 nullspace.weights.wrist_1_joint.value: 5.0
 nullspace.weights.wrist_2_joint.value: 5.0
 nullspace.weights.wrist_3_joint.value: 5.0

@@ -10,7 +10,6 @@ import rclpy.executors
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float32
 
 logger = logging.getLogger(__name__)
 
@@ -18,11 +17,13 @@ logger = logging.getLogger(__name__)
 class FACTRStreamedJoints:
     """Subscribe to FACTR leader arm joint and gripper topics.
 
-    FACTR publishes:
-      /factr_teleop/{name}/joint_states  — sensor_msgs/JointState (6-DOF arm)
-      /factr_teleop/{name}/cmd_gripper_pos — std_msgs/Float32 (0.0 open .. 1.0 closed)
+    FACTR publishes (both as sensor_msgs/JointState):
+      /factr_teleop/{name}/cmd_ur_pos      — 6-DOF arm joint positions (position[0:6])
+      /factr_teleop/{name}/cmd_gripper_pos — gripper trigger position (position[0])
 
-    Gripper is normalized to [0, 1] where 0 = open, 1 = closed (matching Robotiq convention).
+    The gripper trigger is expected in [0, 1] where 0 = open, 1 = fully squeezed.
+    It is inverted to match the Robotiq convention (set_target: 0 = closed, 1 = open),
+    so squeezing the leader closes the follower.
     """
 
     def __init__(self, name: str = "right", namespace: str = ""):
@@ -33,7 +34,7 @@ class FACTRStreamedJoints:
         self._prefix = f"{namespace}_" if namespace else ""
         self.node = rclpy.create_node("factr_stream", namespace=namespace)
 
-        self._joint_topic = f"/factr_teleop/{name}/joint_states"
+        self._joint_topic = f"/factr_teleop/{name}/cmd_ur_pos"
         self._gripper_topic = f"/factr_teleop/{name}/cmd_gripper_pos"
 
         self._last_joint_pos: np.ndarray | None = None
@@ -49,7 +50,7 @@ class FACTRStreamedJoints:
             qos_profile=qos_profile_sensor_data,
         )
         self.node.create_subscription(
-            Float32,
+            JointState,
             self._gripper_topic,
             self._callback_gripper,
             callback_group=ReentrantCallbackGroup(),
@@ -70,11 +71,13 @@ class FACTRStreamedJoints:
     def _callback_joints(self, msg: JointState):
         self._last_joint_pos = np.array(msg.position, dtype=np.float64)
 
-    def _callback_gripper(self, msg: Float32):
-        # FACTR trigger: 0.0 = open, 1.0 = fully squeezed (closed).
+    def _callback_gripper(self, msg: JointState):
+        # FACTR trigger (position[0]): 0.0 = open, 1.0 = fully squeezed (closed).
         # Robotiq gripper.set_target: 0.0 = closed, 1.0 = open.
         # Invert so squeezing the leader closes the follower.
-        self._last_gripper = float(np.clip(1.0 - msg.data, 0.0, 1.0))
+        if not msg.position:
+            return
+        self._last_gripper = float(np.clip(1.0 - msg.position[0], 0.0, 1.0))
 
     @property
     def last_joint_pos(self) -> np.ndarray:
