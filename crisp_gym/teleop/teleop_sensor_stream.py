@@ -18,8 +18,19 @@ logger = logging.getLogger(__name__)
 class TeleopStreamedPose:
     """Class to handle teleoperation using streamed pose and gripper data potentially from a phone, VR device, etc."""
 
-    def __init__(self, namespace: str = ""):
-        """Initialize the TeleopStreamedPose class."""
+    def __init__(
+        self,
+        namespace: str = "",
+        pose_topic: str | None = None,
+        gripper_topic: str | None = None,
+    ):
+        """Initialize the TeleopStreamedPose class.
+
+        Args:
+            namespace: ROS2 namespace.
+            pose_topic: Override the default pose topic (default: /{namespace}_phone_pose).
+            gripper_topic: Override the default gripper topic (default: /{namespace}_phone_gripper).
+        """
         if not rclpy.ok():
             rclpy.init()
         self.node = rclpy.create_node("pose_streamer", namespace=namespace)
@@ -29,9 +40,8 @@ class TeleopStreamedPose:
         self._last_pose: Pose | None = None
         self._last_gripper: float | None = None
 
-        # Set this with config
-        self._gripper_topic = f"/{self._prefix}phone_gripper"
-        self._pose_topic = f"/{self._prefix}phone_pose"
+        self._gripper_topic = gripper_topic or f"/{self._prefix}phone_gripper"
+        self._pose_topic = pose_topic or f"/{self._prefix}phone_pose"
         
         logger.info(f"Creating subscriptions to: {self._pose_topic}, {self._gripper_topic}")
 

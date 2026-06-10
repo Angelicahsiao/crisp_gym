@@ -1,0 +1,43 @@
+# UMI Handheld Environment Configuration
+# Pose streamed from OptiTrack via mocap4ros2_optitrack → PoseStamped relay node.
+# Gripper width published as std_msgs/Float32 in meters.
+
+control_frequency: 15.0
+
+pose_topic: "/optitrack/umi_gripper/pose"
+gripper_width_topic: "/umi/gripper_width"
+
+max_gripper_width: 0.09
+
+# Rotation format stored in observations and actions.
+# Options: euler, quaternion, axis_angle
+orientation_representation: "euler"
+
+# 4x4 homogeneous matrix aligning OptiTrack world frame (Y-up) to Z-up robot convention.
+# Set to identity initially; calibrate once OptiTrack axes are confirmed.
+tx_world_correction:
+  - [1.0, 0.0, 0.0, 0.0]
+  - [0.0, 1.0, 0.0, 0.0]
+  - [0.0, 0.0, 1.0, 0.0]
+  - [0.0, 0.0, 0.0, 1.0]
+
+# 4x4 homogeneous matrix from OptiTrack rigid body frame to TCP frame.
+# Set to identity if rigid body axes are defined to match TCP convention in Motive.
+tx_body_tcp:
+  - [1.0, 0.0, 0.0, 0.0]
+  - [0.0, 1.0, 0.0, 0.0]
+  - [0.0, 0.0, 1.0, 0.0]
+  - [0.0, 0.0, 0.0, 1.0]
+
+# Log current pose every N frames (~1 Hz at 15 fps).
+log_status_every_n_frames: 15
+
+# Camera configurations (add entries to enable image recording).
+# Example:
+#   camera_configs:
+#     - from_yaml: "gopro.yaml"
+camera_configs: []
+
+observations_to_include_to_state:
+  - "observation.state.cartesian"
+  - "observation.state.gripper"
