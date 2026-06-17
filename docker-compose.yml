@@ -17,7 +17,7 @@ services:
       - RCUTILS_COLORIZED_OUTPUT=1
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       - NETWORK_INTERFACE=${NETWORK_INTERFACE:-enp0s31f6}
-      - CYCLONEDDS_URI=file:///workspace/crisp_gym/scripts/cyclone_config.xml
+      - CYCLONEDDS_URI=file:///tmp/cyclone_config_resolved.xml
       # - CRISP_CONFIG_PATH=/workspace/configs
     network_mode: "host"
     stdin_open: true
@@ -26,7 +26,7 @@ services:
     pid: "host"
     privileged: true
     working_dir: /workspace/crisp_gym
-    command: bash -c "if [ ! -d /workspace/crisp_gym/.pixi/envs/humble ]; then pixi install -e humble; fi && exec bash"
+    command: bash -c "source /workspace/crisp_gym/scripts/gen_cyclone_config.sh && if [ ! -d /workspace/crisp_gym/.pixi/envs/humble ]; then pixi install -e humble; fi && exec bash"
 
   crisp-gym-deploy:
     build:
@@ -48,7 +48,7 @@ services:
       - RCUTILS_COLORIZED_OUTPUT=1
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       - NETWORK_INTERFACE=${NETWORK_INTERFACE:-enp0s31f6}
-      - CYCLONEDDS_URI=file:///workspace/crisp_gym/scripts/cyclone_config.xml
+      - CYCLONEDDS_URI=file:///tmp/cyclone_config_resolved.xml
     network_mode: "host"
     stdin_open: true
     tty: true
@@ -57,7 +57,7 @@ services:
     privileged: true
     working_dir: /workspace/crisp_gym
     command: >
-      bash -c "if [ ! -d /workspace/crisp_gym/.pixi/envs/humble ]; then pixi install -e humble-lerobot; fi && exec bash"
+      bash -c "source /workspace/crisp_gym/scripts/gen_cyclone_config.sh && if [ ! -d /workspace/crisp_gym/.pixi/envs/humble ]; then pixi install -e humble-lerobot; fi && exec bash"
     deploy:
       resources:
         reservations:
