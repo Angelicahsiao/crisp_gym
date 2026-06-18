@@ -4,6 +4,10 @@
 # CycloneDDS versions in RoboStack do not expand env-var placeholders in XML,
 # so the substitution must happen before the node starts.
 : "${NETWORK_INTERFACE:=enp0s31f6}"
+if ! ip link show "$NETWORK_INTERFACE" > /dev/null 2>&1; then
+    echo "NETWORK_INTERFACE '$NETWORK_INTERFACE' not found, falling back to 'lo'."
+    NETWORK_INTERFACE=lo
+fi
 _gen_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 sed "s|\${NETWORK_INTERFACE}|${NETWORK_INTERFACE}|g" \
     "${_gen_script_dir}/cyclone_config.xml" \
