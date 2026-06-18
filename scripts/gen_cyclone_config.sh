@@ -4,12 +4,16 @@
 # CycloneDDS versions in RoboStack do not expand env-var placeholders in XML,
 # so the substitution must happen before the node starts.
 : "${NETWORK_INTERFACE:=enp0s31f6}"
-if ! ip link show "$NETWORK_INTERFACE" > /dev/null 2>&1; then
+# Use /sys/class/net rather than `ip`/`ifconfig`: the pixi env has no iproute2.
+if [ ! -e "/sys/class/net/$NETWORK_INTERFACE" ]; then
     echo "NETWORK_INTERFACE '$NETWORK_INTERFACE' not found, falling back to 'lo'."
     NETWORK_INTERFACE=lo
 fi
 _gen_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-sed "s|\${NETWORK_INTERFACE}|${NETWORK_INTERFACE}|g" \
+# Substitute both placeholder spellings so the template works whether it uses
+# ${NETWORK_INTERFACE} or ${ROS_NETWORK_INTERFACE}.
+sed -e "s|\${NETWORK_INTERFACE}|${NETWORK_INTERFACE}|g" \
+    -e "s|\${ROS_NETWORK_INTERFACE}|${NETWORK_INTERFACE}|g" \
     "${_gen_script_dir}/cyclone_config.xml" \
     > /tmp/cyclone_config_resolved.xml
 export CYCLONEDDS_URI="file:///tmp/cyclone_config_resolved.xml"
