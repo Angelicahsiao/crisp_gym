@@ -71,18 +71,13 @@ class FACTRStreamedJoints:
     def _callback_joints(self, msg: JointState):
         self._last_joint_pos = np.array(msg.position, dtype=np.float64)
 
-    # FACTR trigger (position[0]) spans roughly [-1, 2], not [0, 1]. Rescale that
-    # range to the [0, 1] that Gripper.set_target expects (0 = closed, 1 = open).
-    # To invert direction (squeeze opens vs closes), swap MIN/MAX or use 1.0 - x.
-    GRIPPER_TRIGGER_MIN = -1.0
-    GRIPPER_TRIGGER_MAX = 2.0
-
     def _callback_gripper(self, msg: JointState):
+        # FACTR trigger (position[0]) can travel outside [0, 1] (~[-1, 2]); clamp
+        # it into the [0, 1] range Gripper.set_target expects (0 = closed, 1 = open).
+        # Trigger values below 0 saturate to closed, above 1 saturate to open.
         if not msg.position:
             return
-        span = self.GRIPPER_TRIGGER_MAX - self.GRIPPER_TRIGGER_MIN
-        normalized = (msg.position[0] - self.GRIPPER_TRIGGER_MIN) / span
-        self._last_gripper = float(np.clip(normalized, 0.0, 1.0))
+        self._last_gripper = float(np.clip(msg.position[0], 0.0, 1.0))
 
     @property
     def last_joint_pos(self) -> np.ndarray:
