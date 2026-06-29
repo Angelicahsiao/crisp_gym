@@ -72,12 +72,12 @@ class FACTRStreamedJoints:
         self._last_joint_pos = np.array(msg.position, dtype=np.float64)
 
     def _callback_gripper(self, msg: JointState):
-        # FACTR trigger (position[0]): 0.0 = open, 1.0 = fully squeezed (closed).
-        # Robotiq gripper.set_target: 0.0 = closed, 1.0 = open.
-        # Invert so squeezing the leader closes the follower.
+        # FACTR trigger (position[0]) is used directly as the gripper target,
+        # truncated (not rescaled) into the valid [0, 1] range that
+        # Gripper.set_target expects (0 = closed, 1 = open).
         if not msg.position:
             return
-        self._last_gripper = float(np.clip(1.0 - msg.position[0], 0.0, 1.0))
+        self._last_gripper = float(np.clip(msg.position[0], 0.0, 1.0))
 
     @property
     def last_joint_pos(self) -> np.ndarray:
