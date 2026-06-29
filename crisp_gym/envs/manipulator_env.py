@@ -497,13 +497,18 @@ class ManipulatorBaseEnv(gym.Env):
         # Keep the gripper controller active across arm controller switches.
         # The switcher otherwise deactivates every active non-broadcaster
         # controller, which would turn the gripper off whenever the arm
-        # controller changes. The controller name is the first segment of the
-        # gripper command topic (e.g. /robotiq_gripper_controller/gripper_cmd).
+        # controller changes. The controller name is the segment of the gripper
+        # command topic just before the command verb, so it works both with and
+        # without a namespace:
+        #   /robotiq_gripper_controller/gripper_cmd             -> robotiq_gripper_controller
+        #   /robotiq_2f85/robotiq_gripper_controller/gripper_cmd -> robotiq_gripper_controller
+        # Grippers driven by a separate node (e.g. dynamixel) yield a name that
+        # isn't a controller in this controller_manager, which is harmless.
         controllers_that_should_be_active: list[str] = []
         if self.config.gripper_mode != GripperMode.NONE and self.config.gripper_config is not None:
-            gripper_controller = self.config.gripper_config.command_topic.strip("/").split("/")[0]
-            if gripper_controller:
-                controllers_that_should_be_active.append(gripper_controller)
+            topic_segments = self.config.gripper_config.command_topic.strip("/").split("/")
+            if len(topic_segments) >= 2:
+                controllers_that_should_be_active.append(topic_segments[-2])
 
         self.robot.controller_switcher_client.switch_controller(
             desired_ctrl_type.controller_name(),
