@@ -494,7 +494,21 @@ class ManipulatorBaseEnv(gym.Env):
             else ControlType.from_string(control_type)
         )
 
-        self.robot.controller_switcher_client.switch_controller(desired_ctrl_type.controller_name())
+        # Keep the gripper controller active across arm controller switches.
+        # The switcher otherwise deactivates every active non-broadcaster
+        # controller, which would turn the gripper off whenever the arm
+        # controller changes. The controller name is the first segment of the
+        # gripper command topic (e.g. /robotiq_gripper_controller/gripper_cmd).
+        controllers_that_should_be_active: list[str] = []
+        if self.config.gripper_mode != GripperMode.NONE and self.config.gripper_config is not None:
+            gripper_controller = self.config.gripper_config.command_topic.strip("/").split("/")[0]
+            if gripper_controller:
+                controllers_that_should_be_active.append(gripper_controller)
+
+        self.robot.controller_switcher_client.switch_controller(
+            desired_ctrl_type.controller_name(),
+            controllers_that_should_be_active=controllers_that_should_be_active,
+        )
 
     def switch_to_default_controller(self):
         """Switch to the default controller type."""
