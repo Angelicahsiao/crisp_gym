@@ -1,9 +1,9 @@
 # Robotiq 2F-140 on a UR7e (integrated into the UR controller_manager).
 # Normalized value: 0.0 = closed, 1.0 = open.
-# finger_joint range: 0.0 (open) .. 0.695 (closed) rad, so min_value (closed)
-# is the larger raw number and max_value (open) is 0.0.
-min_value: 0.695
-max_value: 0.0
+# Verified on the real gripper: raw finger_joint 0.0 = closed, 0.695 = open,
+# so min_value (closed) is 0.0 and max_value (open) is 0.695.
+min_value: 0.0
+max_value: 0.695
 
 # GripperCommand action exposed by position_controllers/GripperActionController.
 command_topic: "/robotiq_gripper_controller/gripper_cmd"
