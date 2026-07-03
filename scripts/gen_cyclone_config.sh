@@ -5,8 +5,14 @@
 # so the substitution must happen before the node starts.
 : "${NETWORK_INTERFACE:=enp0s31f6}"
 # Use /sys/class/net rather than `ip`/`ifconfig`: the pixi env has no iproute2.
+# The interface must exist AND be up: CycloneDDS cannot bind to an interface
+# with no address (e.g. cable unplugged) and node creation fails.
 if [ ! -e "/sys/class/net/$NETWORK_INTERFACE" ]; then
     echo "NETWORK_INTERFACE '$NETWORK_INTERFACE' not found, falling back to 'lo'."
+    NETWORK_INTERFACE=lo
+elif [ "$(cat /sys/class/net/$NETWORK_INTERFACE/operstate 2>/dev/null)" != "up" ] \
+        && [ "$NETWORK_INTERFACE" != "lo" ]; then
+    echo "NETWORK_INTERFACE '$NETWORK_INTERFACE' is not up (cable unplugged?), falling back to 'lo'."
     NETWORK_INTERFACE=lo
 fi
 _gen_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
