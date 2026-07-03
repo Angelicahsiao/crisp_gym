@@ -72,12 +72,13 @@ class FACTRStreamedJoints:
         self._last_joint_pos = np.array(msg.position, dtype=np.float64)
 
     def _callback_gripper(self, msg: JointState):
-        # FACTR trigger (position[0]) can travel outside [0, 1] (~[-1, 2]); clamp
-        # it into the [0, 1] range Gripper.set_target expects (0 = closed, 1 = open).
-        # Trigger values below 0 saturate to closed, above 1 saturate to open.
+        # FACTR trigger (position[0]): 0 = released, 1 = squeezed (can overshoot
+        # to ~[-1, 2]). Invert so squeezing the leader closes the follower, then
+        # clamp into the [0, 1] range Gripper.set_target expects (0 = closed,
+        # 1 = open).
         if not msg.position:
             return
-        self._last_gripper = float(np.clip(msg.position[0], 0.0, 1.0))
+        self._last_gripper = float(np.clip(1.0 - msg.position[0], 0.0, 1.0))
 
     @property
     def last_joint_pos(self) -> np.ndarray:
