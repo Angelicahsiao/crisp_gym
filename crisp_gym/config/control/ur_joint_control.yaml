@@ -1,7 +1,7 @@
 limit_error: true
 limit_torques: true
 
-max_delta_tau: 0.5
+max_delta_tau: 1.0
 
 nullspace.projector_type: none  # So we are directly controlling the joints!
 
