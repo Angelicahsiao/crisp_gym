@@ -7,7 +7,7 @@ nullspace.projector_type: none  # So we are directly controlling the joints!
 
 nullspace.stiffness: 10.0
 nullspace.damping: 1.5
-nullspace.max_tau: 10.0
+nullspace.max_tau: 20.0
 nullspace.regularization: 1.0e-06
 nullspace.weights.shoulder_pan_joint.value: 15.0
 nullspace.weights.shoulder_lift_joint.value: 15.0
