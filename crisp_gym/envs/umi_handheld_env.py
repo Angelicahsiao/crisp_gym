@@ -247,6 +247,8 @@ class UmiHandheldEnv(gym.Env):
     def _rotation_dim(self) -> int:
         if self.config.orientation_representation == OrientationRepresentation.QUATERNION:
             return 4
+        if self.config.orientation_representation == OrientationRepresentation.ROTATION_6D:
+            return 6
         return 3  # EULER and ANGLE_AXIS are both 3D
 
     def _pose_msg_to_array(self, msg: PoseStamped) -> np.ndarray:
@@ -268,6 +270,9 @@ class UmiHandheldEnv(gym.Env):
             rot_array = rot_tcp.as_euler("xyz").astype(np.float32)
         elif self.config.orientation_representation == OrientationRepresentation.QUATERNION:
             rot_array = rot_tcp.as_quat().astype(np.float32)
+        elif self.config.orientation_representation == OrientationRepresentation.ROTATION_6D:
+            # First two rows of the rotation matrix, flattened (pytorch3d/UMI convention)
+            rot_array = rot_tcp.as_matrix()[:2, :].flatten().astype(np.float32)
         else:  # ANGLE_AXIS
             rot_array = rot_tcp.as_rotvec().astype(np.float32)
 
@@ -340,9 +345,10 @@ class UmiHandheldEnv(gym.Env):
                 pose_msg = self._last_pose_msg
             if pose_msg is not None:
                 p = self._pose_msg_to_array(pose_msg)
+                rot_str = ", ".join(f"{v:.3f}" for v in p[3:])
                 logger.info(
                     f"[UMI] pos=[{p[0]:.3f}, {p[1]:.3f}, {p[2]:.3f}] "
-                    f"rot=[{p[3]:.3f}, {p[4]:.3f}, {p[5]:.3f}] "
+                    f"rot=[{rot_str}] "
                     f"gripper={self._gripper_normalized:.2f}"
                 )
 

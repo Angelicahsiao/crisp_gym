@@ -10,8 +10,11 @@ gripper_width_topic: "/umi/gripper_width"
 max_gripper_width: 0.09
 
 # Rotation format stored in observations and actions.
-# Options: euler, quaternion, axis_angle
-orientation_representation: "euler"
+# Options: euler, quaternion, angle_axis, rotation_6d
+# rotation_6d (first two rows of the rotation matrix, UMI/pytorch3d convention)
+# is recommended for learning: it is continuous (Zhou et al. 2019) and matches
+# UMI's data layout (obs 3+6=9D, action 3+6+1=10D).
+orientation_representation: "rotation_6d"
 
 # 4x4 homogeneous matrix aligning OptiTrack world frame (Y-up) to Z-up robot convention.
 # Set to identity initially; calibrate once OptiTrack axes are confirmed.

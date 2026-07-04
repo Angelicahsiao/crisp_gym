@@ -27,6 +27,22 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _rotation_dim_names(env) -> list[str]:
+    """Rotation dimension names based on the env's orientation representation.
+
+    Falls back to Euler names if the env config has no orientation_representation.
+    """
+    rep = getattr(env.config, "orientation_representation", None)
+    rep_value = getattr(rep, "value", rep)
+    if rep_value == "quaternion":
+        return ["qx", "qy", "qz", "qw"]
+    if rep_value == "rotation_6d":
+        return [f"rot6d_{i}" for i in range(6)]
+    if rep_value == "angle_axis":
+        return ["rx", "ry", "rz"]
+    return ["roll", "pitch", "yaw"]
+
+
 def get_features(
     env: ManipulatorBaseEnv,
     use_video: bool = True,
@@ -48,7 +64,7 @@ def get_features(
     ctrl_dims: dict[ControlType, list[str]] = {
         ControlType.JOINT: [f"joint_{idx}" for idx in range(env.config.robot_config.num_joints())]
         + ["gripper"],
-        ControlType.CARTESIAN: ["x", "y", "z", "roll", "pitch", "yaw", "gripper"],
+        ControlType.CARTESIAN: ["x", "y", "z"] + _rotation_dim_names(env) + ["gripper"],
     }
 
     if env.ctrl_type not in ctrl_dims:
