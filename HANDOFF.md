@@ -147,10 +147,11 @@ norm ~1.0 and dot ~0.0 (they are rows of a real rotation matrix).
    to `meta/record_config.json` when recording and gate dataset mixing with
    `RecordConfig.contracts_compatible`. UMI robot recording = `umi_robot_record.yaml`
    + any drive_fn (drive_fn computes commands only, never steps the env).
-   Remaining integration: recording scripts still call the legacy
-   `make_umi_handheld_fn`/`make_teleop_fn`; port them to
-   `make_record_fn(env, RecordConfig.from_yaml(...), drive_fn)` + stamp
-   metadata. End-to-end test against crisp_controllers_demos fake Franka
+   Integration DONE: record_umi_handheld.py uses RecordConfig by default;
+   record_lerobot_format_leader_follower.py gains --record-config (legacy
+   behavior when omitted); both stamp meta/record_config.json. Legacy fns
+   (make_teleop_fn, make_umi_handheld_fn) kept for back-compat.
+   End-to-end test against crisp_controllers_demos fake Franka
    (FRANKA_FAKE_HARDWARE=true) was blocked in the cloud env (Docker Hub blob
    CDN forbidden by network policy) — run it on real hardware machine.
 4. **(superseded by 3) `make_umi_robot_fn`**: UMI-style recording from a real arm

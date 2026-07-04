@@ -21,10 +21,10 @@ import rclpy
 
 from crisp_gym.config.path import find_config
 from crisp_gym.envs.umi_handheld_env import UmiHandheldEnv
-from crisp_gym.record.record_functions import make_umi_handheld_fn
+from crisp_gym.record.record_config import RecordConfig
+from crisp_gym.record.record_functions import make_record_fn
 from crisp_gym.record.recording_manager import make_recording_manager
 from crisp_gym.util import prompt
-from crisp_gym.util.lerobot_features import get_features
 from crisp_gym.util.setup_logger import setup_logging
 
 
@@ -103,6 +103,17 @@ def main():
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
     )
 
+    parser.add_argument(
+        "--record-config",
+        type=str,
+        default=None,
+        help=(
+            "Path to a RecordConfig YAML (data contract: observation sources, "
+            "action definition). Defaults to the bundled "
+            "config/recording/umi_handheld_record.yaml."
+        ),
+    )
+
     args = parser.parse_args()
     logger = logging.getLogger(__name__)
     setup_logging(level=args.log_level)
@@ -132,8 +143,28 @@ def main():
         env.wait_until_ready()
         logger.info("Environment is ready.")
 
-        keys_to_ignore = []
-        features = get_features(env=env, ignore_keys=keys_to_ignore)
+        # Load the record config (the dataset's data contract)
+        if args.record_config is None:
+            rc_path = find_config("recording/umi_handheld_record.yaml")
+            if rc_path is None:
+                raise FileNotFoundError(
+                    "Bundled 'recording/umi_handheld_record.yaml' not found. "
+                    "Specify --record-config explicitly."
+                )
+        else:
+            rc_path = Path(args.record_config)
+            if not rc_path.exists():
+                raise FileNotFoundError(f"Record config not found: {rc_path}")
+        record_config = RecordConfig.from_yaml(rc_path)
+        logger.info(f"Record config: {rc_path} (contract '{record_config.name}')")
+
+        if float(args.fps) != float(record_config.rate_hz):
+            raise ValueError(
+                f"--fps {args.fps} != record config rate_hz {record_config.rate_hz}. "
+                "The rate is part of the data contract; align them."
+            )
+
+        features = record_config.to_features()
         logger.debug(f"Dataset features: {features}")
 
         recording_manager = make_recording_manager(
@@ -157,6 +188,11 @@ def main():
             json.dump(env_metadata, f, indent=4)
         logger.info(f"Env metadata saved to {meta_dir / 'crisp_meta.json'}")
 
+        # Stamp the data contract next to the dataset
+        with open(meta_dir / "record_config.json", "w") as f:
+            json.dump(record_config.to_metadata(), f, indent=4)
+        logger.info(f"Record contract saved to {meta_dir / 'record_config.json'}")
+
         tasks = list(args.tasks)
 
         def on_start():
@@ -171,7 +207,7 @@ def main():
                     f"→ Episode {recording_manager.episode_count + 1} / {recording_manager.num_episodes}"
                 )
 
-                teleop_fn = make_umi_handheld_fn(env)
+                teleop_fn = make_record_fn(env, record_config)
                 task = tasks[np.random.randint(0, len(tasks))] if tasks else "No task specified."
                 logger.info(f"▷ Task: {task}")
 

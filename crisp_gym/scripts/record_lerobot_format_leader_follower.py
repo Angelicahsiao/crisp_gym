@@ -11,7 +11,14 @@ import crisp_gym  # noqa: F401
 from crisp_gym.config.home import HomeConfig
 from crisp_gym.envs.manipulator_env import ManipulatorCartesianEnv, make_env, ManipulatorJointEnv
 from crisp_gym.envs.manipulator_env_config import list_env_configs, FrankaEnvConfig
-from crisp_gym.record.record_functions import make_teleop_fn, make_teleop_streamer_fn
+from crisp_gym.record.record_config import RecordConfig
+from crisp_gym.record.record_functions import (
+    make_record_fn,
+    make_streamer_drive_fn,
+    make_teleop_drive_fn,
+    make_teleop_fn,
+    make_teleop_streamer_fn,
+)
 from crisp_gym.record.recording_manager import make_recording_manager
 from crisp_gym.teleop.teleop_robot import TeleopRobot, make_leader
 from crisp_gym.teleop.teleop_robot_config import list_leader_configs
@@ -110,6 +117,18 @@ def main():
         help="Set the logger level.",
     )
 
+    parser.add_argument(
+        "--record-config",
+        type=str,
+        default=None,
+        help=(
+            "Optional RecordConfig YAML (data contract). When given, the "
+            "config-driven generic recorder is used (e.g. "
+            "config/recording/umi_robot_record.yaml records UMI-style actions "
+            "= measured TCP pose[t+1] while the teleop still drives the robot). "
+            "When omitted, the legacy command-recording behavior is kept."
+        ),
+    )
     parser.add_argument(
         "--use-streamed-teleop",
         action="store_true",
@@ -212,8 +231,21 @@ def main():
             leader.wait_until_ready()
             logger.info("Using teleop robot for the leader robot. Leader is ready.")
 
-        keys_to_ignore = []
-        features = get_features(env=env, ignore_keys=keys_to_ignore, fps=args.fps)
+        record_config = None
+        if args.record_config is not None:
+            record_config = RecordConfig.from_yaml(args.record_config)
+            logger.info(f"Using record config contract '{record_config.name}'")
+            if float(args.fps) != float(record_config.rate_hz):
+                raise ValueError(
+                    f"--fps {args.fps} != record config rate_hz "
+                    f"{record_config.rate_hz}. Align them (part of the data contract)."
+                )
+            features = record_config.to_features(
+                joint_count=env.config.robot_config.num_joints()
+            )
+        else:
+            keys_to_ignore = []
+            features = get_features(env=env, ignore_keys=keys_to_ignore, fps=args.fps)
         logger.debug(f"Using the features: {features}")
 
         if args.use_streamed_teleop and ctrl_type != "cartesian":
@@ -238,6 +270,13 @@ def main():
 
         with open(recording_manager.dataset_directory / "meta" / "crisp_meta.json", "w") as f:
             json.dump(env_metadata, f, indent=4)
+
+        if record_config is not None:
+            with open(
+                recording_manager.dataset_directory / "meta" / "record_config.json", "w"
+            ) as f:
+                json.dump(record_config.to_metadata(), f, indent=4)
+            logger.info("Record contract saved to meta/record_config.json")
 
         logger.info(
             f"Environment metadata saved to {recording_manager.dataset_directory / 'meta' / 'crisp_meta.json'}"
@@ -301,7 +340,21 @@ def main():
 
                 # Create a new teleop function for each episode to reset internal variables
                 teleop_fn = None
-                if isinstance(leader, TeleopRobot):
+                if record_config is not None:
+                    # Config-driven recorder: teleop only drives, the record
+                    # config decides what is stored (e.g. UMI next_tcp_pose).
+                    if isinstance(leader, TeleopRobot):
+                        drive_fn = make_teleop_drive_fn(env, leader)
+                    elif isinstance(leader, TeleopStreamedPose) and isinstance(
+                        env, ManipulatorCartesianEnv
+                    ):
+                        drive_fn = make_streamer_drive_fn(env, leader)
+                    else:
+                        raise ValueError(
+                            "Streamed teleop is only compatible with Cartesian control."
+                        )
+                    teleop_fn = make_record_fn(env, record_config, drive_fn=drive_fn)
+                elif isinstance(leader, TeleopRobot):
                     teleop_fn = make_teleop_fn(env, leader)
                 elif isinstance(leader, TeleopStreamedPose) and isinstance(
                     env, ManipulatorCartesianEnv

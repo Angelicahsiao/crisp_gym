@@ -147,6 +147,9 @@ def make_record_fn(
 
     def _fn() -> tuple:
         cmd = drive_fn() if drive_fn is not None else None
+        if drive_fn is not None and cmd is None:
+            # Drive warm-up tick (e.g. teleop needs a previous pose to diff).
+            return None, None
         env.step(cmd, block=False)
 
         obs = _collect_obs()
@@ -166,6 +169,66 @@ def make_record_fn(
         return obs_buffer[0], _action_value()
 
     return _fn
+
+
+def make_teleop_drive_fn(env: ManipulatorBaseEnv, leader: TeleopRobot) -> Callable:
+    """Drive-fn adapter for make_record_fn: computes the teleop command each
+    tick (same semantics as make_teleop_fn) WITHOUT stepping the env.
+
+    Returns None on the first tick (no previous pose to diff against).
+    """
+    state = {"prev_pose": None, "prev_joint": None}
+
+    def _drive():
+        pose = leader.robot.end_effector_pose
+        joint = leader.robot.joint_values
+
+        if state["prev_pose"] is None:
+            state["prev_pose"], state["prev_joint"] = pose, joint
+            return None
+
+        if env.config.use_relative_actions:
+            action_pose = pose - state["prev_pose"]
+            action_joint = joint - state["prev_joint"]
+        else:
+            action_pose, action_joint = pose, joint
+        state["prev_pose"], state["prev_joint"] = pose, joint
+
+        gripper_action = _leader_gripper_to_action(
+            leader_value=leader.gripper.value if leader.gripper is not None else 0.0,
+            follower_value=env.gripper.value if env.gripper is not None else 0.0,
+            control_mode=env.config.gripper_mode,
+        )
+
+        if env.ctrl_type is ControlType.CARTESIAN:
+            vec = action_pose.to_array(env.config.orientation_representation)
+        elif env.ctrl_type is ControlType.JOINT:
+            vec = action_joint
+        else:
+            raise ValueError(f"Unsupported control type: {env.ctrl_type}")
+        return np.concatenate([vec, [gripper_action]])
+
+    return _drive
+
+
+def make_streamer_drive_fn(
+    env: "ManipulatorCartesianEnv", leader: "TeleopStreamedPose"
+) -> Callable:
+    """Drive-fn adapter for streamed-pose teleop (phone/VR): delta pose command."""
+    state = {"prev_pose": None}
+
+    def _drive():
+        pose = leader.last_pose
+        if state["prev_pose"] is None:
+            state["prev_pose"] = pose
+            return None
+        action_pose = pose - state["prev_pose"]
+        state["prev_pose"] = pose
+        gripper = leader.last_gripper if leader.last_gripper is not None else 0.0
+        vec = action_pose.to_array(env.config.orientation_representation)
+        return np.concatenate([vec, [gripper]])
+
+    return _drive
 
 
 def make_umi_handheld_fn(env: "UmiHandheldEnv") -> Callable:
