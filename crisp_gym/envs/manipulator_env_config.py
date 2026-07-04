@@ -97,6 +97,17 @@ class ManipulatorEnvConfig(ABC):
 
     max_episode_steps: int | None = None  # FIXME: This is not used. Remove?
 
+    # === Controller flexibility ===
+    # Map control mode ("cartesian" / "joint") to the ros2_control controller
+    # name to switch to. Unset entries fall back to the robot_config's
+    # controller-name fields (crisp_py RobotConfig), then to legacy defaults.
+    controller_names: dict = field(default_factory=dict)
+    # Controllers that must be loaded in the controller manager before the env
+    # reports ready. None (default) = only the controller for this env's own
+    # control mode. Set explicitly for setups needing more (e.g. a trajectory
+    # controller for homing).
+    required_controllers: List[str] | None = None
+
     # Observation configuration (camera and sensor observations are always included if configured)
     observations_to_include_to_state: List[str] = field(
         default_factory=lambda: [
