@@ -11,6 +11,7 @@ platforms = ["linux-64"]
 [activation]
 scripts = [
     "scripts/set_env.sh",
+    "scripts/gen_cyclone_config.sh",
 ]
 
 [dependencies]
