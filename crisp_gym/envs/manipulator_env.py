@@ -309,15 +309,22 @@ class ManipulatorBaseEnv(gym.Env):
     def required_controllers(self) -> list[str]:
         """Controllers that must exist before the env reports ready.
 
-        Explicit env config `required_controllers` wins; otherwise only the
-        controller for this env's own control mode is required. (Previously a
-        hardcoded pair of controller names was demanded regardless of use.)
+        Explicit env config `required_controllers` wins; otherwise the
+        controller for this env's own control mode plus the homing controller
+        (robot config home_controller_name) — homing is used between episodes,
+        so its absence should fail fast at startup, not at the first home().
         """
         if self.config.required_controllers is not None:
             return list(self.config.required_controllers)
-        if self.ctrl_type is ControlType.UNDEFINED:
-            return []
-        return [self.controller_name_for(self.ctrl_type)]
+        required: list[str] = []
+        if self.ctrl_type is not ControlType.UNDEFINED:
+            required.append(self.controller_name_for(self.ctrl_type))
+        home_controller = getattr(
+            self.config.robot_config, "home_controller_name", "joint_trajectory_controller"
+        )
+        if home_controller and home_controller not in required:
+            required.append(home_controller)
+        return required
 
     def wait_until_ready(self):
         """Wait until the robot, gripper, cameras, and sensors are ready."""
