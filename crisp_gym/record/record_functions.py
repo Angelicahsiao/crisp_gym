@@ -92,6 +92,82 @@ def make_teleop_streamer_fn(env: ManipulatorCartesianEnv, leader: TeleopStreamed
     return _fn
 
 
+def make_record_fn(
+    env,
+    record_config,
+    drive_fn: Callable | None = None,
+) -> Callable:
+    """Generic, config-driven recording function.
+
+    Decouples WHAT is recorded (record_config: observation sources, action
+    definition) from HOW the robot is driven (drive_fn: teleop deltas, FACTR
+    joints, nothing for a handheld device).
+
+    Args:
+        env: Any env exposing the sources named in the config (robot envs,
+            UmiHandheldEnv, ...). env.step(action) is called every tick.
+        record_config: A RecordConfig (see record/record_config.py).
+        drive_fn: Optional zero-arg callable returning the command vector to
+            send to env.step() this tick (or None). It must NOT step the env
+            itself. For passive recording (handheld), leave None.
+
+    Returns:
+        Callable returning (obs, action) per tick — or (None, None) while the
+        lookahead buffer fills — for RecordingManager.record_episode.
+    """
+    from collections import deque
+
+    from crisp_gym.record.record_config import SOURCE_REGISTRY
+
+    act_cfg = record_config.action
+    lookahead = act_cfg.lookahead
+    obs_buffer: deque = deque(maxlen=lookahead + 1)
+
+    def _collect_obs() -> dict:
+        obs = {"task": getattr(env, "task", "")}
+        for o in record_config.observations:
+            obs[o.key] = SOURCE_REGISTRY[o.source](env, **o.params)
+        return obs
+
+    def _action_value() -> np.ndarray:
+        if act_cfg.definition == "next_tcp_pose":
+            pose = SOURCE_REGISTRY["robot.tcp_pose"](
+                env, representation=act_cfg.representation
+            )
+            parts = [pose]
+        elif act_cfg.definition == "next_joint_positions":
+            parts = [SOURCE_REGISTRY["robot.joint_positions"](env)]
+        else:
+            raise RuntimeError("command actions are handled inline")
+        if act_cfg.include_gripper:
+            parts.append(
+                SOURCE_REGISTRY["gripper.width_normalized"](env, **act_cfg.gripper_params)
+            )
+        return np.concatenate(parts).astype(np.float32)
+
+    def _fn() -> tuple:
+        cmd = drive_fn() if drive_fn is not None else None
+        env.step(cmd, block=False)
+
+        obs = _collect_obs()
+
+        if act_cfg.definition == "command":
+            if cmd is None:
+                raise ValueError(
+                    "action.definition 'command' requires a drive_fn "
+                    "returning the command vector."
+                )
+            return obs, np.asarray(cmd, dtype=np.float32)
+
+        # next_*: pair obs[t-lookahead] with the value measured NOW.
+        obs_buffer.append(obs)
+        if len(obs_buffer) <= lookahead:
+            return None, None
+        return obs_buffer[0], _action_value()
+
+    return _fn
+
+
 def make_umi_handheld_fn(env: "UmiHandheldEnv") -> Callable:
     """Create a recording function for the UMI handheld environment.
 

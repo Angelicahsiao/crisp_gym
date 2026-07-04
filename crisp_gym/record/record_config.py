@@ -1,0 +1,352 @@
+"""Config-driven recording: decouple recorded data from the recording method.
+
+A RecordConfig declares WHAT goes into the dataset (observation fields, action
+definition, rates, normalization references) independently of HOW the robot is
+driven (leader arm, FACTR joints, phone stream, OptiTrack handheld, policy).
+
+The resolved config is the dataset's data contract: it is stamped into
+meta/record_config.json and checked at training time before datasets are mixed.
+
+This module is pure Python (numpy + yaml only) — no ROS, no torch — so it can
+be imported on any machine. Source providers access the env by duck typing.
+
+See config/recording/record_config_example.yaml for all parameters.
+"""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Dict, List
+
+import numpy as np
+import yaml
+
+logger = logging.getLogger(__name__)
+
+# ── Pose representation dims ──────────────────────────────────────────────────
+
+POSE_DIMS = {
+    "euler": 6,        # x y z rx ry rz
+    "angle_axis": 6,   # x y z ax ay az
+    "quaternion": 7,   # x y z qx qy qz qw
+    "rotation_6d": 9,  # x y z + first two rows of R (UMI/pytorch3d convention)
+}
+
+POSE_NAMES = {
+    "euler": ["x", "y", "z", "roll", "pitch", "yaw"],
+    "angle_axis": ["x", "y", "z", "ax", "ay", "az"],
+    "quaternion": ["x", "y", "z", "qx", "qy", "qz", "qw"],
+    "rotation_6d": ["x", "y", "z"] + [f"rot6d_{i}" for i in range(6)],
+}
+
+# Action definitions — a small CLOSED set on purpose. Each has distinct,
+# documented semantics; arbitrary user-composed action pipelines are a footgun.
+ACTION_DEFINITIONS = (
+    # UMI convention: action[t] = measured TCP pose at t+lookahead (absolute).
+    # Works for handheld (OptiTrack) and robot (measured EEF) identically.
+    "next_tcp_pose",
+    # Classic crisp_gym teleop: action[t] = the command vector sent to the
+    # robot at t (whatever semantics the driver used — delta or absolute;
+    # stamped via `command_semantics` metadata).
+    "command",
+    # action[t] = measured joint positions at t+lookahead.
+    "next_joint_positions",
+)
+
+
+# ── Source provider registry ──────────────────────────────────────────────────
+# A provider is a callable (env) -> np.ndarray | image, resolved by name.
+# Register new sources with @register_source("my.source").
+
+SOURCE_REGISTRY: Dict[str, Callable] = {}
+
+
+def register_source(name: str):
+    """Decorator registering an observation source provider by name."""
+
+    def _wrap(fn: Callable):
+        SOURCE_REGISTRY[name] = fn
+        return fn
+
+    return _wrap
+
+
+def _pose_to_array(pose, representation: str) -> np.ndarray:
+    """crisp_py Pose -> array in the requested representation."""
+    from crisp_py.utils.geometry import OrientationRepresentation
+
+    return np.asarray(
+        pose.to_array(OrientationRepresentation(representation)), dtype=np.float32
+    )
+
+
+@register_source("robot.tcp_pose")
+def _src_tcp_pose(env, representation: str = "rotation_6d", **_) -> np.ndarray:
+    """Measured TCP pose. Robot envs: robot.end_effector_pose. Handheld env:
+    the tracked pose (UmiHandheldEnv exposes it via current_pose_as_action)."""
+    if hasattr(env, "robot"):
+        return _pose_to_array(env.robot.end_effector_pose, representation)
+    if hasattr(env, "current_pose_as_action"):
+        # UmiHandheldEnv: [pose..., gripper] with env-config representation.
+        # The env's orientation_representation must match `representation`.
+        env_rep = str(getattr(env.config, "orientation_representation", ""))
+        if representation not in env_rep:
+            raise ValueError(
+                f"robot.tcp_pose wants '{representation}' but handheld env is "
+                f"configured with '{env_rep}'. Align the env YAML."
+            )
+        return np.asarray(env.current_pose_as_action()[:-1], dtype=np.float32)
+    raise AttributeError("env exposes neither .robot nor a tracked pose")
+
+
+@register_source("robot.joint_positions")
+def _src_joint_positions(env, **_) -> np.ndarray:
+    return np.asarray(env.robot.joint_values, dtype=np.float32)
+
+
+@register_source("gripper.width_normalized")
+def _src_gripper(env, reference_width: float | None = None,
+                 device_max_width: float | None = None, **_) -> np.ndarray:
+    """Gripper opening normalized to [0,1] against a SHARED reference width.
+
+    value_normalized = (device_value * device_max_width) / reference_width
+
+    - Handheld env: device_value is already width/max_gripper_width, so
+      device_max_width defaults to env.config.max_gripper_width.
+    - Robot envs: Gripper.value is calibrated [0,1] per GripperConfig;
+      device_max_width MUST be given (physical width in meters at value=1)
+      unless reference scaling is disabled (reference_width null -> raw value).
+    """
+    if hasattr(env, "_gripper_normalized"):  # UmiHandheldEnv
+        raw = float(env._gripper_normalized)
+        dev_max = device_max_width or float(env.config.max_gripper_width)
+    elif getattr(env, "gripper", None) is not None:
+        raw = float(env.gripper.value)
+        if reference_width is not None and device_max_width is None:
+            raise ValueError(
+                "gripper.width_normalized on a robot env needs device_max_width "
+                "(meters at gripper value 1.0) to unify widths across devices."
+            )
+        dev_max = device_max_width or 1.0
+    else:
+        return np.zeros(1, dtype=np.float32)
+
+    if reference_width is None:
+        return np.array([raw], dtype=np.float32)
+    width_m = raw * dev_max
+    return np.array([np.clip(width_m / reference_width, 0.0, 1.0)], dtype=np.float32)
+
+
+@register_source("camera.image")
+def _src_camera(env, camera: str = "", **_):
+    for cam in getattr(env, "cameras", []):
+        if cam.config.camera_name == camera:
+            return cam.current_image
+    raise KeyError(f"Camera '{camera}' not found in env.cameras")
+
+
+# ── Config dataclasses ────────────────────────────────────────────────────────
+
+
+@dataclass
+class ObsFieldConfig:
+    """One observation entry: dataset key + source provider + its params."""
+
+    key: str                        # e.g. "observation.state.cartesian"
+    source: str                     # provider name in SOURCE_REGISTRY
+    params: Dict[str, Any] = field(default_factory=dict)
+    # For state features: explicit dim (else derived); for images: (H, W, C).
+    shape: List[int] | None = None
+    include_in_state: bool = True   # concatenated into observation.state
+
+    def resolved_shape(self) -> tuple:
+        if self.shape is not None:
+            return tuple(self.shape)
+        if self.source == "robot.tcp_pose":
+            return (POSE_DIMS[self.params.get("representation", "rotation_6d")],)
+        if self.source == "gripper.width_normalized":
+            return (1,)
+        raise ValueError(f"shape required for source '{self.source}' (key {self.key})")
+
+    def names(self) -> List[str]:
+        if self.source == "robot.tcp_pose":
+            return POSE_NAMES[self.params.get("representation", "rotation_6d")]
+        if self.source == "gripper.width_normalized":
+            return ["gripper"]
+        n = int(np.prod(self.resolved_shape()))
+        stem = self.key.split(".")[-1]
+        return [f"{stem}_{i}" for i in range(n)]
+
+
+@dataclass
+class ActionConfig:
+    """What the `action` column means."""
+
+    definition: str = "next_tcp_pose"     # one of ACTION_DEFINITIONS
+    lookahead: int = 1                    # for next_*: action[t] = value[t+lookahead]
+    representation: str = "rotation_6d"   # pose representation for next_tcp_pose
+    include_gripper: bool = True
+    gripper_params: Dict[str, Any] = field(default_factory=dict)  # same as source params
+    # for definition == "command": dim of the command vector and a free-text
+    # semantics tag stamped into metadata ("delta_pose_euler", "joint_delta", ...)
+    command_dim: int | None = None
+    command_semantics: str = ""
+
+    def __post_init__(self):
+        if self.definition not in ACTION_DEFINITIONS:
+            raise ValueError(
+                f"action.definition '{self.definition}' not in {ACTION_DEFINITIONS}"
+            )
+        if self.lookahead < 1 and self.definition.startswith("next_"):
+            raise ValueError("lookahead must be >= 1 for next_* action definitions")
+
+    def dim(self, joint_count: int | None = None) -> int:
+        if self.definition == "next_tcp_pose":
+            base = POSE_DIMS[self.representation]
+        elif self.definition == "next_joint_positions":
+            if joint_count is None:
+                raise ValueError("joint_count required for next_joint_positions")
+            base = joint_count
+        else:  # command
+            if self.command_dim is None:
+                raise ValueError("command_dim required for definition 'command'")
+            return self.command_dim  # command vector already includes gripper
+        return base + (1 if self.include_gripper else 0)
+
+    def names(self, joint_count: int | None = None) -> List[str]:
+        if self.definition == "next_tcp_pose":
+            names = list(POSE_NAMES[self.representation])
+        elif self.definition == "next_joint_positions":
+            names = [f"joint_{i}" for i in range(joint_count or 0)]
+        else:
+            return [f"cmd_{i}" for i in range(self.command_dim or 0)]
+        if self.include_gripper:
+            names.append("gripper")
+        return names
+
+
+@dataclass
+class RecordConfig:
+    """Full data contract for a recording session."""
+
+    observations: List[ObsFieldConfig] = field(default_factory=list)
+    action: ActionConfig = field(default_factory=ActionConfig)
+    rate_hz: float = 15.0
+    name: str = "unnamed"
+
+    # ── loading ──
+    @classmethod
+    def from_yaml(cls, path: Path | str) -> "RecordConfig":
+        with open(path) as f:
+            data = yaml.safe_load(f) or {}
+        obs = [
+            ObsFieldConfig(
+                key=o["key"],
+                source=o["source"],
+                params={k: v for k, v in o.items()
+                        if k not in ("key", "source", "shape", "include_in_state")},
+                shape=o.get("shape"),
+                include_in_state=o.get("include_in_state", True),
+            )
+            for o in data.get("observations", [])
+        ]
+        act = ActionConfig(**data.get("action", {}))
+        cfg = cls(
+            observations=obs,
+            action=act,
+            rate_hz=float(data.get("rate_hz", 15.0)),
+            name=str(data.get("name", Path(path).stem)),
+        )
+        cfg.validate()
+        return cfg
+
+    def validate(self) -> None:
+        for o in self.observations:
+            if o.source not in SOURCE_REGISTRY:
+                raise ValueError(
+                    f"Unknown source '{o.source}' for key '{o.key}'. "
+                    f"Available: {sorted(SOURCE_REGISTRY)}"
+                )
+        keys = [o.key for o in self.observations]
+        if len(keys) != len(set(keys)):
+            raise ValueError(f"Duplicate observation keys: {keys}")
+
+    # ── features (LeRobot schema) ──
+    def to_features(self, joint_count: int | None = None,
+                    use_video: bool = True) -> Dict[str, Dict]:
+        features: Dict[str, Dict] = {}
+        state_len, state_names = 0, []
+        for o in self.observations:
+            if o.key.startswith("observation.images"):
+                shape = o.resolved_shape()
+                features[o.key] = {
+                    "dtype": "video" if use_video else "image",
+                    "shape": shape,
+                    "names": ["height", "width", "channels"],
+                    **({"video_info": {
+                        "video.fps": self.rate_hz,
+                        "video.codec": "av1",
+                        "video.pix_fmt": "yuv420p",
+                        "video.is_depth_map": False,
+                        "has_audio": False,
+                    }} if use_video else {}),
+                }
+            else:
+                shape = o.resolved_shape()
+                names = o.names()
+                features[o.key] = {"dtype": "float32", "shape": shape, "names": names}
+                if o.include_in_state:
+                    state_len += int(np.prod(shape))
+                    state_names += names
+        features["observation.state"] = {
+            "dtype": "float32", "shape": (state_len,), "names": state_names,
+        }
+        features["action"] = {
+            "dtype": "float32",
+            "shape": (self.action.dim(joint_count),),
+            "names": self.action.names(joint_count),
+        }
+        return features
+
+    # ── contract stamping / compatibility ──
+    def to_metadata(self) -> dict:
+        return {
+            "record_config_name": self.name,
+            "rate_hz": self.rate_hz,
+            "observations": [
+                {"key": o.key, "source": o.source, **o.params} for o in self.observations
+            ],
+            "action": {
+                "definition": self.action.definition,
+                "lookahead": self.action.lookahead,
+                "representation": self.action.representation,
+                "include_gripper": self.action.include_gripper,
+                "command_semantics": self.action.command_semantics,
+            },
+        }
+
+    # Fields that must match for two datasets to be trained together.
+    CONTRACT_FIELDS = ("rate_hz", "action")
+
+    @staticmethod
+    def contracts_compatible(meta_a: dict, meta_b: dict) -> bool:
+        """Check two stamped record_config metadata dicts for train-mixability."""
+        for f in RecordConfig.CONTRACT_FIELDS:
+            if meta_a.get(f) != meta_b.get(f):
+                logger.error(
+                    f"Record contracts differ on '{f}': {meta_a.get(f)} vs {meta_b.get(f)}"
+                )
+                return False
+        # state keys + their source params must match too
+        a_obs = {o["key"]: o for o in meta_a.get("observations", [])}
+        b_obs = {o["key"]: o for o in meta_b.get("observations", [])}
+        if a_obs.keys() != b_obs.keys():
+            logger.error(f"Observation keys differ: {a_obs.keys()} vs {b_obs.keys()}")
+            return False
+        for k in a_obs:
+            if a_obs[k] != b_obs[k]:
+                logger.error(f"Observation '{k}' params differ: {a_obs[k]} vs {b_obs[k]}")
+                return False
+        return True
