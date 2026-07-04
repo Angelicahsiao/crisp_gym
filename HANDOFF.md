@@ -167,11 +167,11 @@ norm ~1.0 and dot ~0.0 (they are rows of a real rotation matrix).
      registry (`crisp_gym/policy/policy.py`).
    - Phase 2 leftovers: `util/lerobot_features.py` imports `manipulator_env`
      at module top -> transitively pulls rclpy into pure-inference code paths.
-   - Known small bugs still open: `ControlType.controller_name()` returns
-     "joint_impedance_controller" but envs require "joint_trajectory_controller"
-     (`crisp_gym/util/control_type.py:34` vs `manipulator_env.py`);
-     `crisp_py Robot.home()` hardcodes "joint_trajectory_controller" instead of
-     `config.joint_trajectory_controller_name`.
+   - FIXED: controller names + readiness gate are config-driven
+     (`controller_names` / `required_controllers` in ManipulatorEnvConfig,
+     `controller_name_for()` / `required_controllers` on the env;
+     crisp_py `home_controller_name`). `ControlType.controller_name()` is
+     legacy — do not reintroduce call sites.
 
 ---
 
