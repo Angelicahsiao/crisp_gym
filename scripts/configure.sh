@@ -10,3 +10,5 @@ if [ ! -f "scripts/set_env.sh" ]; then
   echo "For multi-machine setups check https://utiasdsl.github.io/crisp_controllers/misc/multi_machine_setup/"
   exit 1
 fi
+
+source scripts/gen_cyclone_config.sh

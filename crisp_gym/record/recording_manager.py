@@ -135,7 +135,12 @@ class RecordingManager(ABC):
         logger.debug("Creating dataset object.")
         if self.config.resume:
             logger.info(f"Resuming recording from existing dataset: {self.config.repo_id}")
-            dataset = LeRobotDataset(repo_id=self.config.repo_id)
+            # v0.5.1+ uses LeRobotDataset.resume(); older versions use the
+            # plain constructor (which handles resuming based on existing meta).
+            if hasattr(LeRobotDataset, "resume"):
+                dataset = LeRobotDataset.resume(repo_id=self.config.repo_id)
+            else:
+                dataset = LeRobotDataset(repo_id=self.config.repo_id)
             if self.config.num_episodes <= dataset.num_episodes:
                 logger.error(
                     f"The dataset already has {dataset.num_episodes} recorded. Please select a larger number."

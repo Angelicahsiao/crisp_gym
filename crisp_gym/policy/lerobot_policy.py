@@ -10,7 +10,18 @@ from typing import Any, Callable, Tuple
 import numpy as np
 import torch
 from lerobot.configs.train import TrainPipelineConfig
-from lerobot.policies.factory import LeRobotDatasetMetadata, get_policy_class
+from lerobot.policies.factory import get_policy_class
+
+try:
+    # v0.5.1+
+    from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
+except ImportError:
+    try:
+        # v0.4.x: defined alongside LeRobotDataset
+        from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
+    except ImportError:
+        # v0.3.x and earlier: re-exported from policies.factory
+        from lerobot.policies.factory import LeRobotDatasetMetadata
 from typing_extensions import override
 
 from crisp_gym.envs.manipulator_env import ManipulatorBaseEnv

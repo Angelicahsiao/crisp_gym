@@ -15,12 +15,15 @@ from crisp_gym.envs.manipulator_env import ManipulatorBaseEnv, make_env
 from crisp_gym.util.control_type import ControlType
 
 try:
-    from lerobot.datasets.lerobot_dataset import CODEBASE_VERSION
+    from lerobot.datasets.dataset_metadata import CODEBASE_VERSION
 except ImportError:
-    raise ImportError(
-        "The 'lerobot' package is required to use this function. "
-        "Please use a lerobot environment 'pixi shell -e <rosdistro>-lerobot'."
-    )
+    try:
+        from lerobot.datasets.lerobot_dataset import CODEBASE_VERSION
+    except ImportError:
+        raise ImportError(
+            "The 'lerobot' package is required to use this function. "
+            "Please use a lerobot environment 'pixi shell -e <rosdistro>-lerobot'."
+        )
 
 import logging
 
@@ -47,6 +50,7 @@ def get_features(
     env: ManipulatorBaseEnv,
     use_video: bool = True,
     ignore_keys: list[str] = None,
+    fps: float | None = None,
 ) -> Dict[str, Dict]:
     """Get the features used by LeRobotDataset.
 
@@ -55,10 +59,12 @@ def get_features(
         ctrl_type (str): The type of control used, either "joint" or "cartesian". Defaults to "cartesian".
         use_video (bool): Whether to include video features. Defaults to True.
         ignore_keys (list[str], optional): List of observation keys to ignore. Defaults to None.
+        fps (float | None): Recording FPS for video features. Should match the fps passed to
+            LeRobotDataset.create(). Defaults to env.config.control_frequency if not provided.
     """
-    if not CODEBASE_VERSION.startswith("v2"):
+    if not (CODEBASE_VERSION.startswith("v2") or CODEBASE_VERSION.startswith("v3")):
         logger.warning(
-            "Feature generation for LeRobot has been implemented for version 2.x of LeRobotDataset. Expect unexpected behaviour for other versions."
+            f"Feature generation for LeRobot has been implemented for v2.x/v3.x of LeRobotDataset. Got {CODEBASE_VERSION}. Expect unexpected behaviour."
         )
 
     ctrl_dims: dict[ControlType, list[str]] = {
@@ -134,7 +140,7 @@ def get_features(
                     "shape": env.observation_space[original_feature_key].shape,
                     "names": ["height", "width", "channels"],
                     "video_info": {
-                        "video.fps": env.config.control_frequency,
+                        "video.fps": fps if fps is not None else env.config.control_frequency,
                         "video.codec": "av1",
                         "video.pix_fmt": "yuv420p",
                         "video.is_depth_map": False,
