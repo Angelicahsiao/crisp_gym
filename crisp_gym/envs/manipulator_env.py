@@ -223,6 +223,12 @@ class ManipulatorBaseEnv(gym.Env):
                 high=np.ones((self.config.robot_config.num_joints(),), dtype=np.float32) * np.pi,
                 dtype=np.float32,
             ),
+            # Joint effort (only included if robot supports it)
+            ObservationKeys.EFFORT_OBS: gym.spaces.Box(
+                low=np.full((self.config.robot_config.num_joints(),), -np.inf, dtype=np.float32),
+                high=np.full((self.config.robot_config.num_joints(),), np.inf, dtype=np.float32),
+                dtype=np.float32,
+            ),
         }
         selected_observations = {}
         for key in observation_spaces:
@@ -358,6 +364,10 @@ class ManipulatorBaseEnv(gym.Env):
         if ObservationKeys.JOINT_OBS in self.config.observations_to_include_to_state:
             obs[ObservationKeys.JOINT_OBS] = self.robot.joint_values
 
+        # Joint effort
+        if ObservationKeys.EFFORT_OBS in self.config.observations_to_include_to_state:
+            obs[ObservationKeys.EFFORT_OBS] = self.robot.current_joint_effort
+
         # Camera images
         for camera in self.cameras:
             image_key = f"{ObservationKeys.IMAGE_OBS}.{camera.config.camera_name}"
@@ -484,7 +494,26 @@ class ManipulatorBaseEnv(gym.Env):
             else ControlType.from_string(control_type)
         )
 
-        self.robot.controller_switcher_client.switch_controller(desired_ctrl_type.controller_name())
+        # Keep the gripper controller active across arm controller switches.
+        # The switcher otherwise deactivates every active non-broadcaster
+        # controller, which would turn the gripper off whenever the arm
+        # controller changes. The controller name is the segment of the gripper
+        # command topic just before the command verb, so it works both with and
+        # without a namespace:
+        #   /robotiq_gripper_controller/gripper_cmd             -> robotiq_gripper_controller
+        #   /robotiq_2f85/robotiq_gripper_controller/gripper_cmd -> robotiq_gripper_controller
+        # Grippers driven by a separate node (e.g. dynamixel) yield a name that
+        # isn't a controller in this controller_manager, which is harmless.
+        controllers_that_should_be_active: list[str] = []
+        if self.config.gripper_mode != GripperMode.NONE and self.config.gripper_config is not None:
+            topic_segments = self.config.gripper_config.command_topic.strip("/").split("/")
+            if len(topic_segments) >= 2:
+                controllers_that_should_be_active.append(topic_segments[-2])
+
+        self.robot.controller_switcher_client.switch_controller(
+            desired_ctrl_type.controller_name(),
+            controllers_that_should_be_active=controllers_that_should_be_active,
+        )
 
     def switch_to_default_controller(self):
         """Switch to the default controller type."""

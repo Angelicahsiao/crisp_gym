@@ -27,6 +27,7 @@ class ObservationKeys:
     JOINT_OBS = STATE_OBS + ".joints"
     CARTESIAN_OBS = STATE_OBS + ".cartesian"
     TARGET_OBS = STATE_OBS + ".target"
+    EFFORT_OBS = STATE_OBS + ".effort"
     SENSOR_OBS = STATE_OBS + ".sensors"
 
     IMAGE_OBS = "observation.images"
@@ -37,6 +38,7 @@ ALLOWED_STATE_OBS_KEYS = {
     ObservationKeys.JOINT_OBS,
     ObservationKeys.CARTESIAN_OBS,
     ObservationKeys.TARGET_OBS,
+    ObservationKeys.EFFORT_OBS,
     ObservationKeys.SENSOR_OBS,
 }
 
@@ -107,6 +109,14 @@ class ManipulatorEnvConfig(ABC):
 
     def __post_init__(self):
         """Post-initialization checks."""
+        if (
+            self.robot_config.has_effort_feedback
+            and ObservationKeys.EFFORT_OBS not in self.observations_to_include_to_state
+        ):
+            self.observations_to_include_to_state = list(self.observations_to_include_to_state) + [
+                ObservationKeys.EFFORT_OBS
+            ]
+
         if self.gripper_enabled is not None:
             logging.warning(
                 "Deprecated: 'gripper_enabled' is deprecated, use 'gripper_mode' instead to set the control mode."

@@ -76,6 +76,7 @@ class _OrientationRepresentation:
     EULER = "euler"
     QUATERNION = "quaternion"
     ANGLE_AXIS = "angle_axis"
+    ROTATION_6D = "rotation_6d"
 
 _geo.OrientationRepresentation = _OrientationRepresentation
 _geo.Pose = object
