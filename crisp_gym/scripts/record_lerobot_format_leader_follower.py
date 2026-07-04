@@ -88,7 +88,7 @@ def main():
     parser.add_argument(
         "--follower-namespace",
         type=str,
-        default="left",
+        default="",
         help="Namespace for the follower robot. This is used to identify the robot in the ROS ecosystem.",
     )
     parser.add_argument(
@@ -213,7 +213,7 @@ def main():
             logger.info("Using teleop robot for the leader robot. Leader is ready.")
 
         keys_to_ignore = []
-        features = get_features(env=env, ignore_keys=keys_to_ignore)
+        features = get_features(env=env, ignore_keys=keys_to_ignore, fps=args.fps)
         logger.debug(f"Using the features: {features}")
 
         if args.use_streamed_teleop and ctrl_type != "cartesian":
