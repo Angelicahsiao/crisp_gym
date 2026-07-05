@@ -231,6 +231,33 @@ def make_streamer_drive_fn(
     return _drive
 
 
+def make_factr_drive_fn(factr) -> Callable:
+    """Drive-fn adapter for a FACTR leader arm (joint-space teleop).
+
+    Computes delta-joint commands from the FACTR stream's absolute joint
+    positions (same logic as examples/09_factr_ur7e_teleop.py) WITHOUT
+    stepping the env. Returns None on the warm-up tick. The command layout is
+    [dtheta_1..dtheta_N, gripper] with the gripper trigger already inverted
+    and clamped to [0, 1] by FACTRStreamedJoints.
+
+    Args:
+        factr: A crisp_gym.teleop.teleop_factr_stream.FACTRStreamedJoints.
+    """
+    state = {"prev": None}
+
+    def _drive():
+        current = factr.last_joint_pos
+        if state["prev"] is None:
+            state["prev"] = current
+            return None
+        delta = current - state["prev"]
+        state["prev"] = current
+        gripper = factr.last_gripper if factr.last_gripper is not None else 0.0
+        return np.append(delta, gripper).astype(np.float32)
+
+    return _drive
+
+
 def make_umi_handheld_fn(env: "UmiHandheldEnv") -> Callable:
     """Create a recording function for the UMI handheld environment.
 

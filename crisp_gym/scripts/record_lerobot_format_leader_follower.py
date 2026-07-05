@@ -13,12 +13,14 @@ from crisp_gym.envs.manipulator_env import ManipulatorCartesianEnv, make_env, Ma
 from crisp_gym.envs.manipulator_env_config import list_env_configs, FrankaEnvConfig
 from crisp_gym.record.record_config import RecordConfig
 from crisp_gym.record.record_functions import (
+    make_factr_drive_fn,
     make_record_fn,
     make_streamer_drive_fn,
     make_teleop_drive_fn,
     make_teleop_fn,
     make_teleop_streamer_fn,
 )
+from crisp_gym.teleop.teleop_factr_stream import FACTRStreamedJoints
 from crisp_gym.record.recording_manager import make_recording_manager
 from crisp_gym.teleop.teleop_robot import TeleopRobot, make_leader
 from crisp_gym.teleop.teleop_robot_config import list_leader_configs
@@ -130,6 +132,22 @@ def main():
         ),
     )
     parser.add_argument(
+        "--use-factr",
+        action="store_true",
+        help=(
+            "Use a FACTR leader arm (joint-space teleop) to drive the follower. "
+            "Requires --joint-control and --record-config (the config-driven "
+            "recorder; e.g. umi_robot_record.yaml to store UMI-style measured "
+            "TCP actions while FACTR drives the joints)."
+        ),
+    )
+    parser.add_argument(
+        "--factr-name",
+        type=str,
+        default="right",
+        help="FACTR arm name used in the topic prefix (default: right).",
+    )
+    parser.add_argument(
         "--use-streamed-teleop",
         action="store_true",
         help="Whether to use streamed teleop (e.g., from a phone or VR device) for the leader robot.",
@@ -159,14 +177,14 @@ def main():
         )
         logger.info(f"Using follower namespace: {args.follower_namespace}")
 
-    if args.leader_namespace is None and not args.use_streamed_teleop:
+    if args.leader_namespace is None and not args.use_streamed_teleop and not args.use_factr:
         args.leader_namespace = prompt.prompt(
             "Please enter the leader robot namespace (e.g., 'left', 'right', ...)",
             default="left",
         )
         logger.info(f"Using leader namespace: {args.leader_namespace}")
 
-    if args.leader_config is None and not args.use_streamed_teleop:
+    if args.leader_config is None and not args.use_streamed_teleop and not args.use_factr:
         leader_configs = list_leader_configs()
         args.leader_config = prompt.prompt(
             "Please enter the leader robot configuration name.",
@@ -222,8 +240,19 @@ def main():
 
     try:
 
-        leader: TeleopRobot | TeleopStreamedPose | None = None
-        if args.use_streamed_teleop:
+        leader: TeleopRobot | TeleopStreamedPose | FACTRStreamedJoints | None = None
+        if args.use_factr:
+            if not args.joint_control:
+                raise ValueError("--use-factr requires --joint-control (FACTR drives joints).")
+            if args.record_config is None:
+                raise ValueError(
+                    "--use-factr requires --record-config (config-driven recorder), "
+                    "e.g. config/recording/umi_robot_record.yaml."
+                )
+            leader = FACTRStreamedJoints(name=args.factr_name)
+            leader.wait_until_ready()
+            logger.info("Using FACTR leader arm. FACTR stream is ready.")
+        elif args.use_streamed_teleop:
             leader = TeleopStreamedPose()
             logger.info("Using streamed teleop for the leader robot.")
         else:
@@ -343,7 +372,9 @@ def main():
                 if record_config is not None:
                     # Config-driven recorder: teleop only drives, the record
                     # config decides what is stored (e.g. UMI next_tcp_pose).
-                    if isinstance(leader, TeleopRobot):
+                    if isinstance(leader, FACTRStreamedJoints):
+                        drive_fn = make_factr_drive_fn(leader)
+                    elif isinstance(leader, TeleopRobot):
                         drive_fn = make_teleop_drive_fn(env, leader)
                     elif isinstance(leader, TeleopStreamedPose) and isinstance(
                         env, ManipulatorCartesianEnv
