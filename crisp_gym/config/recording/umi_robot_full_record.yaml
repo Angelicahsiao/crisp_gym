@@ -26,24 +26,30 @@ observations:
     camera: primary
     shape: [224, 224, 3]
 
-  # ── extra states (saved, NOT in observation.state, NOT policy inputs) ──────
-  - key: observation.state.joints
+  # ── extra states (saved, NOT policy inputs) ────────────────────────────────
+  # IMPORTANT: extras use the "extra." prefix, NOT "observation.": LeRobot's
+  # dataset_to_policy_features() treats EVERY observation.* key as a policy
+  # STATE input regardless of our include_in_state flag, which breaks
+  # mixability with handheld data. Keys outside observation./action are
+  # stored in the dataset but silently ignored by the policy — exactly what
+  # we want for debug/analysis states.
+  - key: extra.joints
     source: robot.joint_positions
     shape: [6]
     include_in_state: false
-  - key: observation.state.joint_velocities
+  - key: extra.joint_velocities
     source: robot.joint_velocities
     shape: [6]
     include_in_state: false
-  - key: observation.state.joint_efforts        # needs has_effort_feedback: true
+  - key: extra.joint_efforts                    # needs has_effort_feedback: true
     source: robot.joint_efforts
     shape: [6]
     include_in_state: false
-  - key: observation.state.target_cartesian     # commanded pose (tracking error analysis)
+  - key: extra.target_cartesian                 # commanded pose (tracking error analysis)
     source: robot.target_pose
     representation: rotation_6d
     include_in_state: false
-  - key: observation.state.gripper_raw          # uncalibrated device value
+  - key: extra.gripper_raw                      # uncalibrated device value
     source: gripper.raw_value
     include_in_state: false
 

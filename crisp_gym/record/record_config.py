@@ -303,6 +303,22 @@ class RecordConfig:
         keys = [o.key for o in self.observations]
         if len(keys) != len(set(keys)):
             raise ValueError(f"Duplicate observation keys: {keys}")
+        for o in self.observations:
+            # LeRobot's dataset_to_policy_features() treats EVERY observation.*
+            # key as a policy input, ignoring our include_in_state flag. Extras
+            # must live outside that prefix (e.g. "extra.joints") or they leak
+            # into the policy and break cross-device mixability.
+            if (
+                not o.include_in_state
+                and o.key.startswith("observation.")
+                and not o.key.startswith("observation.images")
+            ):
+                raise ValueError(
+                    f"'{o.key}' has include_in_state: false but uses the "
+                    "'observation.' prefix — LeRobot would still feed it to the "
+                    "policy as a STATE input. Rename it to an 'extra.' key "
+                    "(e.g. 'extra.joints')."
+                )
 
     # ── features (LeRobot schema) ──
     def to_features(self, joint_count: int | None = None,
