@@ -10,7 +10,12 @@ dependencies = [
     "scipy>=1.15.2,<2",
     "crisp_python>=3.0.0,<4",
     "rich>=14.0.0, <15",
+    "pyyaml",
 ]
+
+[project.optional-dependencies]
+# For scripts/postprocess_align_datasets.py (runs on the training PC).
+postprocess = ["pandas", "pyarrow"]
 authors = [
     {name="Maximilian Dösch", email="doesch.maximilian@gmail.com"},
     {name="Daniel San Jose Pro", email="sanjose.daniel@gmail.com"},
