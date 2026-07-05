@@ -106,6 +106,34 @@ def _src_joint_positions(env, **_) -> np.ndarray:
     return np.asarray(env.robot.joint_values, dtype=np.float32)
 
 
+@register_source("robot.joint_velocities")
+def _src_joint_velocities(env, **_) -> np.ndarray:
+    return np.asarray(env.robot.joint_velocities, dtype=np.float32)
+
+
+@register_source("robot.joint_efforts")
+def _src_joint_efforts(env, **_) -> np.ndarray:
+    """Measured joint efforts. Requires has_effort_feedback on the robot
+    config and effort values in the JointState messages (else zeros)."""
+    return np.asarray(env.robot.current_joint_effort, dtype=np.float32)
+
+
+@register_source("robot.target_pose")
+def _src_target_pose(env, representation: str = "rotation_6d", **_) -> np.ndarray:
+    """Commanded (target) TCP pose — useful to analyze controller tracking."""
+    return _pose_to_array(env.robot.target_pose, representation)
+
+
+@register_source("gripper.raw_value")
+def _src_gripper_raw(env, **_) -> np.ndarray:
+    """Uncalibrated device gripper value [0,1] — for debugging width scaling."""
+    if hasattr(env, "_gripper_normalized"):
+        return np.array([float(env._gripper_normalized)], dtype=np.float32)
+    if getattr(env, "gripper", None) is not None:
+        return np.array([float(env.gripper.value)], dtype=np.float32)
+    return np.zeros(1, dtype=np.float32)
+
+
 @register_source("gripper.width_normalized")
 def _src_gripper(env, reference_width: float | None = None,
                  device_max_width: float | None = None, **_) -> np.ndarray:
@@ -164,16 +192,19 @@ class ObsFieldConfig:
     def resolved_shape(self) -> tuple:
         if self.shape is not None:
             return tuple(self.shape)
-        if self.source == "robot.tcp_pose":
+        if self.source in ("robot.tcp_pose", "robot.target_pose"):
             return (POSE_DIMS[self.params.get("representation", "rotation_6d")],)
-        if self.source == "gripper.width_normalized":
+        if self.source in ("gripper.width_normalized", "gripper.raw_value"):
             return (1,)
         raise ValueError(f"shape required for source '{self.source}' (key {self.key})")
 
     def names(self) -> List[str]:
-        if self.source == "robot.tcp_pose":
-            return POSE_NAMES[self.params.get("representation", "rotation_6d")]
-        if self.source == "gripper.width_normalized":
+        if self.source in ("robot.tcp_pose", "robot.target_pose"):
+            names = POSE_NAMES[self.params.get("representation", "rotation_6d")]
+            if self.source == "robot.target_pose":
+                return [f"target_{n}" for n in names]
+            return names
+        if self.source in ("gripper.width_normalized", "gripper.raw_value"):
             return ["gripper"]
         n = int(np.prod(self.resolved_shape()))
         stem = self.key.split(".")[-1]
@@ -316,7 +347,13 @@ class RecordConfig:
             "record_config_name": self.name,
             "rate_hz": self.rate_hz,
             "observations": [
-                {"key": o.key, "source": o.source, **o.params} for o in self.observations
+                {
+                    "key": o.key,
+                    "source": o.source,
+                    "include_in_state": o.include_in_state,
+                    **o.params,
+                }
+                for o in self.observations
             ],
             "action": {
                 "definition": self.action.definition,
@@ -339,11 +376,26 @@ class RecordConfig:
                     f"Record contracts differ on '{f}': {meta_a.get(f)} vs {meta_b.get(f)}"
                 )
                 return False
-        # state keys + their source params must match too
-        a_obs = {o["key"]: o for o in meta_a.get("observations", [])}
-        b_obs = {o["key"]: o for o in meta_b.get("observations", [])}
+
+        # Only POLICY-RELEVANT observations (include_in_state) must match —
+        # debug/analysis extras (include_in_state: false, e.g. joint efforts
+        # on a robot dataset) do not affect train-mixability; align schemas
+        # with scripts/postprocess_align_datasets.py before concatenating.
+        # device_max_width is device-specific by design (0.140 Robotiq vs the
+        # handheld's own max width) — what must match is reference_width, the
+        # shared physical scale. Exclude it from the comparison.
+        _DEVICE_SPECIFIC = ("include_in_state", "device_max_width")
+
+        def _state_obs(meta):
+            return {
+                o["key"]: {k: v for k, v in o.items() if k not in _DEVICE_SPECIFIC}
+                for o in meta.get("observations", [])
+                if o.get("include_in_state", True)
+            }
+
+        a_obs, b_obs = _state_obs(meta_a), _state_obs(meta_b)
         if a_obs.keys() != b_obs.keys():
-            logger.error(f"Observation keys differ: {a_obs.keys()} vs {b_obs.keys()}")
+            logger.error(f"State observation keys differ: {a_obs.keys()} vs {b_obs.keys()}")
             return False
         for k in a_obs:
             if a_obs[k] != b_obs[k]:
