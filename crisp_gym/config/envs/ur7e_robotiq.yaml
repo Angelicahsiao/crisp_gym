@@ -7,6 +7,12 @@ control_frequency: 50.0
 robot_config:
   robot_type: "ur"
   has_effort_feedback: true
+  # NOTE (UMI recording): URConfig's default target_frame is "tool0" — the
+  # FLANGE, not the gripper fingertips. For UMI-compatible data the recorded
+  # TCP must be the fingertip point matching the handheld's tx_body_tcp.
+  # Either uncomment a fingertip frame published in your TF tree, e.g.:
+  # target_frame: "robotiq_2f140_tcp"
+  # or account for the flange->fingertip offset in the handheld tx_body_tcp.
 
 gripper_config:
   from_yaml: "grippers/gripper_robotiq_2f140.yaml"
