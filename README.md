@@ -12,4 +12,4 @@ This repository contains Gymnasium environments to train and deploy high-level l
 
 Check the [docs](https://utiasdsl.github.io/crisp_controllers/getting_started/#4-using-the-gym) to get started.
 
-For the UMI-style data pipeline (handheld/robot recording, dataset alignment, relative-pose training, deployment), see **[USAGE.md](USAGE.md)**; development conventions live in [HANDOFF.md](HANDOFF.md).
+For the UMI-style data pipeline (handheld/robot recording, dataset alignment, relative-pose training, deployment), see **[USAGE.md](USAGE.md)**; remote model serving is specified in [REMOTE_INFERENCE.md](REMOTE_INFERENCE.md); development conventions live in [HANDOFF.md](HANDOFF.md).

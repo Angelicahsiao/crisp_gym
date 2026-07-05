@@ -222,8 +222,9 @@ relative representation); what must match is the TCP frame convention and the
 gripper `reference_width` (0.09 m) used at recording.
 
 Local deployment: `crisp_gym/scripts/deploy_policy.py` with a policy config
-(`crisp_gym/config/policy/`). Remote (websocket) serving: planned — see
-HANDOFF.md roadmap item 1 for the client/server contract.
+(`crisp_gym/config/policy/`). Remote (websocket) serving: see
+**REMOTE_INFERENCE.md** and the documented contract config
+`crisp_gym/config/policy/remote_policy_example.yaml`.
 
 ---
 
