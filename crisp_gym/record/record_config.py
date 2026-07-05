@@ -91,8 +91,9 @@ def _src_tcp_pose(env, representation: str = "rotation_6d", **_) -> np.ndarray:
     if hasattr(env, "current_pose_as_action"):
         # UmiHandheldEnv: [pose..., gripper] with env-config representation.
         # The env's orientation_representation must match `representation`.
-        env_rep = str(getattr(env.config, "orientation_representation", ""))
-        if representation not in env_rep:
+        rep_obj = getattr(env.config, "orientation_representation", "")
+        env_rep = getattr(rep_obj, "value", str(rep_obj))
+        if representation != env_rep:
             raise ValueError(
                 f"robot.tcp_pose wants '{representation}' but handheld env is "
                 f"configured with '{env_rep}'. Align the env YAML."

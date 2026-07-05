@@ -15,7 +15,6 @@ from crisp_gym.util.gripper_mode import GripperMode
 
 if TYPE_CHECKING:
     from crisp_gym.envs.manipulator_env import ManipulatorBaseEnv, ManipulatorCartesianEnv
-    from crisp_gym.envs.umi_handheld_env import UmiHandheldEnv
     from crisp_gym.teleop.teleop_robot import TeleopRobot
     from crisp_gym.teleop.teleop_sensor_stream import TeleopStreamedPose
 
@@ -256,35 +255,6 @@ def make_factr_drive_fn(factr) -> Callable:
         return np.append(delta, gripper).astype(np.float32)
 
     return _drive
-
-
-def make_umi_handheld_fn(env: "UmiHandheldEnv") -> Callable:
-    """Create a recording function for the UMI handheld environment.
-
-    Implements a 1-step lookahead pairing: returns (obs[t-1], pose[t]) so the
-    stored action represents the next observed state — matching UMI's action
-    definition of action[t] = tcp_pose[t+1].
-
-    Args:
-        env: A UmiHandheldEnv instance.
-
-    Returns:
-        Callable: A function that returns (obs, action) on each call.
-    """
-    prev_obs = None
-
-    def _fn() -> tuple:
-        nonlocal prev_obs
-        obs, *_ = env.step(None)
-        current_action = env.current_pose_as_action()
-        if prev_obs is None:
-            prev_obs = obs
-            return None, None
-        result_obs = prev_obs
-        prev_obs = obs
-        return result_obs, current_action
-
-    return _fn
 
 
 def make_teleop_fn(env: ManipulatorBaseEnv, leader: TeleopRobot) -> Callable:

@@ -178,6 +178,7 @@ class ManipulatorEnvConfig(ABC):
             OrientationRepresentation.EULER,
             OrientationRepresentation.QUATERNION,
             OrientationRepresentation.ANGLE_AXIS,
+            OrientationRepresentation.ROTATION_6D,
         ]
         if self.orientation_representation not in supported_representations:
             raise ValueError(
@@ -217,7 +218,9 @@ class ManipulatorEnvConfig(ABC):
             "gripper_threshold": self.gripper_threshold,
             "cartesian_control_param_config": str(self.cartesian_control_param_config),
             "joint_control_param_config": str(self.joint_control_param_config),
-            "orientation_representation": str(self.orientation_representation),
+            "orientation_representation": getattr(
+                self.orientation_representation, "value", str(self.orientation_representation)
+            ),
             "use_relative_actions": self.use_relative_actions,
         }
 

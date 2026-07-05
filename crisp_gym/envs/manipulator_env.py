@@ -642,7 +642,8 @@ class ManipulatorBaseEnv(gym.Env):
         """Get the dimension of the rotation representation.
 
         Returns:
-            int: The dimension of the rotation (3 for Euler/AngleAxis, 4 for Quaternion).
+            int: The dimension of the rotation (3 for Euler/AngleAxis, 4 for
+            Quaternion, 6 for Rotation6D).
         """
         if self.config.orientation_representation == OrientationRepresentation.EULER:
             return 3
@@ -650,6 +651,8 @@ class ManipulatorBaseEnv(gym.Env):
             return 4
         elif self.config.orientation_representation == OrientationRepresentation.ANGLE_AXIS:
             return 3
+        elif self.config.orientation_representation == OrientationRepresentation.ROTATION_6D:
+            return 6
         else:
             raise ValueError(
                 f"Unsupported orientation representation: {self.config.orientation_representation}"
@@ -670,6 +673,13 @@ class ManipulatorBaseEnv(gym.Env):
             return Rotation.from_quat(rot_action)
         elif self.config.orientation_representation == OrientationRepresentation.ANGLE_AXIS:
             return Rotation.from_rotvec(rot_action)
+        elif self.config.orientation_representation == OrientationRepresentation.ROTATION_6D:
+            # First two rows of R (UMI/pytorch3d convention), Gram-Schmidt.
+            a1, a2 = np.asarray(rot_action[:3], float), np.asarray(rot_action[3:6], float)
+            b1 = a1 / np.linalg.norm(a1)
+            b2 = a2 - np.dot(b1, a2) * b1
+            b2 = b2 / np.linalg.norm(b2)
+            return Rotation.from_matrix(np.stack([b1, b2, np.cross(b1, b2)]))
         else:
             raise ValueError(
                 f"Unsupported orientation representation: {self.config.orientation_representation}"

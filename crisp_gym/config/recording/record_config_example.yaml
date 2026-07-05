@@ -68,8 +68,10 @@ observations:
     camera: primary
     shape: [224, 224, 3]
 
-  # Example: extra column kept out of the policy state (debug/analysis only)
-  - key: observation.state.joints
+  # Example: extra column kept out of the policy state (debug/analysis only).
+  # MUST use the "extra." prefix: LeRobot feeds every observation.* key to the
+  # policy regardless of include_in_state (validate() rejects the combination).
+  - key: extra.joints
     source: robot.joint_positions
     shape: [7]
     include_in_state: false

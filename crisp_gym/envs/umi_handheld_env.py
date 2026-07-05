@@ -61,7 +61,7 @@ class UmiHandheldEnvConfig:
             Default is identity — configure once OptiTrack axes are known.
         tx_body_tcp: 4×4 homogeneous matrix from OptiTrack rigid body frame to TCP frame.
             Default is identity — define the rigid body axes in Motive to match TCP convention.
-        orientation_representation: Rotation format stored in observations (Euler default).
+        orientation_representation: Rotation format stored in observations (rotation_6d default, matching the UMI contract).
         observations_to_include_to_state: Which state keys to include in the dataset.
         log_status_every_n_frames: Log current pose every N frames (~1 Hz at 15 fps default).
     """
@@ -77,7 +77,7 @@ class UmiHandheldEnvConfig:
     tx_body_tcp: List[List[float]] = field(
         default_factory=lambda: np.eye(4).tolist()
     )
-    orientation_representation: OrientationRepresentation = OrientationRepresentation.EULER
+    orientation_representation: OrientationRepresentation = OrientationRepresentation.ROTATION_6D
     observations_to_include_to_state: List[str] = field(
         default_factory=lambda: [
             ObservationKeys.CARTESIAN_OBS,
@@ -103,7 +103,9 @@ class UmiHandheldEnvConfig:
             "pose_topic": self.pose_topic,
             "gripper_width_topic": self.gripper_width_topic,
             "max_gripper_width": self.max_gripper_width,
-            "orientation_representation": str(self.orientation_representation),
+            "orientation_representation": getattr(
+                self.orientation_representation, "value", str(self.orientation_representation)
+            ),
             "camera_configs": [c.__dict__ for c in self.camera_configs],
             "tx_world_correction": self.tx_world_correction,
             "tx_body_tcp": self.tx_body_tcp,
@@ -336,7 +338,7 @@ class UmiHandheldEnv(gym.Env):
         """Return current observation. action is ignored (no robot to command).
 
         The action parameter exists only to satisfy the gym interface — the recording
-        function (make_umi_handheld_fn) builds and stores the action independently.
+        function (make_record_fn with a RecordConfig) builds and stores the action independently.
         """
         self.timestep += 1
 

@@ -32,7 +32,7 @@ Repos involved (same owner, branch conventions apply to all):
 - **On disk (Parquet, LeRobot format): ABSOLUTE poses.** Never store relative
   poses in the dataset. `observation.state.cartesian` = absolute TCP pose in
   the recording world frame; `action[t]` = absolute TCP pose at t+1
-  (1-step lookahead, see `make_umi_handheld_fn` in
+  (1-step lookahead, see `make_record_fn` in
   `crisp_gym/record/record_functions.py`).
 - **At training time**: `crisp_gym/scripts/lerobot_relative_pose.py`
   (`RelativePoseDataset`) converts to relative inside `__getitem__`, AFTER
@@ -86,10 +86,9 @@ Repos involved (same owner, branch conventions apply to all):
 |---|---|
 | `crisp_gym/envs/umi_handheld_env.py` | Recording env: subscribes OptiTrack PoseStamped + Float32 gripper width; no robot. `_HandheldRobotStub` satisfies `get_features()`. |
 | `crisp_gym/config/envs/umi_handheld.yaml` | Topics, rot6d, identity transforms, `max_gripper_width`. |
-| `crisp_gym/record/record_functions.py::make_umi_handheld_fn` | 1-step lookahead pairing (obs[t-1], pose[t]). |
+| `crisp_gym/record/record_functions.py::make_record_fn` | Config-driven recorder; 1-step lookahead pairing done per RecordConfig. |
 | `crisp_gym/scripts/record_umi_handheld.py` | Recording entry point (KeyboardRecordingManager: r/s/d/q). |
 | `crisp_gym/scripts/lerobot_relative_pose.py` | Training-side dataset wrapper + `lerobot-train` launcher (patches `make_dataset`). Runs on the GPU PC, needs only lerobot/torch/numpy — NO crisp imports, keep it that way. |
-| `crisp_gym/scripts/postprocess_relative_pose.py` | LEGACY — per-row relative baking. Superseded by the wrapper (per-row baking is incorrect for the 2-frame obs window). Do not extend; consider deleting after confirming nothing uses it. |
 | `crisp_gym/util/lerobot_features.py` | Feature schema. Rotation-rep-aware dims/names AND v0.4.x/v0.5.x lerobot compatibility + fps parameter (merged from two branches — both aspects must survive future edits). |
 | `crisp_py/utils/geometry.py` | `OrientationRepresentation.ROTATION_6D` lives here. |
 | `tests/test_lerobot_record.py` | Stubs crisp_py/ROS at import; its `_OrientationRepresentation` stub MUST mirror the real enum (already includes ROTATION_6D). |
@@ -149,8 +148,12 @@ norm ~1.0 and dot ~0.0 (they are rows of a real rotation matrix).
    + any drive_fn (drive_fn computes commands only, never steps the env).
    Integration DONE: record_umi_handheld.py uses RecordConfig by default;
    record_lerobot_format_leader_follower.py gains --record-config (legacy
-   behavior when omitted); both stamp meta/record_config.json. Legacy fns
-   (make_teleop_fn, make_umi_handheld_fn) kept for back-compat.
+   behavior when omitted); both stamp meta/record_config.json. Legacy fns:
+   make_teleop_fn/make_teleop_streamer_fn kept (used by the no-record-config
+   path); make_umi_handheld_fn and postprocess_relative_pose.py DELETED;
+   ControlType.controller_name() DELETED; unused crisp_gym/config/control/*.py
+   client copies DELETED. Robot envs now accept rotation_6d
+   (get_rotation_dimension/action_to_rotation/supported_representations).
    End-to-end test against crisp_controllers_demos fake Franka
    (FRANKA_FAKE_HARDWARE=true) was blocked in the cloud env (Docker Hub blob
    CDN forbidden by network policy) — run it on real hardware machine.
