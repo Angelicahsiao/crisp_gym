@@ -16,6 +16,13 @@ LeRobot can concatenate them. This script:
      --rescale-gripper OLD_REF NEW_REF   gripper recorded against a wrong
                                          reference width -> rescale obs+action
                                          gripper dims by OLD_REF/NEW_REF, clip [0,1]
+     --promote extra.foo [extra.bar ...] rename extra.* columns to
+                                         observation.state.* so LeRobot treats
+                                         them as policy STATE inputs (with
+                                         temporal windowing + stats). Use for
+                                         ROBOT-ONLY training — promoted
+                                         datasets are no longer mixable with
+                                         handheld data lacking those columns.
 4. Rewrites meta features (info.json) and record_config.json accordingly.
 
 Output: <dataset>_aligned copies, ready to concatenate.
@@ -93,10 +100,18 @@ def is_internal(col: str) -> bool:
     )
 
 
+def promoted_name(key: str) -> str:
+    """extra.foo -> observation.state.foo"""
+    if not key.startswith("extra."):
+        raise ValueError(f"--promote expects 'extra.*' keys, got '{key}'")
+    return "observation.state." + key[len("extra."):]
+
+
 def align(
     dataset_dirs: list[Path],
     output_suffix: str,
     rescale_gripper: tuple[float, float] | None,
+    promote: list[str],
     dry_run: bool,
 ) -> None:
     # ── 1. contract verification ─────────────────────────────────────────────
@@ -122,6 +137,19 @@ def align(
     # ── 2. shared column set ─────────────────────────────────────────────────
     col_sets = {d: dataset_columns(d) for d in dataset_dirs}
     shared = set.intersection(*col_sets.values())
+
+    if promote:
+        # Promoted columns must exist everywhere (a policy input cannot be
+        # missing in part of the training data) and must not be stripped.
+        missing = {d.name: sorted(set(promote) - col_sets[d]) for d in dataset_dirs
+                   if set(promote) - col_sets[d]}
+        if missing:
+            raise SystemExit(
+                f"--promote columns missing in some datasets: {missing}. "
+                "Promotion makes them policy inputs, so every dataset in the "
+                "mix must contain them (robot-only training)."
+            )
+        shared |= set(promote)
     for d, cols in col_sets.items():
         extras = sorted(c for c in cols - shared if not is_internal(c))
         if extras:
@@ -141,9 +169,13 @@ def align(
         logger.info(f"Copying {d} -> {out}")
         shutil.copytree(d, out, dirs_exist_ok=True)
 
+        rename_map = {k: promoted_name(k) for k in promote}
+
         for ep in episode_files(out):
             df = pd.read_parquet(ep)
             df = df.drop(columns=[c for c in drop if c in df.columns])
+            if rename_map:
+                df = df.rename(columns=rename_map)
 
             if rescale_gripper is not None:
                 old_ref, new_ref = rescale_gripper
@@ -177,6 +209,9 @@ def align(
             feats = info.get("features", {})
             for c in drop:
                 feats.pop(c, None)
+            for old, new in rename_map.items():
+                if old in feats:
+                    feats[new] = feats.pop(old)
             with open(info_path, "w") as f:
                 json.dump(info, f, indent=4)
 
@@ -185,6 +220,12 @@ def align(
         meta["observations"] = [
             o for o in meta.get("observations", []) if o["key"] in shared
         ]
+        for o in meta["observations"]:
+            if o["key"] in rename_map:
+                o["key"] = rename_map[o["key"]]
+                o["include_in_state"] = True   # it IS a policy input now
+        if rename_map:
+            meta["promoted"] = rename_map
         meta["aligned_from"] = str(d)
         if rescale_gripper is not None:
             meta["gripper_rescaled"] = {"old_ref": rescale_gripper[0],
@@ -210,6 +251,11 @@ def main():
                         metavar=("OLD_REF", "NEW_REF"),
                         help="Rescale gripper dims recorded against OLD_REF meters "
                              "to NEW_REF meters (value * OLD/NEW, clipped [0,1]).")
+    parser.add_argument("--promote", type=str, nargs="+", default=[],
+                        metavar="EXTRA_KEY",
+                        help="Rename extra.* columns to observation.state.* so "
+                             "LeRobot uses them as policy inputs (robot-only "
+                             "training; all datasets must contain them).")
     parser.add_argument("--dry-run", action="store_true",
                         help="Report what would change without writing anything.")
     parser.add_argument("--log-level", type=str, default="INFO",
@@ -225,9 +271,12 @@ def main():
         if not d.exists():
             raise FileNotFoundError(f"Dataset not found: {d}")
 
+    for k in args.promote:
+        promoted_name(k)  # validate prefix early, before any copying
+
     align(dirs, args.output_suffix,
           tuple(args.rescale_gripper) if args.rescale_gripper else None,
-          args.dry_run)
+          args.promote, args.dry_run)
 
 
 if __name__ == "__main__":
