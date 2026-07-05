@@ -11,3 +11,5 @@
 This repository contains Gymnasium environments to train and deploy high-level learning-based policies from [LeRobot](https://github.com/huggingface/lerobot) using [CRISP_PY](https://github.com/utiasDSL/crisp_py) and the [CRISP controllers](https://github.com/utiasDSL/crisp_controllers).
 
 Check the [docs](https://utiasdsl.github.io/crisp_controllers/getting_started/#4-using-the-gym) to get started.
+
+For the UMI-style data pipeline (handheld/robot recording, dataset alignment, relative-pose training, deployment), see **[USAGE.md](USAGE.md)**; development conventions live in [HANDOFF.md](HANDOFF.md).
