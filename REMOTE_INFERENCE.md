@@ -19,6 +19,18 @@ The client half lives in crisp_gym; the **server is not part of this repo**
 sides must satisfy. Status: the client (`crisp_gym/policy/remote_policy.py`)
 is the top roadmap item in HANDOFF.md §4; the config format below is final.
 
+**Version policy (canonical deployment mode).** Training AND rollout both run
+only on the GPU machine; crisp_gym acts purely as the websocket client. The
+GPU machine may run any lerobot version (train + serve with the SAME version
+so the server's transforms/normalization match the checkpoint). The robot
+machine's lerobot 0.4.4 is used only for RECORDING datasets — never for
+inference. `deploy_policy.py` (local, in-process inference) is legacy: only
+valid for checkpoints trained with the robot machine's own lerobot version;
+do not use it with checkpoints from a newer lerobot. When upgrading lerobot
+on the GPU, re-verify the training wrapper's seams (lerobot_train import,
+make_dataset patch, and that recompute_relative_stats' patched meta.stats are
+actually used by normalization) with a --steps=100 smoke run.
+
 ---
 
 ## 1. The contract config

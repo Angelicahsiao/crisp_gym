@@ -221,10 +221,12 @@ No OptiTrack-to-robot calibration is needed (the world frame cancels in the
 relative representation); what must match is the TCP frame convention and the
 gripper `reference_width` (0.09 m) used at recording.
 
-Local deployment: `crisp_gym/scripts/deploy_policy.py` with a policy config
-(`crisp_gym/config/policy/`). Remote (websocket) serving: see
-**REMOTE_INFERENCE.md** and the documented contract config
+Canonical mode: REMOTE serving — training and rollout live on the GPU
+machine (any lerobot version), crisp_gym is only the websocket client. See
+**REMOTE_INFERENCE.md** (incl. the version policy) and the contract config
 `crisp_gym/config/policy/remote_policy_example.yaml`.
+Local in-process deployment (`crisp_gym/scripts/deploy_policy.py`) is legacy:
+only for checkpoints trained with the robot machine's own lerobot (0.4.4).
 
 ---
 
