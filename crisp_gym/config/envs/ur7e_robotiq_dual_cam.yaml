@@ -1,0 +1,77 @@
+# UR7e + Robotiq 2F-140 + two RealSense cameras (env + wrist) + wrist F/T sensor.
+#
+# Bring-up:
+#   robot:   ros2 launch crisp_controllers_robot_demos ur.launch.py \
+#              ur_type:=ur7e use_gripper:=true com_port:=/dev/ttyUSB0
+#   cameras: launched from crisp_controllers_demos (RealSense). The camera
+#            topics below match dric_dual_rscam_franka.yaml — make sure the
+#            demos publish on THESE namespaces/names (see the note under
+#            camera_configs), otherwise remap or set CAMERA_NAMESPACE /
+#            CAMERA_NAME when launching the RealSense containers.
+control_frequency: 50.0
+
+robot_config:
+  robot_type: "ur"
+  has_effort_feedback: true
+  # URConfig's default target_frame is "tool0" (the FLANGE). For UMI-compatible
+  # recording override it to the fingertip TCP frame published in your TF tree,
+  # e.g.:
+  # target_frame: "robotiq_2f140_tcp"
+
+gripper_config:
+  from_yaml: "grippers/gripper_robotiq_2f140.yaml"
+
+gripper_mode: "absolute_continuous"
+gripper_threshold: 0.1
+
+camera_configs:
+  # Same topics as dric_dual_rscam_franka.yaml.
+  # NOTE: the demos launch RealSense with camera_namespace:=left/right and
+  # camera_name:=left_wrist_camera/right_wrist_camera, which produces topics
+  # like /left/left_wrist_camera/color/image_raw — NOT the /env and /wrist
+  # names below. Either launch the RealSense containers with
+  # CAMERA_NAMESPACE=env CAMERA_NAME=env_cam (and wrist/wrist_cam), or add a
+  # remapping, so the published topics match these.
+  - camera_name: "env_cam"
+    camera_frame: "env_link"
+    resolution: [256, 256]      # resize TARGET for the stored image (see note below)
+    camera_color_image_topic: "/env/env_cam/color/image_raw"
+    camera_color_info_topic: "/env/env_cam/color/camera_info"
+  - camera_name: "wrist_cam"
+    camera_frame: "wrist_link"
+    resolution: [256, 256]
+    camera_color_image_topic: "/wrist/wrist_cam/color/image_rect_raw"
+    camera_color_info_topic: "/wrist/wrist_cam/color/camera_info"
+
+sensor_configs:
+  - sensor_type: "force_torque"
+    name: "ft_sensor"
+    shape: [6]
+    data_topic: "/force_torque_sensor_broadcaster/wrench"
+
+cartesian_control_param_config: "control/ur_cartesian_impedance.yaml"
+joint_control_param_config: "control/ur_joint_control.yaml"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Raising the camera resolution — read before changing `resolution` above.
+#
+# `resolution: [H, W]` in this config is a RESIZE TARGET applied by crisp_py's
+# Camera (aspect-ratio preserving, INTER_AREA, center-cropped). It does NOT
+# request a resolution from the RealSense driver — the camera subscribes to
+# whatever the driver publishes and then resizes DOWN to this target.
+#
+# Consequences:
+#   * Setting a larger value here (e.g. [480, 480]) does NOT add detail if the
+#     source stream is smaller — it upscales cropped pixels and just makes
+#     bigger files / slower training.
+#   * To genuinely raise resolution you must raise the SOURCE stream in the
+#     crisp_controllers_demos RealSense launch (rs_launch.py), e.g.:
+#       ros2 launch realsense2_camera rs_launch.py \
+#           rgb_camera.color_profile:=1280x720x30
+#     then set `resolution` here to the size you want stored (<= source).
+#
+# Practical guidance: most LeRobot policies (diffusion/ACT) train on 224–256 px
+# square inputs; going much above 256 rarely helps and costs a lot of disk +
+# GPU. If you do want higher, e.g. 384: raise the RealSense color_profile to
+# >= 640x480, set `resolution: [384, 384]` here. Keep both cameras the SAME
+# resolution (LeRobot policies expect uniform image sizes).
