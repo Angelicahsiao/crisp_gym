@@ -11,3 +11,6 @@
   use_gripper_command_action: True
   max_delta: 1.0
   max_effort: 5.0
+
+  # No Dynamixel-style torque/reboot services on the Robotiq.
+  torque_interface: false
