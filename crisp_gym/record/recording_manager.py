@@ -272,7 +272,7 @@ class RecordingManager(ABC):
                     logger.info("Shutting down writer process.")
                     break
             except Exception as e:
-                logger.exception("Error occured: ", e)
+                logger.exception("Error occurred: %s", e)
             finally:
                 pass
 

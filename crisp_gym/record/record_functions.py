@@ -122,10 +122,30 @@ def make_record_fn(
     lookahead = act_cfg.lookahead
     obs_buffer: deque = deque(maxlen=lookahead + 1)
 
+    def _resize_image(img: np.ndarray, shape) -> np.ndarray:
+        """Resize an (H, W, C) image to the contract's declared (H, W, C).
+
+        The camera produces images at the env config's `resolution` target,
+        which need not equal the record contract's declared image shape. The
+        old record path cropped/resized the image afterward; do the same here
+        so a resolution mismatch never raises a LeRobot shape error.
+        """
+        if img is None or shape is None or len(shape) != 3:
+            return img
+        target_h, target_w = int(shape[0]), int(shape[1])
+        if img.shape[0] == target_h and img.shape[1] == target_w:
+            return img
+        import cv2
+
+        return cv2.resize(img, (target_w, target_h), interpolation=cv2.INTER_AREA)
+
     def _collect_obs() -> dict:
         obs = {"task": getattr(env, "task", "")}
         for o in record_config.observations:
-            obs[o.key] = SOURCE_REGISTRY[o.source](env, **o.params)
+            val = SOURCE_REGISTRY[o.source](env, **o.params)
+            if o.key.startswith("observation.images.") and o.shape is not None:
+                val = _resize_image(val, o.resolved_shape())
+            obs[o.key] = val
         return obs
 
     def _action_value() -> np.ndarray:
