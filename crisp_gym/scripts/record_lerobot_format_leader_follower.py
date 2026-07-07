@@ -73,8 +73,8 @@ def main():
     parser.add_argument(
         "--push-to-hub",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Whether to push the dataset to the Hugging Face Hub.",
+        default=False,
+        help="Whether to push the dataset to the Hugging Face Hub. Default: off (pass --push-to-hub to enable).",
     )
     parser.add_argument(
         "--recording-manager-type",
