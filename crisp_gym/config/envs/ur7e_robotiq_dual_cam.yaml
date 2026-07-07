@@ -40,7 +40,7 @@ camera_configs:
   - camera_name: "wrist_cam"
     camera_frame: "wrist_link"
     resolution: [256, 256]
-    camera_color_image_topic: "/wrist/wrist_cam/color/image_rect_raw"
+    camera_color_image_topic: "/wrist/wrist_cam/color/image_raw"
     camera_color_info_topic: "/wrist/wrist_cam/color/camera_info"
 
 sensor_configs:
