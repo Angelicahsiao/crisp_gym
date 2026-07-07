@@ -170,10 +170,16 @@ def _src_gripper(env, reference_width: float | None = None,
 
 @register_source("camera.image")
 def _src_camera(env, camera: str = "", **_):
-    for cam in getattr(env, "cameras", []):
+    cams = getattr(env, "cameras", [])
+    for cam in cams:
         if cam.config.camera_name == camera:
             return cam.current_image
-    raise KeyError(f"Camera '{camera}' not found in env.cameras")
+    available = [c.config.camera_name for c in cams]
+    raise KeyError(
+        f"Camera '{camera}' (from the record config) not found in the env's "
+        f"cameras {available}. The record config's `camera:` field must match a "
+        "`camera_name` in the env config's camera_configs."
+    )
 
 
 # ── Config dataclasses ────────────────────────────────────────────────────────
