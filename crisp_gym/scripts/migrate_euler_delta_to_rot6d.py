@@ -175,39 +175,127 @@ def rewrite_features(features: dict, action_has_gripper: bool) -> dict:
 
 # ── stats recomputation for the rewritten keys ────────────────────────────────
 
-def _stats_for(values: np.ndarray) -> dict:
-    """LeRobot-style per-dimension stats for a [N, D] array."""
-    return {
-        "mean": values.mean(axis=0).astype(np.float64).tolist(),
-        "std": (values.std(axis=0) + 1e-8).astype(np.float64).tolist(),
-        "min": values.min(axis=0).astype(np.float64).tolist(),
-        "max": values.max(axis=0).astype(np.float64).tolist(),
-        "count": [int(values.shape[0])],
-    }
+def _compute_stats(values: np.ndarray, stat_names) -> dict:
+    """Per-dimension stats for a [N, D] array, for the requested stat names.
+
+    Supports LeRobot's names: mean/std/min/max/count and quantiles qNN
+    (q01, q10, q50, q90, q99). Returns each as a np.ndarray (count as [N]).
+    Unknown names map to None (left untouched by callers).
+    """
+    values = np.asarray(values, dtype=np.float64)
+    out: dict = {}
+    for s in stat_names:
+        if s == "mean":
+            out[s] = values.mean(axis=0)
+        elif s == "std":
+            out[s] = values.std(axis=0) + 1e-8
+        elif s == "min":
+            out[s] = values.min(axis=0)
+        elif s == "max":
+            out[s] = values.max(axis=0)
+        elif s == "count":
+            out[s] = np.array([values.shape[0]])
+        elif len(s) > 1 and s[0] == "q" and s[1:].isdigit():
+            out[s] = np.quantile(values, int(s[1:]) / 100.0, axis=0)
+        else:
+            out[s] = None
+    return out
 
 
-def update_stats_files(out_dir: Path, per_ep_frames: dict[int, dict[str, np.ndarray]]):
-    """Patch meta/stats.json (aggregate) and meta/episodes_stats.jsonl
-    (per-episode) for the three rewritten keys, if those files exist."""
-    keys = [CARTESIAN_KEY, STATE_KEY, ACTION_KEY]
-
-    # aggregate stats.json
-    agg = {
-        k: np.concatenate([per_ep_frames[e][k] for e in sorted(per_ep_frames)], axis=0)
-        for k in keys
-        if all(k in per_ep_frames[e] for e in per_ep_frames)
-    }
+def update_stats_json(out_dir: Path, agg: dict[str, np.ndarray]):
+    """Patch aggregate meta/stats.json for the rewritten keys (preserving each
+    key's existing set of stat names, incl. quantiles)."""
     stats_path = out_dir / "meta" / "stats.json"
-    if stats_path.exists():
-        with open(stats_path) as f:
-            stats = json.load(f)
-        for k, v in agg.items():
-            stats[k] = _stats_for(v)
-        with open(stats_path, "w") as f:
-            json.dump(stats, f, indent=4)
-        logger.info("  updated meta/stats.json for %s", list(agg))
+    if not stats_path.exists():
+        return
+    with open(stats_path) as f:
+        stats = json.load(f)
+    for k, vals in agg.items():
+        if k not in stats:
+            continue
+        names = list(stats[k].keys())
+        cs = _compute_stats(vals, names)
+        for name in names:
+            if cs.get(name) is not None:
+                stats[k][name] = cs[name].astype(np.float64).tolist()
+    with open(stats_path, "w") as f:
+        json.dump(stats, f, indent=4)
+    logger.info("  updated meta/stats.json for %s", list(agg))
 
-    # per-episode episodes_stats.jsonl
+
+def update_v3_episode_stats(out_dir: Path, per_ep: dict[int, dict[str, np.ndarray]]):
+    """Patch v3.0 meta/episodes/**/*.parquet per-episode stats columns
+    (``stats/<key>/<stat>``) for the rewritten keys."""
+    ep_files = sorted((out_dir / "meta" / "episodes").rglob("*.parquet"))
+    if not ep_files:
+        return
+    keys = [CARTESIAN_KEY, STATE_KEY, ACTION_KEY]
+    for ef in ep_files:
+        df = pd.read_parquet(ef)
+        ep_col = df["episode_index"].to_numpy()
+
+        # Build new whole-column value lists (assigning per-cell via df.at
+        # unwraps 1-element arrays into 0-d scalars, which pyarrow rejects).
+        cols = {}
+        for k in keys:
+            prefix = f"stats/{k}/"
+            for c in df.columns:
+                if c.startswith(prefix):
+                    cols[c] = list(df[c].to_list())
+
+        changed = False
+        for i in range(len(df)):
+            ep = int(np.asarray(ep_col[i]))
+            if ep not in per_ep:
+                continue
+            for k in keys:
+                if k not in per_ep[ep]:
+                    continue
+                prefix = f"stats/{k}/"
+                names = [c[len(prefix):] for c in df.columns if c.startswith(prefix)]
+                if not names:
+                    continue
+                cs = _compute_stats(per_ep[ep][k], names)
+                n = int(per_ep[ep][k].shape[0])
+                for name in names:
+                    if cs.get(name) is None:
+                        continue
+                    col = prefix + name
+                    ref = cols[col][i]
+                    ref_is_arr = isinstance(ref, np.ndarray) and np.asarray(ref).ndim >= 1
+                    if name == "count":
+                        # preserve scalar-vs-1d-array form of the original cell
+                        cols[col][i] = (
+                            np.full(np.asarray(ref).shape, n, dtype=np.asarray(ref).dtype)
+                            if ref_is_arr else type(ref)(n) if ref is not None else n
+                        )
+                    else:
+                        arr = np.asarray(cs[name]).reshape(-1)
+                        if ref_is_arr:
+                            arr = arr.astype(np.asarray(ref).dtype)
+                        cols[col][i] = arr
+                    changed = True
+
+        if changed:
+            for col, vals in cols.items():
+                df[col] = vals
+            df.to_parquet(ef, index=False)
+            logger.info("  updated %s", ef.relative_to(out_dir))
+
+
+def update_stats_files(out_dir: Path, per_ep: dict[int, dict[str, np.ndarray]]):
+    """Update aggregate (stats.json) and per-episode stats (v3.0 episodes
+    parquet, or v2.x episodes_stats.jsonl) for the rewritten keys."""
+    keys = [CARTESIAN_KEY, STATE_KEY, ACTION_KEY]
+    agg = {
+        k: np.concatenate([per_ep[e][k] for e in sorted(per_ep) if k in per_ep[e]], axis=0)
+        for k in keys
+        if any(k in per_ep[e] for e in per_ep)
+    }
+    update_stats_json(out_dir, agg)
+    update_v3_episode_stats(out_dir, per_ep)
+
+    # v2.x per-episode stats (older datasets)
     ep_stats_path = out_dir / "meta" / "episodes_stats.jsonl"
     if ep_stats_path.exists():
         lines = []
@@ -218,10 +306,14 @@ def update_stats_files(out_dir: Path, per_ep_frames: dict[int, dict[str, np.ndar
                     continue
                 rec = json.loads(line)
                 ep = rec.get("episode_index")
-                if ep in per_ep_frames and "stats" in rec:
+                if ep in per_ep and "stats" in rec:
                     for k in keys:
-                        if k in per_ep_frames[ep] and k in rec["stats"]:
-                            rec["stats"][k] = _stats_for(per_ep_frames[ep][k])
+                        if k in per_ep[ep] and k in rec["stats"]:
+                            names = list(rec["stats"][k].keys())
+                            cs = _compute_stats(per_ep[ep][k], names)
+                            for name in names:
+                                if cs.get(name) is not None:
+                                    rec["stats"][k][name] = cs[name].astype(np.float64).tolist()
                 lines.append(json.dumps(rec))
         with open(ep_stats_path, "w") as f:
             f.write("\n".join(lines) + "\n")
@@ -270,12 +362,34 @@ def migrate(args) -> int:
 
     state_order = state_subfeature_order(new_features) if STATE_KEY in new_features else []
     per_ep_frames: dict[int, dict[str, list]] = {}
+    state_verified = False
 
     for pf in data_parquet_files(out):
         df = pd.read_parquet(pf).reset_index(drop=True)
 
+        # original Euler cartesian (kept for the state-composition sanity check)
+        cart6 = [np.asarray(v, np.float32).reshape(-1) for v in df[CARTESIAN_KEY]]
+
+        # Sanity check (once): observation.state must be the ordered concat of
+        # its sub-features, or rebuilding it would silently reorder the vector.
+        if not state_verified and STATE_KEY in df.columns and state_order:
+            old_parts = [
+                cart6[0] if sk == CARTESIAN_KEY else np.asarray(df[sk].iloc[0], np.float32).reshape(-1)
+                for sk in state_order
+            ]
+            old_concat = np.concatenate(old_parts)
+            existing = np.asarray(df[STATE_KEY].iloc[0], np.float32).reshape(-1)
+            if old_concat.shape != existing.shape or not np.allclose(old_concat, existing, atol=1e-4):
+                raise ValueError(
+                    f"'{STATE_KEY}' is not the ordered concat of its sub-features "
+                    f"{state_order} (got len {existing.shape} vs rebuilt {old_concat.shape}). "
+                    "Refusing to rebuild it — the info.json sub-feature order does "
+                    "not match the stored state vector."
+                )
+            state_verified = True
+
         # 1. cartesian Euler(6) -> rot6d(9)  (per row, order-independent)
-        cart9 = np.stack([euler_pose_to_rot6d(v) for v in df[CARTESIAN_KEY]])
+        cart9 = np.stack([euler_pose_to_rot6d(v) for v in cart6])
         df[CARTESIAN_KEY] = list(cart9)
 
         # gripper (for action + state rebuild)
