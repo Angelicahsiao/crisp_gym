@@ -103,10 +103,17 @@ def euler_pose_to_rot6d(pose6: np.ndarray) -> np.ndarray:
 
 # ── dataset helpers (mirrors postprocess_align_datasets.py) ───────────────────
 
-def episode_files(dataset_dir: Path) -> list[Path]:
-    files = sorted((dataset_dir / "data").rglob("episode_*.parquet"))
+def data_parquet_files(dataset_dir: Path) -> list[Path]:
+    """All frame-data parquet files, layout-agnostic.
+
+    v2.x: data/chunk-*/episode_XXXXXX.parquet (one episode per file).
+    v3.0: data/chunk-*/file-XXX.parquet (many episodes concatenated per file).
+    Both are found by globbing every *.parquet under data/; episodes are then
+    separated by the episode_index column, so the same code handles both.
+    """
+    files = sorted((dataset_dir / "data").rglob("*.parquet"))
     if not files:
-        raise FileNotFoundError(f"No episode parquet files under {dataset_dir}/data")
+        raise FileNotFoundError(f"No frame parquet files under {dataset_dir}/data")
     return files
 
 
@@ -248,8 +255,8 @@ def migrate(args) -> int:
                         tuple(features[key]["shape"]), tuple(new_features[key]["shape"]))
     logger.info("  action gripper channel: %s", "yes" if action_has_gripper else "no")
 
-    eps = episode_files(src)
-    logger.info("Episodes (parquet files): %d", len(eps))
+    data_files = data_parquet_files(src)
+    logger.info("Frame parquet files: %d (episodes separated by episode_index)", len(data_files))
 
     if args.dry_run:
         logger.info("--dry-run: no data written.")
@@ -262,24 +269,21 @@ def migrate(args) -> int:
     shutil.copytree(src, out)
 
     state_order = state_subfeature_order(new_features) if STATE_KEY in new_features else []
-    per_ep_frames: dict[int, dict[str, np.ndarray]] = {}
+    per_ep_frames: dict[int, dict[str, list]] = {}
 
-    for ep in episode_files(out):
-        df = pd.read_parquet(ep)
+    for pf in data_parquet_files(out):
+        df = pd.read_parquet(pf).reset_index(drop=True)
 
-        # 1. cartesian Euler(6) -> rot6d(9)
+        # 1. cartesian Euler(6) -> rot6d(9)  (per row, order-independent)
         cart9 = np.stack([euler_pose_to_rot6d(v) for v in df[CARTESIAN_KEY]])
         df[CARTESIAN_KEY] = list(cart9)
 
         # gripper (for action + state rebuild)
         grip = None
-        if action_has_gripper or (STATE_KEY in df.columns and GRIPPER_KEY in df.columns):
-            if GRIPPER_KEY in df.columns:
-                grip = np.stack([
-                    np.asarray(v, np.float32).reshape(-1) for v in df[GRIPPER_KEY]
-                ])
+        if GRIPPER_KEY in df.columns:
+            grip = np.stack([np.asarray(v, np.float32).reshape(-1) for v in df[GRIPPER_KEY]])
 
-        # 2. rebuild concatenated observation.state from sub-features
+        # 2. rebuild concatenated observation.state from sub-features (per row)
         if STATE_KEY in df.columns and state_order:
             parts_per_row = []
             for i in range(len(df)):
@@ -297,30 +301,55 @@ def migrate(args) -> int:
                 parts_per_row.append(np.concatenate(parts).astype(np.float32))
             df[STATE_KEY] = parts_per_row
 
-        # 3. action = next_tcp_pose (absolute pose at t+1); last frame repeats
-        n = len(df)
-        actions = []
-        for t in range(n):
-            nxt = min(t + 1, n - 1)
-            a = cart9[nxt].astype(np.float32)
-            if action_has_gripper and grip is not None:
-                a = np.concatenate([a, grip[nxt].reshape(-1)]).astype(np.float32)
-            actions.append(a)
+        # 3. action = next_tcp_pose (absolute pose at t+1), PER EPISODE.
+        #    A single v3.0 parquet holds many episodes; the lookahead must not
+        #    cross an episode boundary, so group by episode_index and, within
+        #    each episode, order by frame_index. Last frame of each episode
+        #    repeats its own pose.
+        actions: list = [None] * len(df)
+        ep_col = (
+            df["episode_index"].to_numpy()
+            if "episode_index" in df.columns
+            else np.zeros(len(df), dtype=int)
+        )
+        fi_col = (
+            df["frame_index"].to_numpy()
+            if "frame_index" in df.columns
+            else np.arange(len(df))
+        )
+        for ep in np.unique(ep_col):
+            pos = np.where(ep_col == ep)[0]
+            pos = pos[np.argsort(fi_col[pos])]  # episode rows in temporal order
+            n = len(pos)
+            for j in range(n):
+                nxt = pos[min(j + 1, n - 1)]
+                a = cart9[nxt].astype(np.float32)
+                if action_has_gripper and grip is not None:
+                    a = np.concatenate([a, grip[nxt].reshape(-1)]).astype(np.float32)
+                actions[pos[j]] = a
+
+            ep_key = int(ep)
+            frames = per_ep_frames.setdefault(ep_key, {CARTESIAN_KEY: [], ACTION_KEY: [], STATE_KEY: []})
+            frames[CARTESIAN_KEY].extend(cart9[pos])
+            frames[ACTION_KEY].extend([actions[p] for p in pos])
+            if STATE_KEY in df.columns and state_order:
+                frames[STATE_KEY].extend([df[STATE_KEY].iloc[p] for p in pos])
+
         df[ACTION_KEY] = actions
+        df.to_parquet(pf, index=False)
 
-        df.to_parquet(ep, index=False)
-
-        ep_idx = int(np.asarray(df["episode_index"].iloc[0])) if "episode_index" in df.columns else len(per_ep_frames)
-        frames = {CARTESIAN_KEY: cart9, ACTION_KEY: np.stack(actions)}
-        if STATE_KEY in df.columns and state_order:
-            frames[STATE_KEY] = np.stack(df[STATE_KEY].to_list())
-        per_ep_frames[ep_idx] = frames
+    # collapse per-episode frame lists to arrays
+    per_ep_arrays: dict[int, dict[str, np.ndarray]] = {}
+    for ep, d in per_ep_frames.items():
+        per_ep_arrays[ep] = {
+            k: np.stack(v) for k, v in d.items() if v
+        }
 
     # 4. meta updates
     info["features"] = new_features
     with open(out / "meta" / "info.json", "w") as f:
         json.dump(info, f, indent=4)
-    update_stats_files(out, per_ep_frames)
+    update_stats_files(out, per_ep_arrays)
 
     logger.info("Done. New dataset: %s", out)
     logger.info("Videos were copied unchanged; only low-dim columns were rewritten.")
