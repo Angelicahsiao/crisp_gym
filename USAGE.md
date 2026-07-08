@@ -15,6 +15,7 @@ Contents:
 8. [Train (LeRobot 0.4.4, UMI-style relative pose)](#8-train-lerobot-044-umi-style-relative-pose)
 9. [Deploy a trained policy](#9-deploy-a-trained-policy)
 10. [Write your own record config](#10-write-your-own-record-config)
+11. [Migrate legacy Euler + delta-command data to rot6d](#11-migrate-legacy-euler--delta-command-data-to-rot6d)
 
 The keyboard recording manager is the same everywhere:
 **r** start/stop episode · **s** save episode · **d** delete episode · **q** quit.
@@ -123,6 +124,10 @@ python crisp_gym/scripts/record_lerobot_format_leader_follower.py \
     # no --record-config = legacy path; or pass
     # config/recording/teleop_classic_record.yaml to stamp the contract
 ```
+
+Already have data recorded this way (Euler pose + delta-command action) and
+want to train the UMI rot6d + relative policy on it? Convert it once with the
+migration script in [§11](#11-migrate-legacy-euler--delta-command-data-to-rot6d).
 
 ---
 
@@ -255,3 +260,51 @@ from crisp_gym.record.record_functions import make_record_fn
 cfg = RecordConfig.from_yaml("my_record.yaml")
 fn = make_record_fn(env, cfg, drive_fn=...)   # drive_fn None = passive
 ```
+
+---
+
+## 11. Migrate legacy Euler + delta-command data to rot6d
+
+Datasets recorded with the **old** collection scripts store the orientation as
+Euler and the action as a **delta-pose command** (from the teleop `stream_fn`).
+The rot6d + relative-pose trainer ([§8](#8-train-lerobot-044-umi-style-relative-pose))
+requires the UMI convention instead:
+
+| | Legacy data | Needed for training |
+|---|---|---|
+| `observation.state.cartesian` | `[x,y,z,roll,pitch,yaw]` (6d) | `[x,y,z,rot6d(6)]` (9d) |
+| `action` | delta pose command (relative) | absolute `next_tcp_pose` (`pos+rot6d[+grip]`) |
+
+Feeding the legacy data straight into `lerobot_relative_pose.py` would misread
+the Euler angles as rot6d and double-relativise the already-delta action.
+Convert it **once** with the migration script, then train normally:
+
+```bash
+# In the lerobot environment (pixi shell -e <rosdistro>-lerobot); no ROS needed.
+# Inspect the planned schema change first:
+python crisp_gym/scripts/migrate_euler_delta_to_rot6d.py \
+    --input  my_org/old_euler_delta_demo \
+    --output my_org/old_euler_delta_demo_rot6d \
+    --dry-run
+
+# Then run it for real:
+python crisp_gym/scripts/migrate_euler_delta_to_rot6d.py \
+    --input  my_org/old_euler_delta_demo \
+    --output my_org/old_euler_delta_demo_rot6d
+```
+
+What it does, per frame:
+- converts `observation.state.cartesian` Euler(6) → rot6d(9) using the repo's
+  `from_euler("xyz")` → first-two-rows convention;
+- rebuilds the concatenated `observation.state`;
+- **discards the delta action** and sets `action[t] = absolute measured TCP at
+  t+1` (`next_tcp_pose`, lookahead 1) from the converted pose, with the gripper
+  taken from `observation.state.gripper` at `t+1` (the last frame of each
+  episode repeats its own pose). Pass `--no-action-gripper` for a pose-only
+  (9d) action.
+
+Images, sensors and other columns are copied through unchanged. The result is a
+standard absolute-on-disk rot6d dataset — train it with
+`lerobot_relative_pose.py` exactly as in [§8](#8-train-lerobot-044-umi-style-relative-pose),
+and (if needed) mix it with other UMI-contract datasets via the alignment
+script ([§6](#6-post-process-align-datasets-for-mixed-training)).
