@@ -279,18 +279,23 @@ Feeding the legacy data straight into `lerobot_relative_pose.py` would misread
 the Euler angles as rot6d and double-relativise the already-delta action.
 Convert it **once** with the migration script, then train normally:
 
+`--input`/`--output` are dataset **root directories** (each with `data/` and
+`meta/`), not repo ids. The script does *file surgery*: it copies the dataset
+directory and rewrites only the low-dim Parquet columns + `meta` — the camera
+**videos are copied byte-for-byte (no AV1 re-encode)**, so they never corrupt.
+
 ```bash
-# In the lerobot environment (pixi shell -e <rosdistro>-lerobot); no ROS needed.
+# In the lerobot environment; no ROS needed.
 # Inspect the planned schema change first:
 python crisp_gym/scripts/migrate_euler_delta_to_rot6d.py \
-    --input  my_org/old_euler_delta_demo \
-    --output my_org/old_euler_delta_demo_rot6d \
+    --input  /path/to/old_euler_delta_demo \
+    --output /path/to/old_euler_delta_demo_rot6d \
     --dry-run
 
-# Then run it for real:
+# Then run it for real (output must not already exist):
 python crisp_gym/scripts/migrate_euler_delta_to_rot6d.py \
-    --input  my_org/old_euler_delta_demo \
-    --output my_org/old_euler_delta_demo_rot6d
+    --input  /path/to/old_euler_delta_demo \
+    --output /path/to/old_euler_delta_demo_rot6d
 ```
 
 What it does, per frame:
@@ -303,8 +308,9 @@ What it does, per frame:
   episode repeats its own pose). Pass `--no-action-gripper` for a pose-only
   (9d) action.
 
-Images, sensors and other columns are copied through unchanged. The result is a
-standard absolute-on-disk rot6d dataset — train it with
+Videos, sensors and every other column/file are copied through unchanged, and
+stats for the three rewritten keys are recomputed. The result is a standard
+absolute-on-disk rot6d dataset — train it with
 `lerobot_relative_pose.py` exactly as in [§8](#8-train-lerobot-044-umi-style-relative-pose),
 and (if needed) mix it with other UMI-contract datasets via the alignment
 script ([§6](#6-post-process-align-datasets-for-mixed-training)).
