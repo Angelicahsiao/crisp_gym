@@ -79,6 +79,14 @@ ACTION_KEY = "action"
 ROT6D_NAMES = [f"rot6d_{i}" for i in range(6)]
 CART_NAMES = ["x", "y", "z"] + ROT6D_NAMES
 
+# Columns LeRobot manages itself: they appear in info.json / dataset[i] but must
+# NOT be passed to create()/add_frame() (add_frame regenerates them).
+INTERNAL_KEYS = {"index", "episode_index", "frame_index", "task_index", "timestamp"}
+
+
+def _is_internal(key: str) -> bool:
+    return key in INTERNAL_KEYS or key.startswith("next.")
+
 
 # ── pose conversion ───────────────────────────────────────────────────────────
 
@@ -114,7 +122,8 @@ def build_target_features(src_features: dict, action_has_gripper: bool) -> dict:
             "already rot6d — no migration needed."
         )
 
-    feats = {k: dict(v) for k, v in src_features.items()}
+    # Drop LeRobot-managed columns; create()/add_frame() add them back.
+    feats = {k: dict(v) for k, v in src_features.items() if not _is_internal(k)}
 
     # cartesian 6 -> 9
     feats[CARTESIAN_KEY]["shape"] = (9,)
@@ -267,7 +276,9 @@ def migrate(args) -> int:
                 if k in item:
                     val = _to_np(item[k])
                     if k.startswith("observation.state"):
-                        val = val.astype(np.float32)
+                        # dataset[i] can return e.g. gripper as a 0-d scalar;
+                        # coerce back to the feature's declared shape.
+                        val = val.astype(np.float32).reshape(target_features[k]["shape"])
                     elif k.startswith("observation.images"):
                         val = _as_uint8_hwc(val)
                     frame[k] = val
