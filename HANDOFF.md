@@ -87,7 +87,11 @@ Repos involved (same owner, branch conventions apply to all):
   decoder bug, NOT corruption and NOT a pose/migration issue.
 - Fix: pass `--dataset.video_backend=pyav` on EVERY train/eval command
   (`lerobot_relative_pose.py` forwards it straight through). See USAGE.md §8.
-- Alt: re-encode all-keyframe (`ffmpeg -c:v libsvtav1 -g 1`) to use torchcodec.
+- Alt (faster train-time decode): re-encode all-keyframe with
+  `crisp_gym/scripts/reencode_videos_allkeyframe.py` (writes a copy, preserves
+  timing/metadata, verifies) then use torchcodec. Per-file:
+  `ffmpeg -c:v libsvtav1 -g 1` — do NOT add `-svtav1-params keyint=1` (it
+  overrides `-g` and yields a single keyframe).
 
 ---
 

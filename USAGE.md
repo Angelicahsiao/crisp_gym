@@ -217,8 +217,25 @@ the first step. `pyav` seeks through libav directly and decodes these videos
 correctly. Keep this flag on **every** train/eval command for AV1 datasets
 (all datasets recorded/migrated by this repo — see the `video.codec: av1`
 default). It is a native `lerobot-train` flag, so it passes straight through
-`lerobot_relative_pose.py`. If you must use torchcodec (it is faster),
-re-encode the videos all-keyframe first: `ffmpeg -c:v libsvtav1 -g 1 ...`.
+`lerobot_relative_pose.py`.
+
+**Faster alternative — re-encode all-keyframe, then use torchcodec.** pyav is
+correct but CPU-slow (it can bottleneck the dataloader; check `nvidia-smi`
+GPU-Util). Re-encoding every frame as a keyframe makes torchcodec seek work and
+is much faster at train time:
+
+```bash
+python crisp_gym/scripts/reencode_videos_allkeyframe.py \
+    --input  /path/to/dataset --output /path/to/dataset_allkey
+# then train on _allkey WITHOUT --dataset.video_backend=pyav (torchcodec default)
+```
+
+It writes a **copy** (source untouched), preserves fps/frame-count/PTS/
+resolution/codec so info.json + episode timestamps stay valid, and verifies
+each file is truly all-keyframe with matching frame count. Trade-off:
+all-keyframe video is larger. Plain `ffmpeg -c:v libsvtav1 -g 1` also works per
+file, but do NOT add `-svtav1-params keyint=1` (it overrides `-g` and yields a
+single keyframe).
 
 What it does at load time (disk data stays absolute):
 - converts obs window + 16-step action horizon to poses **relative to the
