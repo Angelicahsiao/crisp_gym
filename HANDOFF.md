@@ -78,20 +78,25 @@ Repos involved (same owner, branch conventions apply to all):
   scaling must be used for handheld recording AND robot deployment.
 - Gripper dim passes through all pose conversions untouched.
 
-### 1.6 Video backend (AV1 + torchcodec seek bug) — TRAINING GOTCHA
-- Datasets record video as AV1 (`video.codec: av1`, libsvtav1). LeRobot's
-  default `torchcodec` backend has a frame-accurate SEEK bug on these streams:
-  shuffled training (random access) dies at the first step with
-  `RuntimeError: Could not push packet to decoder: Invalid data found when
-  processing input`. Sequential decode works, so the DATA is fine — it is a
-  decoder bug, NOT corruption and NOT a pose/migration issue.
-- Fix: pass `--dataset.video_backend=pyav` on EVERY train/eval command
-  (`lerobot_relative_pose.py` forwards it straight through). See USAGE.md §8.
-- Alt (faster train-time decode): re-encode all-keyframe with
-  `crisp_gym/scripts/reencode_videos_allkeyframe.py` (writes a copy, preserves
-  timing/metadata, verifies) then use torchcodec. Per-file:
-  `ffmpeg -c:v libsvtav1 -g 1` — do NOT add `-svtav1-params keyint=1` (it
-  overrides `-g` and yields a single keyframe).
+### 1.6 torchcodec + forked DataLoader workers — TRAINING GOTCHA (SOLVED in-script)
+- Symptom: training via `lerobot_relative_pose.py` with the default
+  `torchcodec` backend dies at step 0 in a DataLoader **worker** with
+  `RuntimeError: Could not push packet to decoder: Invalid data found`.
+- ROOT CAUSE (verified): NOT the videos and NOT a seek bug. The videos decode
+  fine — plain `lerobot-train` works, and `--num_workers=0` works. The wrapper's
+  `recompute_relative_stats` ran in the MAIN process and opened torchcodec
+  decoders; the DataLoader then FORKS workers, which inherit that torchcodec
+  state broken and crash. torchcodec decoders are not fork-safe.
+- FIX (in `lerobot_relative_pose.py`, `recompute_relative_stats`): the stats
+  keys are all low-dim poses, so the pass temporarily no-ops the dataset's
+  `_query_videos` — no decoder is opened in the main process, workers make
+  fresh ones, torchcodec runs at full `--num_workers`. DO NOT reintroduce video
+  decoding into that pass.
+- Fallbacks if a future change breaks this: `--dataset.video_backend=pyav`
+  (correct, slower), `--num_workers=0` (slow), or re-encode all-keyframe with
+  `crisp_gym/scripts/reencode_videos_allkeyframe.py` then use torchcodec
+  (per-file `ffmpeg -c:v libsvtav1 -g 1`; do NOT add `-svtav1-params keyint=1`,
+  it overrides `-g` and yields a single keyframe).
 
 ---
 
