@@ -138,11 +138,24 @@ class RelativePoseDataset(torch.utils.data.Dataset):
         ep = int(self._to_np(item["episode_index"]))
         if ep not in self._episode_start_pose:
             frame = int(self._to_np(item["frame_index"]))
-            start_item = self._dataset[idx - frame]  # global index of frame 0
-            start_window = self._to_np(start_item[BASE_KEY])
-            # At frame 0 the temporal window is padded backwards; the last
-            # entry is the frame-0 absolute pose.
-            start_pose = start_window[-1] if start_window.ndim == 2 else start_window
+            # Read frame-0's pose from the low-dim hf_dataset directly. Going
+            # through self._dataset[...] would DECODE VIDEO for that frame just
+            # to read one pose — expensive and pointless. hf_dataset holds the
+            # low-dim columns only (no video), so this is a cheap lookup.
+            start_pose = None
+            hf = getattr(self._dataset, "hf_dataset", None)
+            if hf is not None:
+                try:
+                    row = hf[int(idx - frame)]
+                    start_pose = self._to_np(row[BASE_KEY])
+                except Exception:
+                    start_pose = None
+            if start_pose is None:
+                # Fallback: the video-decoding path (older/edge datasets).
+                start_window = self._to_np(self._dataset[idx - frame][BASE_KEY])
+                start_pose = start_window[-1] if start_window.ndim == 2 else start_window
+            else:
+                start_pose = start_pose[-1] if start_pose.ndim == 2 else start_pose
             self._episode_start_pose[ep] = start_pose[:9].astype(np.float64)
         return self._episode_start_pose[ep]
 
