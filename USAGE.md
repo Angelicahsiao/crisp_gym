@@ -234,6 +234,40 @@ Any native `lerobot-train` argument works unchanged (the script only patches
 `make_dataset` then calls `lerobot_train.main()`), e.g. `--policy.device=cuda`,
 `--policy.push_to_hub=false`, `--wandb.enable=false`, `--num_workers=8`.
 
+### Full example (dual-camera diffusion, the params used for the UR/franka runs)
+
+```bash
+python lerobot_relative_pose.py \
+    --dataset.repo_id=/path/to/franka_dual_open_panel_..._rot6d \
+    --dataset.video_backend=pyav \
+    --policy.type=diffusion \
+    --policy.device=cuda \
+    --policy.push_to_hub=false \
+    --policy.use_separate_rgb_encoder_per_camera=true \
+    --policy.spatial_softmax_num_keypoints=64 \
+    --output_dir=outputs/train/franka_dual_open_panel_..._rot6d_diffusion \
+    --batch_size=64 --steps=500000 \
+    --log_freq=10000 --wandb.enable=false
+```
+
+Parameter notes:
+- `--policy.use_separate_rgb_encoder_per_camera=true` — one ResNet encoder per
+  camera instead of a shared one. Use for **multi-camera** setups (env_cam +
+  wrist_cam) so each view learns its own features; costs more params/VRAM.
+- `--policy.spatial_softmax_num_keypoints=64` — spatial-softmax keypoints per
+  camera feature map (diffusion default 32). 64 gives the vision head more
+  spatial detail; must be a plain integer (a stray char, e.g. `64ls`, makes
+  draccus raise `invalid literal for int()`).
+- `--batch_size=64 --steps=500000` — full run (~days on one GPU at ~1.2 step/s);
+  smoke-test with `--steps=100` first. Diffusion often converges well before
+  500k, so a mid checkpoint may suffice.
+- `--log_freq` = loss-print interval; `--save_freq` (default 20000) = checkpoint
+  interval — first checkpoint at step `save_freq`, under
+  `<output_dir>/checkpoints/`.
+- `--output_dir` is resolved **relative to the launch cwd**, and LeRobot appends
+  the job name (`_diffusion`); pass an absolute path to place it exactly.
+- Resume an interrupted run with `--resume=true` and the same `--output_dir`.
+
 ---
 
 ## 9. Deploy a trained policy
