@@ -199,8 +199,26 @@ python lerobot_relative_pose.py \
     --dataset.repo_id=my_org/umi_handheld_demo_aligned \
     --policy.type=diffusion \
     --output_dir=outputs/train/umi \
+    --dataset.video_backend=pyav \
     --batch_size=64 --steps=200000
 ```
+
+**`--dataset.video_backend=pyav` (important).** LeRobot's default video
+backend is `torchcodec`, whose frame-accurate *seek* path can fail on AV1
+(`libsvtav1`) videos with:
+
+```
+RuntimeError: Could not push packet to decoder: Invalid data found when processing input
+```
+
+The data is fine (sequential decode works) — it's a torchcodec random-access
+bug, and the shuffled training dataloader does random access, so it crashes at
+the first step. `pyav` seeks through libav directly and decodes these videos
+correctly. Keep this flag on **every** train/eval command for AV1 datasets
+(all datasets recorded/migrated by this repo — see the `video.codec: av1`
+default). It is a native `lerobot-train` flag, so it passes straight through
+`lerobot_relative_pose.py`. If you must use torchcodec (it is faster),
+re-encode the videos all-keyframe first: `ffmpeg -c:v libsvtav1 -g 1 ...`.
 
 What it does at load time (disk data stays absolute):
 - converts obs window + 16-step action horizon to poses **relative to the
@@ -211,6 +229,10 @@ What it does at load time (disk data stays absolute):
 
 Smoke-test with `--steps=100` first and check the
 "Recomputed relative-pose stats" log lines appear.
+
+Any native `lerobot-train` argument works unchanged (the script only patches
+`make_dataset` then calls `lerobot_train.main()`), e.g. `--policy.device=cuda`,
+`--policy.push_to_hub=false`, `--wandb.enable=false`, `--num_workers=8`.
 
 ---
 
