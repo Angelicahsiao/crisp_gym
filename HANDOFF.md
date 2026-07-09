@@ -78,6 +78,17 @@ Repos involved (same owner, branch conventions apply to all):
   scaling must be used for handheld recording AND robot deployment.
 - Gripper dim passes through all pose conversions untouched.
 
+### 1.6 Video backend (AV1 + torchcodec seek bug) — TRAINING GOTCHA
+- Datasets record video as AV1 (`video.codec: av1`, libsvtav1). LeRobot's
+  default `torchcodec` backend has a frame-accurate SEEK bug on these streams:
+  shuffled training (random access) dies at the first step with
+  `RuntimeError: Could not push packet to decoder: Invalid data found when
+  processing input`. Sequential decode works, so the DATA is fine — it is a
+  decoder bug, NOT corruption and NOT a pose/migration issue.
+- Fix: pass `--dataset.video_backend=pyav` on EVERY train/eval command
+  (`lerobot_relative_pose.py` forwards it straight through). See USAGE.md §8.
+- Alt: re-encode all-keyframe (`ffmpeg -c:v libsvtav1 -g 1`) to use torchcodec.
+
 ---
 
 ## 2. File map (UMI pipeline, all on branch `claude/vigilant-tesla-VZJT6` unless merged)
@@ -89,6 +100,7 @@ Repos involved (same owner, branch conventions apply to all):
 | `crisp_gym/record/record_functions.py::make_record_fn` | Config-driven recorder; 1-step lookahead pairing done per RecordConfig. |
 | `crisp_gym/scripts/record_umi_handheld.py` | Recording entry point (KeyboardRecordingManager: r/s/d/q). |
 | `crisp_gym/scripts/lerobot_relative_pose.py` | Training-side dataset wrapper + `lerobot-train` launcher (patches `make_dataset`). Runs on the GPU PC, needs only lerobot/torch/numpy — NO crisp imports, keep it that way. |
+| `crisp_gym/scripts/migrate_euler_delta_to_rot6d.py` | One-time migration of LEGACY datasets (Euler pose + delta-command action from the old `stream_fn` recorder) to the UMI absolute rot6d schema. File surgery: copies the dataset (videos byte-identical, NO re-encode), rewrites only low-dim parquet columns (cartesian Euler(6)→rot6d(9), rebuilt `observation.state`, reconstructed `next_tcp_pose` action) + `info.json` + stats. Handles BOTH v2.x (`episode_*.parquet`) and v3.0 (`data/file-*.parquet` multi-episode + `meta/episodes/*.parquet` stats) layouts. USAGE.md §11. |
 | `crisp_gym/util/lerobot_features.py` | Feature schema. Rotation-rep-aware dims/names AND v0.4.x/v0.5.x lerobot compatibility + fps parameter (merged from two branches — both aspects must survive future edits). |
 | `crisp_py/utils/geometry.py` | `OrientationRepresentation.ROTATION_6D` lives here. |
 | `tests/test_lerobot_record.py` | Stubs crisp_py/ROS at import; its `_OrientationRepresentation` stub MUST mirror the real enum (already includes ROTATION_6D). |
