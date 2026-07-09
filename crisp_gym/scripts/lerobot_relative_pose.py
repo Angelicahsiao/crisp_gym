@@ -215,14 +215,30 @@ def recompute_relative_stats(wrapped: RelativePoseDataset, num_samples: int = 20
     n = len(wrapped)
     indices = np.linspace(0, n - 1, min(num_samples, n)).astype(int)
 
-    collected: dict[str, list[np.ndarray]] = {k: [] for k in keys}
-    for i in indices:
-        item = wrapped[int(i)]
-        for k in keys:
-            if k in item:
-                v = item[k]
-                v = v.numpy() if isinstance(v, torch.Tensor) else np.asarray(v)
-                collected[k].append(v.reshape(-1, v.shape[-1]))
+    # CRITICAL: do NOT decode video in this pass. It runs in the MAIN process,
+    # and any torchcodec decoder opened here is forked into the DataLoader
+    # workers in a broken state -> every worker dies at step 0 with
+    # "Could not push packet to decoder: Invalid data found". (Plain
+    # lerobot-train has no main-process stats pass, which is why it never hits
+    # this.) The stats keys are all low-dim poses, so we no-op the dataset's
+    # video query for the duration of sampling; lerobot's temporal windowing of
+    # the low-dim columns is unaffected, so the action-horizon stats stay exact.
+    ds = wrapped._dataset
+    _orig_query_videos = getattr(ds, "_query_videos", None)
+    if _orig_query_videos is not None:
+        ds._query_videos = lambda *a, **k: {}
+    try:
+        collected: dict[str, list[np.ndarray]] = {k: [] for k in keys}
+        for i in indices:
+            item = wrapped[int(i)]
+            for k in keys:
+                if k in item:
+                    v = item[k]
+                    v = v.numpy() if isinstance(v, torch.Tensor) else np.asarray(v)
+                    collected[k].append(v.reshape(-1, v.shape[-1]))
+    finally:
+        if _orig_query_videos is not None:
+            ds._query_videos = _orig_query_videos
 
     for k, chunks in collected.items():
         if not chunks:
