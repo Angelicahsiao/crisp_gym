@@ -199,43 +199,17 @@ python lerobot_relative_pose.py \
     --dataset.repo_id=my_org/umi_handheld_demo_aligned \
     --policy.type=diffusion \
     --output_dir=outputs/train/umi \
-    --dataset.video_backend=pyav \
+    --num_workers=8 \
     --batch_size=64 --steps=200000
 ```
 
-**`--dataset.video_backend=pyav` (important).** LeRobot's default video
-backend is `torchcodec`, whose frame-accurate *seek* path can fail on AV1
-(`libsvtav1`) videos with:
-
-```
-RuntimeError: Could not push packet to decoder: Invalid data found when processing input
-```
-
-The data is fine (sequential decode works) — it's a torchcodec random-access
-bug, and the shuffled training dataloader does random access, so it crashes at
-the first step. `pyav` seeks through libav directly and decodes these videos
-correctly. Keep this flag on **every** train/eval command for AV1 datasets
-(all datasets recorded/migrated by this repo — see the `video.codec: av1`
-default). It is a native `lerobot-train` flag, so it passes straight through
-`lerobot_relative_pose.py`.
-
-**Faster alternative — re-encode all-keyframe, then use torchcodec.** pyav is
-correct but CPU-slow (it can bottleneck the dataloader; check `nvidia-smi`
-GPU-Util). Re-encoding every frame as a keyframe makes torchcodec seek work and
-is much faster at train time:
-
-```bash
-python crisp_gym/scripts/reencode_videos_allkeyframe.py \
-    --input  /path/to/dataset --output /path/to/dataset_allkey
-# then train on _allkey WITHOUT --dataset.video_backend=pyav (torchcodec default)
-```
-
-It writes a **copy** (source untouched), preserves fps/frame-count/PTS/
-resolution/codec so info.json + episode timestamps stay valid, and verifies
-each file is truly all-keyframe with matching frame count. Trade-off:
-all-keyframe video is larger. Plain `ffmpeg -c:v libsvtav1 -g 1` also works per
-file, but do NOT add `-svtav1-params keyint=1` (it overrides `-g` and yields a
-single keyframe).
+Uses the default `torchcodec` video backend at full worker parallelism — no
+special flags needed. (Earlier versions crashed at step 0 with
+`RuntimeError: Could not push packet to decoder`; that was the stats pass
+opening torchcodec decoders in the main process, which then broke in forked
+DataLoader workers. It is fixed in `lerobot_relative_pose.py` — the stats pass
+no longer decodes video. If you ever see that error again, the fallbacks are
+`--dataset.video_backend=pyav` or `--num_workers=0`.)
 
 What it does at load time (disk data stays absolute):
 - converts obs window + 16-step action horizon to poses **relative to the
@@ -256,15 +230,15 @@ Any native `lerobot-train` argument works unchanged (the script only patches
 ```bash
 python lerobot_relative_pose.py \
     --dataset.repo_id=/path/to/franka_dual_open_panel_..._rot6d \
-    --dataset.video_backend=pyav \
     --policy.type=diffusion \
     --policy.device=cuda \
     --policy.push_to_hub=false \
     --policy.use_separate_rgb_encoder_per_camera=true \
     --policy.spatial_softmax_num_keypoints=64 \
+    --num_workers=8 \
     --output_dir=outputs/train/franka_dual_open_panel_..._rot6d_diffusion \
     --batch_size=64 --steps=500000 \
-    --log_freq=10000 --wandb.enable=false
+    --save_freq=2000 --log_freq=10000 --wandb.enable=false
 ```
 
 Parameter notes:
@@ -275,15 +249,29 @@ Parameter notes:
   camera feature map (diffusion default 32). 64 gives the vision head more
   spatial detail; must be a plain integer (a stray char, e.g. `64ls`, makes
   draccus raise `invalid literal for int()`).
-- `--batch_size=64 --steps=500000` — full run (~days on one GPU at ~1.2 step/s);
-  smoke-test with `--steps=100` first. Diffusion often converges well before
-  500k, so a mid checkpoint may suffice.
-- `--log_freq` = loss-print interval; `--save_freq` (default 20000) = checkpoint
-  interval — first checkpoint at step `save_freq`, under
-  `<output_dir>/checkpoints/`.
+- `--batch_size=64 --steps=500000` — full run; smoke-test with `--steps=100`
+  first. Diffusion often converges well before 500k, so a mid checkpoint may
+  suffice. Bigger `batch_size` = more VRAM + peak GPU power; total training seen
+  ≈ `batch_size × steps`.
+- `--num_workers` = dataloader processes (raise to feed the GPU; check
+  `nvidia-smi` GPU-Util). torchcodec runs fine at `>0` now.
+- `--log_freq` = loss-print interval; `--save_freq` = checkpoint interval (first
+  checkpoint at step `save_freq`, under `<output_dir>/checkpoints/`). The
+  default is 20000 — set it lower (e.g. 2000) so a usable model is written early
+  and survives interruptions.
 - `--output_dir` is resolved **relative to the launch cwd**, and LeRobot appends
   the job name (`_diffusion`); pass an absolute path to place it exactly.
 - Resume an interrupted run with `--resume=true` and the same `--output_dir`.
+
+### Verify the relative-pose representation
+
+After migrating/training, confirm the relative conversion is invertible and
+deploy-consistent (identity + round-trip + magnitude checks):
+
+```bash
+python crisp_gym/scripts/check_relative_pose.py /path/to/dataset_rot6d
+# expect: identity err ~1e-16, round-trip err ~1e-8, small |Δpos|, PASS
+```
 
 ---
 
