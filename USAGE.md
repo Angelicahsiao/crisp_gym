@@ -111,6 +111,29 @@ python crisp_gym/scripts/record_lerobot_format_leader_follower.py \
 teleop runs at the recording rate (15 Hz), slightly laggier than the 50 Hz
 live example (`examples/09_factr_ur7e_teleop.py`).
 
+**Homing between episodes.** The follower homes after every episode using a
+configuration matching ITS joint count: the Franka-specific `HomeConfig` poses
+are used only on 7-joint arms; on the UR the robot's own `home_config` (from
+the crisp_py robot config) is used instead. (Previously the 7-joint pose was
+sent to the 6-joint UR and silently rejected — the robot never homed.)
+
+**FACTR leader homing.** After each episode (and at shutdown) the recorder
+publishes `std_msgs/Bool (data: true)` on:
+
+```
+/factr_teleop/{name}/go_home
+```
+
+This is only a TRIGGER — the FACTR leader node must subscribe to this topic
+and execute its own homing motion. If it doesn't subscribe, a warning is
+logged and the leader simply stays where it is. Example subscriber for the
+FACTR node:
+
+```python
+node.create_subscription(Bool, f"/factr_teleop/{name}/go_home",
+                         lambda msg: factr.go_to_home_pose() if msg.data else None, 10)
+```
+
 ---
 
 ## 4. Classic teleop recording (delta-pose commands)

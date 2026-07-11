@@ -8,8 +8,9 @@ import numpy as np
 import rclpy
 import rclpy.executors
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import qos_profile_sensor_data, qos_profile_system_default
 from sensor_msgs.msg import JointState
+from std_msgs.msg import Bool
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,15 @@ class FACTRStreamedJoints:
     FACTR publishes (both as sensor_msgs/JointState):
       /factr_teleop/{name}/cmd_ur_pos      — 6-DOF arm joint positions (position[0:6])
       /factr_teleop/{name}/cmd_gripper_pos — gripper trigger position (position[0])
+
+    This class additionally PUBLISHES (std_msgs/Bool, data=True):
+      /factr_teleop/{name}/go_home         — request that the FACTR leader arm
+                                             moves to its home pose (sent by
+                                             send_home(), e.g. between recorded
+                                             episodes). The FACTR node must
+                                             subscribe to this topic and
+                                             execute the homing motion itself —
+                                             this is only the trigger.
 
     The gripper trigger is expected in [0, 1] where 0 = open, 1 = fully squeezed.
     It is inverted to match the Robotiq convention (set_target: 0 = closed, 1 = open),
@@ -36,6 +46,7 @@ class FACTRStreamedJoints:
 
         self._joint_topic = f"/factr_teleop/{name}/cmd_ur_pos"
         self._gripper_topic = f"/factr_teleop/{name}/cmd_gripper_pos"
+        self._home_topic = f"/factr_teleop/{name}/go_home"
 
         self._last_joint_pos: np.ndarray | None = None
         self._last_gripper: float | None = None
@@ -55,6 +66,12 @@ class FACTRStreamedJoints:
             self._callback_gripper,
             callback_group=ReentrantCallbackGroup(),
             qos_profile=qos_profile_sensor_data,
+        )
+        self._home_publisher = self.node.create_publisher(
+            Bool,
+            self._home_topic,
+            qos_profile_system_default,
+            callback_group=ReentrantCallbackGroup(),
         )
 
         threading.Thread(target=self._spin_node, daemon=True).start()
@@ -97,6 +114,25 @@ class FACTRStreamedJoints:
                 f"Check: ros2 topic echo {self._gripper_topic}"
             )
         return self._last_gripper
+
+    def send_home(self) -> None:
+        """Ask the FACTR leader node to move the leader arm to its home pose.
+
+        Publishes std_msgs/Bool(data=True) on /factr_teleop/{name}/go_home.
+        Fire-and-forget: the FACTR node owns the actual homing motion. If the
+        FACTR node does not subscribe to this topic, the message is simply
+        ignored (a warning is logged when no subscriber is connected).
+        """
+        if self._home_publisher.get_subscription_count() == 0:
+            logger.warning(
+                f"send_home: no subscriber on {self._home_topic} — the FACTR "
+                "node does not listen for home requests; the leader arm will "
+                "NOT move. Add a subscriber in the FACTR node to enable this."
+            )
+        msg = Bool()
+        msg.data = True
+        self._home_publisher.publish(msg)
+        logger.info(f"Requested FACTR leader home via {self._home_topic}.")
 
     def is_ready(self) -> bool:
         return self._last_joint_pos is not None and self._last_gripper is not None

@@ -47,3 +47,36 @@ class HomeConfig(Enum):
         return (
             np.array(self.value) + np.random.uniform(-noise, noise, size=len(self.value))
         ).tolist()
+
+
+def randomized_home_for(
+    nq: int,
+    fallback: list,
+    preferred: "HomeConfig | None" = None,
+    noise: float = 0.01,
+) -> list:
+    """Pick a home configuration matching the robot's joint count, randomized.
+
+    The HomeConfig enum poses are FRANKA (7-joint) configurations. Sending one
+    to a robot with a different joint count makes the controller silently
+    reject the trajectory (the robot just never homes — the classic symptom on
+    a 6-joint UR). This helper uses `preferred` only when its length matches
+    `nq`, otherwise the robot's own `fallback` (e.g. robot.config.home_config).
+
+    Args:
+        nq: The robot's number of joints (robot.nq).
+        fallback: Home configuration of the right length (robot.config.home_config).
+        preferred: Optional HomeConfig to use when its joint count matches.
+        noise: Uniform noise added per joint.
+    """
+    import numpy as np
+
+    if preferred is not None and len(preferred.value) == nq:
+        return preferred.randomize(noise=noise)
+    if len(fallback) != nq:
+        raise ValueError(
+            f"fallback home config has {len(fallback)} joints, robot has {nq}."
+        )
+    return (
+        np.array(fallback, dtype=float) + np.random.uniform(-noise, noise, size=nq)
+    ).tolist()

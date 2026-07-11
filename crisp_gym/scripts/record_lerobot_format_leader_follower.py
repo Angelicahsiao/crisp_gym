@@ -8,7 +8,7 @@ import numpy as np
 import rclpy
 
 import crisp_gym  # noqa: F401
-from crisp_gym.config.home import HomeConfig
+from crisp_gym.config.home import HomeConfig, randomized_home_for
 from crisp_gym.envs.manipulator_env import ManipulatorCartesianEnv, make_env, ManipulatorJointEnv
 from crisp_gym.envs.manipulator_env_config import list_env_configs, FrankaEnvConfig
 from crisp_gym.record.record_config import RecordConfig
@@ -314,9 +314,13 @@ def main():
 
         env.wait_until_ready()
         logger.debug("[DEBUG] env.wait_until_ready() done")
-        env.home(home_config=HomeConfig.CLOSE_TO_TABLE.randomize(noise=args.home_config_noise))
+        env.home(home_config=randomized_home_for(
+            env.robot.nq, env.robot.config.home_config,
+            preferred=HomeConfig.CLOSE_TO_TABLE, noise=args.home_config_noise))
         logger.debug("[DEBUG] env.home() done")
-        env.home(home_config=HomeConfig.OPEN_POSE.randomize(noise=args.home_config_noise))
+        env.home(home_config=randomized_home_for(
+            env.robot.nq, env.robot.config.home_config,
+            preferred=HomeConfig.OPEN_POSE, noise=args.home_config_noise))
         env.reset()
         logger.debug("[DEBUG] env.reset() done")
 
@@ -344,13 +348,22 @@ def main():
         def on_end():
             """Hook function to be called when stopping the recording."""
             env.robot.reset_targets()
-            random_home = HomeConfig.OPEN_POSE.randomize(noise=args.home_config_noise)
+            # HomeConfig poses are Franka(7); fall back to the robot's own
+            # home_config on other arms (a mismatched trajectory is silently
+            # rejected by the controller -> the robot never homed on UR).
+            random_home = randomized_home_for(
+                env.robot.nq, env.robot.config.home_config,
+                preferred=HomeConfig.OPEN_POSE, noise=args.home_config_noise)
             env.robot.home(blocking=False, home_config=random_home)
             if isinstance(leader, TeleopRobot):
                 leader.robot.reset_targets()
                 # Activate incase leader should go to the same position as the follower
                 # leader.robot.home(blocking=False, home_config=random_home)
                 leader.robot.home(blocking=False)
+            elif isinstance(leader, FACTRStreamedJoints):
+                # Ask the FACTR leader node (external) to home too, so leader
+                # and follower start each episode from a consistent pose.
+                leader.send_home()
             env.gripper.open()
 
         with recording_manager:
@@ -401,6 +414,9 @@ def main():
         if isinstance(leader, TeleopRobot):
             logger.info("Homing leader.")
             leader.robot.home()
+        elif isinstance(leader, FACTRStreamedJoints):
+            logger.info("Requesting FACTR leader home.")
+            leader.send_home()
         logger.info("Homing follower.")
         env.home()
 
