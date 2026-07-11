@@ -152,15 +152,31 @@ class RemotePolicy(Policy):
         self.relative_actions = relative_actions
         self._chunk: np.ndarray | None = None
         self._chunk_idx = 0
+        # Base pose for the CURRENT chunk, captured at observation time. Every
+        # T_rel in a chunk is relative to the SAME obs frame (training base =
+        # last obs timestep; UMI composes the whole chunk against the obs-time
+        # ActualTCPPose). Composing per-step against the live pose instead
+        # re-adds already-executed motion and compounds within the chunk
+        # (~doubles velocity, tens of mm / tens of degrees by step 8).
+        self._chunk_base: np.ndarray | None = None
 
-    def _compose_relative(self, action: np.ndarray) -> np.ndarray:
-        """T_cmd = T_current_tcp @ T_rel for a [pos(3), rot6d(6), grip...] action."""
+    def _current_pose_mat(self) -> np.ndarray:
+        """Measured TCP pose as a 4x4 homogeneous matrix."""
+        pose = self.env.robot.end_effector_pose
+        T = np.eye(4)
+        T[:3, :3] = pose.orientation.as_matrix()
+        T[:3, 3] = pose.position
+        return T
+
+    def _compose_relative(self, action: np.ndarray, T_base: np.ndarray) -> np.ndarray:
+        """T_cmd = T_base @ T_rel for a [pos(3), rot6d(6), grip...] action.
+
+        T_base must be the pose captured when the chunk's observation was
+        taken — NOT the live pose at execution time.
+        """
         from scipy.spatial.transform import Rotation
 
-        pose = self.env.robot.end_effector_pose
-        T_cur = np.eye(4)
-        T_cur[:3, :3] = pose.orientation.as_matrix()
-        T_cur[:3, 3] = pose.position
+        T_cur = T_base
 
         # rot6d (first two rows) -> matrix via Gram-Schmidt
         a1, a2 = action[3:6], action[6:9]
@@ -205,6 +221,12 @@ class RemotePolicy(Policy):
             if self._chunk is None or self._chunk_idx >= min(
                 self.n_action_steps, len(self._chunk)
             ):
+                # Snapshot the base pose NOW — the same tick as the observation
+                # being sent — before inference latency lets the robot drift.
+                # The whole chunk is composed against this one base.
+                chunk_base = (
+                    self._current_pose_mat() if self.relative_actions else None
+                )
                 t0 = time.monotonic()
                 try:
                     self._chunk = self.client.infer(obs_raw)
@@ -212,6 +234,7 @@ class RemotePolicy(Policy):
                     logger.error(f"Remote inference failed: {e} — holding pose.")
                     return obs_raw, None
                 self._chunk_idx = 0
+                self._chunk_base = chunk_base
                 logger.debug(
                     f"Received chunk {self._chunk.shape} in "
                     f"{(time.monotonic() - t0) * 1e3:.1f} ms"
@@ -221,7 +244,9 @@ class RemotePolicy(Policy):
             self._chunk_idx += 1
 
             env_action = (
-                self._compose_relative(action) if self.relative_actions else action
+                self._compose_relative(action, self._chunk_base)
+                if self.relative_actions
+                else action
             )
 
             try:
@@ -237,6 +262,7 @@ class RemotePolicy(Policy):
         """Reset the policy state (clears the local chunk and the server-side queue)."""
         self._chunk = None
         self._chunk_idx = 0
+        self._chunk_base = None
         try:
             self.client.reset()
         except Exception as e:
