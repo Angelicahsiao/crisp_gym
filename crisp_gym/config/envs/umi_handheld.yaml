@@ -39,6 +39,8 @@ log_status_every_n_frames: 15
 # Example:
 #   camera_configs:
 #     - from_yaml: "gopro.yaml"
+#       # image_transport: "compressed" (default) | "raw" — raw moves/stores
+#       # uncompressed frames (heavy bandwidth/storage; a warning is logged).
 camera_configs: []
 
 observations_to_include_to_state:

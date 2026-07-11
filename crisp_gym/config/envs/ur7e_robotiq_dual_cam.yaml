@@ -32,16 +32,24 @@ camera_configs:
   # names below. Either launch the RealSense containers with
   # CAMERA_NAMESPACE=env CAMERA_NAME=env_cam (and wrist/wrist_cam), or add a
   # remapping, so the published topics match these.
+  # image_transport (crisp_py CameraConfig): "compressed" (default) subscribes
+  # <topic><compressed_topic_suffix> (CompressedImage); "raw" subscribes the
+  # topic as-is (sensor_msgs/Image). RAW moves/stores UNCOMPRESSED frames —
+  # much higher USB/network bandwidth and recording storage; keep compressed
+  # unless the driver publishes no compressed topic (a warning is logged on raw).
   - camera_name: "env_cam"
     camera_frame: "env_link"
     resolution: [256, 256]      # resize TARGET for the stored image (see note below)
     camera_color_image_topic: "/env/env_cam/color/image_raw"
     camera_color_info_topic: "/env/env_cam/color/camera_info"
+    image_transport: "compressed"          # default; shown for discoverability
+    # compressed_topic_suffix: "/compressed"  # override for odd remappings
   - camera_name: "wrist_cam"
     camera_frame: "wrist_link"
     resolution: [256, 256]
     camera_color_image_topic: "/wrist/wrist_cam/color/image_raw"
     camera_color_info_topic: "/wrist/wrist_cam/color/camera_info"
+    image_transport: "compressed"
 
 sensor_configs:
   - sensor_type: "force_torque"
