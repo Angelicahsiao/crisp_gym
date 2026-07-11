@@ -21,12 +21,10 @@ try:
 except ImportError:
     from lerobot.constants import HF_LEROBOT_HOME
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from pynput import keyboard
 from rclpy.executors import SingleThreadedExecutor
 from rich import print
 from rich.panel import Panel
 from std_msgs.msg import String
-from typing_extensions import override
 
 from crisp_gym.config.path import find_config
 from crisp_gym.policy.policy import Action, Observation
@@ -588,9 +586,6 @@ class ROSRecordingManager(RecordingManager):
 #         self.listener.start()
 #         return super().__enter__()
 
-#     def __exit__(self, exc_type, exc_value, traceback) -> None:  # noqa: ANN001, D105
-#         self.listener.stop()
-#         super().__exit__(exc_type, exc_value, traceback)
 class KeyboardRecordingManager(RecordingManager):
     """Stdin-based recording manager for controlling episode recording."""
 

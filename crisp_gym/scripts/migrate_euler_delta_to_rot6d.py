@@ -87,6 +87,8 @@ CART_NAMES = ["x", "y", "z"] + ROT6D_NAMES
 
 
 # ── pose conversion ───────────────────────────────────────────────────────────
+# rot6d math is a LOCAL COPY by design (standalone script, no crisp imports).
+# Canonical in-package version: crisp_gym/util/rot6d.py — keep identical.
 
 def euler_pose_to_rot6d(pose6: np.ndarray) -> np.ndarray:
     """``[x,y,z, roll,pitch,yaw]`` (xyz radians) -> ``[x,y,z, rot6d(6)]``.

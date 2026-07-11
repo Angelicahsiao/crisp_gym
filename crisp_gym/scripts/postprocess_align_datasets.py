@@ -44,6 +44,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from crisp_gym.record.record_config import RecordConfig
+
 logger = logging.getLogger(__name__)
 
 # Bookkeeping columns LeRobot needs — never stripped. Note: exact-match names
@@ -65,22 +67,6 @@ def load_contract(dataset_dir: Path) -> dict:
         )
     with open(path) as f:
         return json.load(f)
-
-
-def core_contract(meta: dict) -> dict:
-    """The part of the contract that must match for datasets to be mixable."""
-    return {
-        "rate_hz": meta.get("rate_hz"),
-        "action": meta.get("action"),
-        # device_max_width is device-specific (Robotiq vs handheld) — the
-        # shared scale is reference_width, so exclude it like RecordConfig does.
-        "state_observations": {
-            o["key"]: {k: v for k, v in o.items()
-                       if k not in ("include_in_state", "device_max_width")}
-            for o in meta.get("observations", [])
-            if o.get("include_in_state", True)
-        },
-    }
 
 
 def episode_files(dataset_dir: Path) -> list[Path]:
@@ -121,23 +107,16 @@ def align(
     promote: list[str],
     dry_run: bool,
 ) -> None:
-    # ── 1. contract verification ─────────────────────────────────────────────
+    # ── 1. contract verification (single source: RecordConfig) ──────────────
     contracts = {d: load_contract(d) for d in dataset_dirs}
-    cores = {d: core_contract(m) for d, m in contracts.items()}
-    ref_dir, ref_core = next(iter(cores.items()))
-    for d, core in cores.items():
-        if core != ref_core:
-            for field in ref_core:
-                if core[field] != ref_core[field]:
-                    logger.error(
-                        f"CORE CONTRACT MISMATCH on '{field}':\n"
-                        f"  {ref_dir.name}: {ref_core[field]}\n"
-                        f"  {d.name}: {core[field]}"
-                    )
+    ref_dir, ref_meta = next(iter(contracts.items()))
+    for d, meta in contracts.items():
+        if not RecordConfig.contracts_compatible(ref_meta, meta):
             raise SystemExit(
-                "Datasets are not mixable: core contracts differ (see above). "
-                "This cannot be fixed by post-processing — the recorded action "
-                "semantics/rates/policy-inputs are different data."
+                f"Datasets are not mixable: contracts of {ref_dir.name} and "
+                f"{d.name} differ (see above). This cannot be fixed by "
+                "post-processing — the recorded action semantics/rates/"
+                "policy-inputs are different data."
             )
     logger.info("✓ Core contracts match across all datasets.")
 

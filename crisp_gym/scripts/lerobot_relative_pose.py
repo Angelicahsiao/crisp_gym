@@ -63,6 +63,9 @@ START_POSE_NOISE_SCALE = 0.05
 
 
 # ── rot6d <-> matrix (UMI/pytorch3d convention: first two rows) ───────────────
+# LOCAL COPY by design: this script must stay crisp-import-free (GPU PC).
+# Canonical in-package version: crisp_gym/util/rot6d.py — keep them identical
+# (tests/test_pose_math.py pins the convention numerically).
 
 def rot6d_to_mat(d6: np.ndarray) -> np.ndarray:
     """[..., 6] rot6d -> [..., 3, 3] via Gram-Schmidt (UMI's rot6d_to_mat)."""

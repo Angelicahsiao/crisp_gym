@@ -28,6 +28,15 @@ Repos involved (same owner, branch conventions apply to all):
   in `crisp_py/utils/geometry.py`). Do not switch representations without
   re-recording or migrating existing datasets.
 
+
+- Canonical in-package implementation: `crisp_gym/util/rot6d.py`. The two
+  standalone scripts keep local copies by design (no crisp imports).
+- DEPLOY INVARIANT: every action of a relative-action chunk is composed
+  against the pose captured at the chunk's OBSERVATION time
+  (`RemotePolicy._chunk_base`), never the live execution-time pose —
+  per-step composition re-adds executed motion and compounds within the
+  chunk. Regression-tested in tests/test_pose_math.py.
+
 ### 1.2 What is stored on disk vs what the model sees
 - **On disk (Parquet, LeRobot format): ABSOLUTE poses.** Never store relative
   poses in the dataset. `observation.state.cartesian` = absolute TCP pose in
@@ -108,9 +117,12 @@ Repos involved (same owner, branch conventions apply to all):
 | `crisp_gym/scripts/lerobot_relative_pose.py` | Training-side dataset wrapper + `lerobot-train` launcher (patches `make_dataset`). Runs on the GPU PC, needs only lerobot/torch/numpy — NO crisp imports, keep it that way. |
 | `crisp_gym/scripts/migrate_euler_delta_to_rot6d.py` | One-time migration of LEGACY datasets (Euler pose + delta-command action from the old `stream_fn` recorder) to the UMI absolute rot6d schema. File surgery: copies the dataset (videos byte-identical, NO re-encode), rewrites only low-dim parquet columns (cartesian Euler(6)→rot6d(9), rebuilt `observation.state`, reconstructed `next_tcp_pose` action) + `info.json` + stats. Handles BOTH v2.x (`episode_*.parquet`) and v3.0 (`data/file-*.parquet` multi-episode + `meta/episodes/*.parquet` stats) layouts. USAGE.md §11. |
 | `crisp_gym/scripts/check_relative_pose.py` | Verify a rot6d dataset's relative-pose conversion: identity (current frame → identity), round-trip (`T_current ∘ T_rel` recovers the on-disk absolute `next_tcp_pose` — deploy parity), Δpos magnitude, gripper pass-through. Runs `RelativePoseDataset` with no start-pose noise. USAGE.md §8. |
-| `crisp_gym/util/lerobot_features.py` | Feature schema. Rotation-rep-aware dims/names AND v0.4.x/v0.5.x lerobot compatibility + fps parameter (merged from two branches — both aspects must survive future edits). |
+| `crisp_gym/util/lerobot_features.py` | LEGACY feature schema (no---record-config path only; config-driven recording uses `RecordConfig.to_features`). Rotation-rep-aware dims/names AND v0.4.x/v0.5.x lerobot compatibility + fps parameter — both aspects must survive future edits. ROS-free at import time. |
+| `crisp_gym/util/rot6d.py` | CANONICAL in-package rot6d/pose9d helpers (used by remote_policy, umi_handheld_env). `lerobot_relative_pose.py` and `migrate_euler_delta_to_rot6d.py` keep local copies BY DESIGN (must stay crisp-import-free); tests/test_pose_math.py pins the convention. |
 | `crisp_py/utils/geometry.py` | `OrientationRepresentation.ROTATION_6D` lives here. |
 | `tests/test_lerobot_record.py` | Stubs crisp_py/ROS at import; its `_OrientationRepresentation` stub MUST mirror the real enum (already includes ROTATION_6D). |
+| `tests/test_pose_math.py` | HANDOFF §3 invariants as real tests (rot6d round-trip, identity, matrix round-trip, world-frame invariance, gripper pass-through, RemotePolicy obs-time chunk base). Runs without torch (stubbed). |
+| `tests/test_migration_euler_delta.py` | Migration round-trip on synthetic v2.x/v3.0 datasets (rotations, state rebuild, lookahead episode boundaries, stats incl. quantiles, byte-identical videos, guards). |
 
 LeRobot version target: **0.4.4** (module path `lerobot.datasets.lerobot_dataset`;
 train entry `lerobot.scripts.lerobot_train`; diffusion defaults n_obs_steps=2,
@@ -187,8 +199,8 @@ norm ~1.0 and dot ~0.0 (they are rows of a real rotation matrix).
      crisp_gym `STRING_TO_CONFIG`, recording-manager factory. Model on the
      existing sensor registry (`crisp_py/sensors/sensor.py`) and policy
      registry (`crisp_gym/policy/policy.py`).
-   - Phase 2 leftovers: `util/lerobot_features.py` imports `manipulator_env`
-     at module top -> transitively pulls rclpy into pure-inference code paths.
+   - FIXED: `util/lerobot_features.py` no longer imports `manipulator_env`
+     (TYPE_CHECKING only) — the module is ROS-free at import time.
    - FIXED: controller names + readiness gate are config-driven
      (`controller_names` / `required_controllers` in ManipulatorEnvConfig,
      `controller_name_for()` / `required_controllers` on the env;

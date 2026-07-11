@@ -207,15 +207,10 @@ def main():
         # Set up Franka's custom environment config
         CTRL_FREQ = 50
         BASE_DIR = Path(crisp_gym.__file__).parent
+        # NOTE: CTRL_FREQ is decoupled from --fps by design here (control loop
+        # vs record rate); see HANDOFF known issues before changing.
         env_config = FrankaEnvConfig(control_frequency=CTRL_FREQ, gripper_config=None, camera_configs=[])
-        # env_config.cartesian_control_param_config = str(
-        #     BASE_DIR / "config/control/default_cartesian_impedance.yaml"
-        # )
-        # env_config.joint_control_param_config = str(
-        #     BASE_DIR / "config/control/joint_control.yaml"
-        # )
         ctrl_type = "cartesian" if not args.joint_control else "joint"
-        print("change path")
         # Choose the environment based on joint or cartesian control
         if args.joint_control:  # If joint control is enabled
             env = ManipulatorJointEnv(namespace=args.follower_namespace, config=env_config)
@@ -230,13 +225,12 @@ def main():
             control_type=ctrl_type,
             namespace=args.follower_namespace,
         )
-        print("Cartesian config:",
-            env.config.cartesian_control_param_config)
-
-        print("Joint config:",
-            env.config.joint_control_param_config)
-        print("Config class:", type(env.config))
-        print("Your env_type:", args.follower_config)
+        logger.debug(
+            "env %s: cartesian=%s joint=%s",
+            args.follower_config,
+            env.config.cartesian_control_param_config,
+            env.config.joint_control_param_config,
+        )
 
     try:
 
@@ -322,8 +316,6 @@ def main():
         logger.debug("[DEBUG] env.wait_until_ready() done")
         env.home(home_config=HomeConfig.CLOSE_TO_TABLE.randomize(noise=args.home_config_noise))
         logger.debug("[DEBUG] env.home() done")
-        print("HomeConfig:", HomeConfig.CLOSE_TO_TABLE.randomize(noise=args.home_config_noise))
-        print("HomeConfig:", HomeConfig.OPEN_POSE.randomize(noise=args.home_config_noise))
         env.home(home_config=HomeConfig.OPEN_POSE.randomize(noise=args.home_config_noise))
         env.reset()
         logger.debug("[DEBUG] env.reset() done")

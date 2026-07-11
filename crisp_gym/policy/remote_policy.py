@@ -176,17 +176,10 @@ class RemotePolicy(Policy):
         """
         from scipy.spatial.transform import Rotation
 
-        T_cur = T_base
+        from crisp_gym.util.rot6d import pose9d_to_mat
 
-        # rot6d (first two rows) -> matrix via Gram-Schmidt
-        a1, a2 = action[3:6], action[6:9]
-        b1 = a1 / np.linalg.norm(a1)
-        b2 = a2 - np.dot(b1, a2) * b1
-        b2 = b2 / np.linalg.norm(b2)
-        b3 = np.cross(b1, b2)
-        T_rel = np.eye(4)
-        T_rel[:3, :3] = np.stack([b1, b2, b3], axis=0)
-        T_rel[:3, 3] = action[:3]
+        T_cur = T_base
+        T_rel = pose9d_to_mat(np.asarray(action[:9], dtype=np.float64))
 
         T_cmd = T_cur @ T_rel
         pos = T_cmd[:3, 3]
@@ -198,9 +191,9 @@ class RemotePolicy(Policy):
         elif rep_value == "angle_axis":
             rot_arr = rot.as_rotvec()
         elif rep_value == "rotation_6d":
-            # First two ROWS of R flattened (UMI/pytorch3d convention) — must
-            # match Pose.to_pos_rotation_6d_array / env.action_to_rotation.
-            rot_arr = rot.as_matrix()[:2, :].flatten()
+            from crisp_gym.util.rot6d import mat_to_rot6d
+
+            rot_arr = mat_to_rot6d(rot.as_matrix())
         else:  # euler default for cartesian control commands
             rot_arr = rot.as_euler("xyz")
         return np.concatenate([pos, rot_arr, action[9:]])

@@ -27,6 +27,8 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 REPO = Path(__file__).resolve().parents[1]
+if str(REPO) not in sys.path:  # remote_policy lazily imports crisp_gym.util.rot6d
+    sys.path.insert(0, str(REPO))
 
 # ── torch stub (lerobot_relative_pose imports torch; its math is numpy) ──────
 try:

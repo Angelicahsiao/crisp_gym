@@ -50,45 +50,23 @@ def _leader_gripper_to_action(
         raise ValueError(f"Unsupported gripper control mode: {control_mode}")
 
 
-def make_teleop_streamer_fn(env: ManipulatorCartesianEnv, leader: TeleopStreamedPose) -> Callable:
-    """Create a teleoperation function for the leader robot using streamed pose data."""
-    prev_pose = leader.last_pose
-    first_step = True
+def _drive_fn_to_teleop_fn(env, drive_fn: Callable) -> Callable:
+    """Wrap a drive-fn (command computation only) into a legacy teleop fn that
+    also steps the env and returns (obs, action) for RecordingManager."""
 
     def _fn() -> tuple:
-        """Teleoperation function to be called in each step.
-
-        This function computes the action based on the current end-effector pose
-        or joint values of the leader robot, updates the gripper value, and steps
-        the environment.
-
-        Returns:
-            tuple: A tuple containing the observation from the environment and the action taken.
-        """
-        nonlocal prev_pose, first_step
-        if first_step:
-            first_step = False
-            prev_pose = leader.last_pose
+        action = drive_fn()
+        if action is None:  # warm-up tick (no previous pose to diff against)
             return None, None
-
-        pose = leader.last_pose
-        action_pose = pose - prev_pose
-        prev_pose = pose
-
-        gripper = leader.last_gripper if leader.last_gripper is not None else 0.0
-
-        action_pose_vector = action_pose.to_array(env.config.orientation_representation)
-
-        action = np.concatenate(
-            [
-                action_pose_vector,
-                [gripper],
-            ]
-        )
         obs, *_ = env.step(action, block=False)
         return obs, action
 
     return _fn
+
+
+def make_teleop_streamer_fn(env: ManipulatorCartesianEnv, leader: TeleopStreamedPose) -> Callable:
+    """Legacy streamed-pose teleop fn — thin wrapper over make_streamer_drive_fn."""
+    return _drive_fn_to_teleop_fn(env, make_streamer_drive_fn(env, leader))
 
 
 def make_record_fn(
@@ -278,75 +256,10 @@ def make_factr_drive_fn(factr) -> Callable:
 
 
 def make_teleop_fn(env: ManipulatorBaseEnv, leader: TeleopRobot) -> Callable:
-    """Create a teleoperation function for the leader robot.
+    """Legacy leader-follower teleop fn — thin wrapper over make_teleop_drive_fn.
 
-    This function returns a Callable that can be used to control the leader robot
-    in a teleoperation manner. It computes the action based on the difference
-    between the current and previous end-effector pose or joint values, and
-    updates the gripper value based on the leader gripper's value.
-
-    Args:
-        env (ManipulatorBaseEnv): The environment in which the leader robot operates.
-        leader (TeleopRobot): The teleoperation leader robot instance.
-
-    Returns:
-        Callable: A function that, when called, performs a step in the environment
-        and returns the observation and action taken.
+    Computes the delta (or absolute) command from the leader, steps the env,
+    and returns (obs, action) for RecordingManager. The command math lives in
+    make_teleop_drive_fn (single source).
     """
-    prev_pose = leader.robot.end_effector_pose
-    prev_joint = leader.robot.joint_values
-    first_step = True
-
-    def _fn() -> tuple:
-        """Teleoperation function to be called in each step.
-
-        This function computes the action based on the current end-effector pose
-        or joint values of the leader robot, updates the gripper value, and steps
-        the environment.
-
-        Returns:
-            tuple: A tuple containing the observation from the environment and the action taken.
-        """
-        nonlocal prev_pose, prev_joint, first_step
-        if first_step:
-            first_step = False
-            prev_pose = leader.robot.end_effector_pose
-            prev_joint = leader.robot.joint_values
-            return None, None
-
-        pose = leader.robot.end_effector_pose
-        joint = leader.robot.joint_values
-
-        if env.config.use_relative_actions:
-            action_pose = pose - prev_pose
-            action_joint = joint - prev_joint
-        else:
-            action_pose = pose
-            action_joint = joint
-
-        prev_pose = pose
-        prev_joint = joint
-
-        gripper_action = _leader_gripper_to_action(
-            leader_value=leader.gripper.value if leader.gripper is not None else 0.0,
-            follower_value=env.gripper.value if env.gripper is not None else 0.0,
-            control_mode=env.config.gripper_mode,
-        )
-
-        action = None
-        if env.ctrl_type is ControlType.CARTESIAN:
-            # Use the environment's orientation representation for the rotation part
-            action_pose_vector = action_pose.to_array(env.config.orientation_representation)
-            action = np.concatenate([action_pose_vector, [gripper_action]])
-        elif env.ctrl_type is ControlType.JOINT:
-            action = np.concatenate([action_joint, [gripper_action]])
-        else:
-            raise ValueError(
-                f"Unsupported control type: {env.ctrl_type}. "
-                "Supported types are 'cartesian' and 'joint' for delta actions."
-            )
-
-        obs, *_ = env.step(action, block=False)
-        return obs, action
-
-    return _fn
+    return _drive_fn_to_teleop_fn(env, make_teleop_drive_fn(env, leader))

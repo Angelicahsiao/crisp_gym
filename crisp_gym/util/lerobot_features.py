@@ -5,14 +5,15 @@ sensors, and actions based on the environment configuration and control type. It
 utilities for converting observations between different formats.
 """
 
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict
 
 import gymnasium
 import numpy as np
-import rich
 
-from crisp_gym.envs.manipulator_env import ManipulatorBaseEnv, make_env
 from crisp_gym.util.control_type import ControlType
+
+if TYPE_CHECKING:  # avoid importing ROS (rclpy via manipulator_env) at module load
+    from crisp_gym.envs.manipulator_env import ManipulatorBaseEnv
 
 try:
     from lerobot.datasets.dataset_metadata import CODEBASE_VERSION
@@ -47,12 +48,17 @@ def _rotation_dim_names(env) -> list[str]:
 
 
 def get_features(
-    env: ManipulatorBaseEnv,
+    env: "ManipulatorBaseEnv",
     use_video: bool = True,
     ignore_keys: list[str] = None,
     fps: float | None = None,
 ) -> Dict[str, Dict]:
     """Get the features used by LeRobotDataset.
+
+    LEGACY path: derives features from the env's observation space. Used only
+    by the no---record-config branch of the recording scripts. Config-driven
+    recording builds features from the data contract instead
+    (record/record_config.py::RecordConfig.to_features) — prefer that.
 
     Args:
         env (ManipulatorBaseEnv): The environment configuration object.
@@ -232,94 +238,6 @@ def concatenate_state_features(
     return concatenated_state
 
 
-def convert_observation_to_features(
-    obs: Dict[str, Any], features: Dict[str, Dict]
-) -> Dict[str, Any]:
-    """Convert raw observation dictionary to feature-formatted observations.
-
-    This function takes raw observations from the environment and converts them to the
-    standardized LeRobot feature format. It handles mapping from legacy observation keys
-    to the new feature-based keys and ensures proper data types.
-
-    Args:
-        obs (Dict[str, Any]): Raw observation dictionary from the environment
-        features (Dict[str, Dict]): Feature configuration dictionary
-
-    Returns:
-        Dict[str, Any]: Converted observations matching the feature format
-
-    Raises:
-        ValueError: If required features are missing from observations
-    """
-    converted_obs = {}
-
-    for feature_name, feature_config in features.items():
-        if feature_name == "action":
-            # Actions are handled separately
-            continue
-
-        if feature_name in obs:
-            # Direct feature match
-            value = obs[feature_name]
-            if isinstance(value, np.ndarray) and feature_name.startswith("observation.state"):
-                converted_obs[feature_name] = value.astype(np.float32)
-            else:
-                converted_obs[feature_name] = value
-
-    return converted_obs
-
-
-def validate_features_match_observation(obs: Dict[str, Any], features: Dict[str, Dict]) -> bool:
-    """Validate that observations contain all required features.
-
-    Args:
-        obs (Dict[str, Any]): Observation dictionary to validate
-        features (Dict[str, Dict]): Required features
-
-    Returns:
-        bool: True if all required features can be satisfied, False otherwise
-    """
-    missing_features = []
-
-    for feature_name in features:
-        if feature_name == "action":
-            continue  # Actions are handled separately
-
-        if feature_name in obs:
-            continue
-
-        if feature_name.startswith("observation.images."):
-            camera_name = feature_name.split(".")[-1]
-            image_key = f"{camera_name}_image"
-            if image_key not in obs:
-                missing_features.append(f"{feature_name} (expected key: {image_key})")
-
-        elif feature_name == "observation.state":
-            if not ("cartesian" in obs and "gripper" in obs):
-                missing_features.append(f"{feature_name} (missing cartesian or gripper)")
-
-        elif feature_name == "observation.state.joint":
-            if "joint" not in obs:
-                missing_features.append(f"{feature_name} (missing joint)")
-
-        elif feature_name == "observation.state.target":
-            if "target_cartesian" not in obs:
-                missing_features.append(f"{feature_name} (missing target_cartesian)")
-
-        elif feature_name.startswith("observation.state.sensor_"):
-            sensor_name = feature_name.split(".")[-1].replace("sensor_", "")
-            if sensor_name not in obs:
-                missing_features.append(f"{feature_name} (expected key: {sensor_name})")
-        else:
-            missing_features.append(feature_name)
-
-    if missing_features:
-        logger.error(f"Missing required features: {missing_features}")
-        return False
-
-    return True
-
-
 def numpy_obs_to_torch(obs: Dict[str, Any]) -> Dict[str, Any]:
     """Convert numpy observations to torch tensors for policy inference.
 
@@ -355,6 +273,10 @@ def numpy_obs_to_torch(obs: Dict[str, Any]) -> Dict[str, Any]:
 
 
 if __name__ == "__main__":
+    import rich
+
+    from crisp_gym.envs.manipulator_env import make_env
+
     env = make_env("right_aloha_franka")
     features = get_features(env, use_video=True)
 

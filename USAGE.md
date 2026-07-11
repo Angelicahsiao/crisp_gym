@@ -18,7 +18,8 @@ Contents:
 11. [Migrate legacy Euler + delta-command data to rot6d](#11-migrate-legacy-euler--delta-command-data-to-rot6d)
 
 The keyboard recording manager is the same everywhere:
-**r** start/stop episode · **s** save episode · **d** delete episode · **q** quit.
+**r** start/stop episode · **s** save episode · **d** delete episode · **q** quit
+(type the key, then **ENTER** — plain stdin, no extra key-capture dependency).
 
 ---
 

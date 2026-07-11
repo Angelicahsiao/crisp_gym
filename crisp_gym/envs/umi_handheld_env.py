@@ -276,8 +276,9 @@ class UmiHandheldEnv(gym.Env):
         elif self.config.orientation_representation == OrientationRepresentation.QUATERNION:
             rot_array = rot_tcp.as_quat().astype(np.float32)
         elif self.config.orientation_representation == OrientationRepresentation.ROTATION_6D:
-            # First two rows of the rotation matrix, flattened (pytorch3d/UMI convention)
-            rot_array = rot_tcp.as_matrix()[:2, :].flatten().astype(np.float32)
+            from crisp_gym.util.rot6d import mat_to_rot6d
+
+            rot_array = mat_to_rot6d(rot_tcp.as_matrix()).astype(np.float32)
         else:  # ANGLE_AXIS
             rot_array = rot_tcp.as_rotvec().astype(np.float32)
 
