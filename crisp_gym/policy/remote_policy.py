@@ -181,6 +181,10 @@ class RemotePolicy(Policy):
             rot_arr = rot.as_quat()
         elif rep_value == "angle_axis":
             rot_arr = rot.as_rotvec()
+        elif rep_value == "rotation_6d":
+            # First two ROWS of R flattened (UMI/pytorch3d convention) — must
+            # match Pose.to_pos_rotation_6d_array / env.action_to_rotation.
+            rot_arr = rot.as_matrix()[:2, :].flatten()
         else:  # euler default for cartesian control commands
             rot_arr = rot.as_euler("xyz")
         return np.concatenate([pos, rot_arr, action[9:]])

@@ -75,6 +75,10 @@ class RecordingManager(ABC):
         self.queue = mp.JoinableQueue(self.config.queue_size)
         self.episode_count_queue = mp.Queue(1)
         self.dataset_ready = mp.Event()
+        # Set by the writer process when a FRAME/SAVE/startup error occurs, so
+        # the recording loop fails loudly instead of silently producing a
+        # truncated/corrupt episode.
+        self.writer_error = mp.Event()
 
         # Start the writer process
         self.writer = mp.Process(
@@ -102,6 +106,11 @@ class RecordingManager(ABC):
 
         original_timeout = timeout
         while not self.dataset_ready.is_set():
+            if self.writer_error.is_set():
+                raise RuntimeError(
+                    "Dataset writer failed during startup — see the writer "
+                    "process traceback above."
+                )
             logger.debug("Waiting for dataset to be ready...")
             time.sleep(1.0)
             timeout -= 1.0
@@ -142,10 +151,13 @@ class RecordingManager(ABC):
             else:
                 dataset = LeRobotDataset(repo_id=self.config.repo_id)
             if self.config.num_episodes <= dataset.num_episodes:
-                logger.error(
-                    f"The dataset already has {dataset.num_episodes} recorded. Please select a larger number."
+                # Raise (not exit()): this runs in the writer subprocess, and a
+                # bare exit() would leave the parent blocked until the
+                # wait_until_ready timeout with a misleading TimeoutError.
+                raise ValueError(
+                    f"The dataset already has {dataset.num_episodes} episodes recorded; "
+                    f"--num-episodes ({self.config.num_episodes}) must be larger to resume."
                 )
-                exit()
             logger.info(
                 f"Resuming from episode {dataset.num_episodes} with {self.config.num_episodes} episodes to record."
             )
@@ -175,7 +187,11 @@ class RecordingManager(ABC):
     def _writer_proc(self):
         """Process to write data to the dataset."""
         logger.info("Starting dataset writer process.")
-        dataset = self._create_dataset()
+        try:
+            dataset = self._create_dataset()
+        except Exception:
+            self.writer_error.set()
+            raise
         self.dataset_ready.set()
         logger.debug(f"Dataset features: {list(self.config.features.keys())}")
 
@@ -224,7 +240,7 @@ class RecordingManager(ABC):
                             subprocess.Popen(
                                 [
                                     "paplay",
-                                    "/usr/share/sounds/freedesktop/stereo/complete.oga ",
+                                    "/usr/share/sounds/freedesktop/stereo/complete.oga",
                                 ],
                                 stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL,
@@ -273,8 +289,11 @@ class RecordingManager(ABC):
                     break
             except Exception as e:
                 logger.exception("Error occurred: %s", e)
-            finally:
-                pass
+                # A failed add_frame/save_episode means the episode on disk is
+                # truncated/corrupt. Flag it so the recording loop raises
+                # instead of letting the operator believe the save succeeded.
+                if msg.get("type") in ("FRAME", "SAVE_EPISODE"):
+                    self.writer_error.set()
 
         self.queue.task_done()
         logger.info("Writter process finished.")
@@ -315,8 +334,15 @@ class RecordingManager(ABC):
                 logger.debug("Data function returned None, skipping frame.")
                 # If the data function returns None, skip this frame
                 sleep_time = 1 / self.config.fps - (time.time() - frame_start)
-                time.sleep(sleep_time)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
                 continue
+
+            if self.writer_error.is_set():
+                raise RuntimeError(
+                    "Dataset writer failed (see writer traceback above) — the "
+                    "current episode is not being persisted. Aborting recording."
+                )
 
             self.queue.put({"type": "FRAME", "data": (obs, action, task)})
 

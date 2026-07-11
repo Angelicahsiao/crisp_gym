@@ -84,9 +84,16 @@ def core_contract(meta: dict) -> dict:
 
 
 def episode_files(dataset_dir: Path) -> list[Path]:
-    files = sorted((dataset_dir / "data").rglob("episode_*.parquet"))
+    """All frame-data parquet files, layout-agnostic.
+
+    v2.x: data/chunk-*/episode_XXXXXX.parquet (one episode per file).
+    v3.0: data/chunk-*/file-XXX.parquet (many episodes per file). All the
+    rewrites in this script (column drop/rename, per-row gripper rescale)
+    operate per-row, so multi-episode files are handled transparently.
+    """
+    files = sorted((dataset_dir / "data").rglob("*.parquet"))
     if not files:
-        raise FileNotFoundError(f"No episode parquet files under {dataset_dir}/data")
+        raise FileNotFoundError(f"No frame parquet files under {dataset_dir}/data")
     return files
 
 
@@ -233,7 +240,7 @@ def align(
         with open(rc_path, "w") as f:
             json.dump(meta, f, indent=4)
 
-        logger.info(f"  ✓ {out.name} written ({len(episode_files(out))} episodes)")
+        logger.info(f"  ✓ {out.name} written ({len(episode_files(out))} data files)")
 
     if not dry_run:
         logger.info("Done. Aligned datasets are schema-identical and mixable.")
