@@ -111,11 +111,22 @@ python crisp_gym/scripts/record_lerobot_format_leader_follower.py \
 teleop runs at the recording rate (15 Hz), slightly laggier than the 50 Hz
 live example (`examples/09_factr_ur7e_teleop.py`).
 
-**Homing between episodes.** The follower homes after every episode using a
-configuration matching ITS joint count: the Franka-specific `HomeConfig` poses
-are used only on 7-joint arms; on the UR the robot's own `home_config` (from
-the crisp_py robot config) is used instead. (Previously the 7-joint pose was
-sent to the 6-joint UR and silently rejected — the robot never homed.)
+**Homing between episodes.** The follower homes after every episode. The pose
+is resolved per robot, in this order:
+
+1. `named_home_configs` in the env YAML — the consistent way to define the
+   named poses for YOUR robot, e.g. for the UR7e:
+   ```yaml
+   named_home_configs:
+     close_to_table: [...]   # 6 joint values, radians
+     open_pose:      [...]
+   ```
+2. the legacy Franka `HomeConfig` enum poses — used only when the joint count
+   matches (i.e. 7-joint arms);
+3. the robot's own `home_config` from the crisp_py robot config.
+
+A wrong-size pose now raises immediately. (Previously the 7-joint Franka pose
+was sent to the 6-joint UR and silently rejected — the robot never homed.)
 
 **FACTR leader homing.** After each episode (and at shutdown) the recorder
 publishes `std_msgs/Bool (data: true)` on:

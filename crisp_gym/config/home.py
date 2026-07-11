@@ -80,3 +80,34 @@ def randomized_home_for(
     return (
         np.array(fallback, dtype=float) + np.random.uniform(-noise, noise, size=nq)
     ).tolist()
+
+
+def home_for_env(env, name: str, noise: float = 0.01) -> list:
+    """Resolve a NAMED home pose for this env's robot, randomized.
+
+    Resolution order (first hit wins):
+      1. env.config.named_home_configs[name]      — per-robot pose from the env
+         YAML (the consistent way to define e.g. "open_pose" for a UR).
+      2. HomeConfig[NAME] enum pose               — legacy Franka poses, used
+         ONLY when the joint count matches the robot.
+      3. env.robot.config.home_config             — the robot's own home.
+
+    Raises ValueError if a named entry exists but its length does not match
+    the robot's joint count (never silently sends a wrong-size trajectory).
+    """
+    import numpy as np
+
+    nq = env.robot.nq
+    named = getattr(env.config, "named_home_configs", None) or {}
+    if name in named:
+        cfg = list(named[name])
+        if len(cfg) != nq:
+            raise ValueError(
+                f"named_home_configs['{name}'] has {len(cfg)} joints but the "
+                f"robot has {nq} — fix the env YAML."
+            )
+        return (np.array(cfg, dtype=float) + np.random.uniform(-noise, noise, size=nq)).tolist()
+
+    enum_name = name.upper()
+    preferred = HomeConfig[enum_name] if enum_name in HomeConfig.__members__ else None
+    return randomized_home_for(nq, env.robot.config.home_config, preferred=preferred, noise=noise)

@@ -8,7 +8,7 @@ import numpy as np
 import rclpy
 
 import crisp_gym  # noqa: F401
-from crisp_gym.config.home import HomeConfig, randomized_home_for
+from crisp_gym.config.home import home_for_env
 from crisp_gym.envs.manipulator_env import ManipulatorCartesianEnv, make_env, ManipulatorJointEnv
 from crisp_gym.envs.manipulator_env_config import list_env_configs, FrankaEnvConfig
 from crisp_gym.record.record_config import RecordConfig
@@ -314,13 +314,11 @@ def main():
 
         env.wait_until_ready()
         logger.debug("[DEBUG] env.wait_until_ready() done")
-        env.home(home_config=randomized_home_for(
-            env.robot.nq, env.robot.config.home_config,
-            preferred=HomeConfig.CLOSE_TO_TABLE, noise=args.home_config_noise))
+        env.home(home_config=home_for_env(
+            env, "close_to_table", noise=args.home_config_noise))
         logger.debug("[DEBUG] env.home() done")
-        env.home(home_config=randomized_home_for(
-            env.robot.nq, env.robot.config.home_config,
-            preferred=HomeConfig.OPEN_POSE, noise=args.home_config_noise))
+        env.home(home_config=home_for_env(
+            env, "open_pose", noise=args.home_config_noise))
         env.reset()
         logger.debug("[DEBUG] env.reset() done")
 
@@ -348,12 +346,11 @@ def main():
         def on_end():
             """Hook function to be called when stopping the recording."""
             env.robot.reset_targets()
-            # HomeConfig poses are Franka(7); fall back to the robot's own
-            # home_config on other arms (a mismatched trajectory is silently
+            # Per-robot pose: env YAML named_home_configs["open_pose"] first,
+            # legacy Franka HomeConfig only when the joint count matches, else
+            # the robot's own home_config (a mismatched trajectory is silently
             # rejected by the controller -> the robot never homed on UR).
-            random_home = randomized_home_for(
-                env.robot.nq, env.robot.config.home_config,
-                preferred=HomeConfig.OPEN_POSE, noise=args.home_config_noise)
+            random_home = home_for_env(env, "open_pose", noise=args.home_config_noise)
             env.robot.home(blocking=False, home_config=random_home)
             if isinstance(leader, TeleopRobot):
                 leader.robot.reset_targets()

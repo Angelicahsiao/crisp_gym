@@ -83,3 +83,11 @@ joint_control_param_config: "control/ur_joint_control.yaml"
 # GPU. If you do want higher, e.g. 384: raise the RealSense color_profile to
 # >= 640x480, set `resolution: [384, 384]` here. Keep both cameras the SAME
 # resolution (LeRobot policies expect uniform image sizes).
+
+# Per-robot named home poses used by the recording scripts (between-episode /
+# startup homing). FILL IN YOUR OWN UR7e joint values (6 joints, radians) —
+# without this block the robot's home_config from the crisp_py robot config is
+# used for every named pose. The legacy HomeConfig enum poses are FRANKA-only.
+# named_home_configs:
+#   close_to_table: [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]   # EXAMPLE — replace!
+#   open_pose:      [0.0, -1.20, 1.20, -1.57, -1.57, 0.0]   # EXAMPLE — replace!
