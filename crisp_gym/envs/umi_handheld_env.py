@@ -176,6 +176,7 @@ class UmiHandheldEnv(gym.Env):
             callback_group=ReentrantCallbackGroup(),
         )
 
+        self._spin_running = True
         self._spin_thread = threading.Thread(target=self._spin, daemon=True)
         self._spin_thread.start()
 
@@ -239,10 +240,12 @@ class UmiHandheldEnv(gym.Env):
         executor = rclpy.executors.MultiThreadedExecutor(num_threads=2)
         executor.add_node(self._node)
         try:
-            while rclpy.ok():
+            while rclpy.ok() and self._spin_running:
                 executor.spin_once(timeout_sec=0.01)
         except Exception as e:
             logger.error(f"Executor error: {e}", exc_info=True)
+        finally:
+            executor.remove_node(self._node)
 
     # ── Pose conversion ───────────────────────────────────────────────────────
 
@@ -364,6 +367,18 @@ class UmiHandheldEnv(gym.Env):
         return self._get_obs(), {}
 
     def close(self) -> None:
+        """Stop the spin thread and destroy the ROS node (safe to call twice).
+
+        Without this, re-creating the env in one process (tests, notebooks)
+        leaks nodes/subscriptions and background executor threads.
+        """
+        self._spin_running = False
+        if self._spin_thread.is_alive():
+            self._spin_thread.join(timeout=2.0)
+        try:
+            self._node.destroy_node()
+        except Exception:
+            pass  # already destroyed / rclpy shut down
         super().close()
 
     def home(self, **kwargs) -> None:

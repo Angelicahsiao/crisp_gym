@@ -150,7 +150,16 @@ def _src_gripper(env, reference_width: float | None = None,
     """
     if hasattr(env, "_gripper_normalized"):  # UmiHandheldEnv
         raw = float(env._gripper_normalized)
-        dev_max = device_max_width or float(env.config.max_gripper_width)
+        env_max = float(env.config.max_gripper_width)
+        if device_max_width is not None and abs(device_max_width - env_max) > 1e-9:
+            raise ValueError(
+                f"record config device_max_width ({device_max_width}) != env "
+                f"max_gripper_width ({env_max}). The handheld raw value is "
+                "normalized by the env's max width, so reconstructing meters "
+                "requires these to match — otherwise the gripper channel is "
+                "silently mis-scaled."
+            )
+        dev_max = device_max_width or env_max
     elif getattr(env, "gripper", None) is not None:
         raw = float(env.gripper.value)
         if reference_width is not None and device_max_width is None:

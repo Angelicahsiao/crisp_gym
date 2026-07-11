@@ -61,7 +61,11 @@ class RecordingManager(ABC):
             )
         )
 
-        self.state: Literal[
+        # State is written by input threads (stdin reader / ROS callback) and
+        # read by the recording loop — guard it with a lock via the `state`
+        # property. The switch semantics/UX are unchanged.
+        self._state_lock = threading.Lock()
+        self._state: Literal[
             "is_waiting",
             "recording",
             "paused",
@@ -88,6 +92,17 @@ class RecordingManager(ABC):
             daemon=False,
         )
         self.writer.start()
+
+    @property
+    def state(self) -> str:
+        """Current recording state (thread-safe)."""
+        with self._state_lock:
+            return self._state
+
+    @state.setter
+    def state(self, value: str) -> None:
+        with self._state_lock:
+            self._state = value
 
     @property
     def dataset_directory(self) -> Path:
@@ -294,9 +309,12 @@ class RecordingManager(ABC):
                 # instead of letting the operator believe the save succeeded.
                 if msg.get("type") in ("FRAME", "SAVE_EPISODE"):
                     self.writer_error.set()
+            finally:
+                # One task_done per get() keeps the JoinableQueue accounting
+                # correct (previously a single task_done after the loop).
+                self.queue.task_done()
 
-        self.queue.task_done()
-        logger.info("Writter process finished.")
+        logger.info("Writer process finished.")
 
     def record_episode(
         self,
@@ -412,7 +430,17 @@ class RecordingManager(ABC):
         logger.info("Shutting down the record process...")
         self.queue.put({"type": "SHUTDOWN"})
 
-        self.writer.join()
+        # Bounded join: a wedged writer (e.g. blocking push_to_hub or a hung
+        # add_frame) must not hang shutdown forever.
+        self.writer.join(timeout=self.config.writer_timeout)
+        if self.writer.is_alive():
+            logger.error(
+                "Dataset writer did not shut down within "
+                f"{self.config.writer_timeout}s — terminating it. The last "
+                "episode may not be fully written."
+            )
+            self.writer.terminate()
+            self.writer.join(timeout=5.0)
 
     def _set_to_wait(self) -> None:
         """Set to wait if possible."""
@@ -583,14 +611,27 @@ class KeyboardRecordingManager(RecordingManager):
         )
 
     def _input_loop(self) -> None:
-        """Background thread reading stdin."""
+        """Background thread reading stdin (key + ENTER; stdlib only, no pynput).
+
+        Uses select() with a short timeout so the thread actually exits when
+        stop()/__exit__ clears _running (a bare readline() blocks forever), and
+        detects EOF (non-TTY / closed stdin) instead of busy-looping on it.
+        """
+        import select
+
         while self._running:
             try:
-                user_input = sys.stdin.readline().strip().lower()
-                if not user_input:
-                    continue
-                key = user_input[0]
-                self._handle_key(key)
+                readable, _, _ = select.select([sys.stdin], [], [], 0.2)
+                if not readable:
+                    continue  # timeout: re-check _running
+                line = sys.stdin.readline()
+                if line == "":
+                    # EOF — stdin closed / not a TTY; no input will ever come.
+                    logger.warning("stdin closed — keyboard control disabled.")
+                    break
+                key = line.strip().lower()[:1]
+                if key:
+                    self._handle_key(key)
             except Exception:
                 break
 
