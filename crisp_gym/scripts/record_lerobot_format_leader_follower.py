@@ -358,9 +358,10 @@ def main():
                 # leader.robot.home(blocking=False, home_config=random_home)
                 leader.robot.home(blocking=False)
             elif isinstance(leader, FACTRStreamedJoints):
-                # Ask the FACTR leader node (external) to home too, so leader
-                # and follower start each episode from a consistent pose.
-                leader.send_home()
+                # Ask the FACTR leader node (external) to home too, passing the
+                # follower's (noise-randomized) home pose so both arms end up
+                # at the SAME configuration each episode.
+                leader.send_home(home_config=random_home)
             env.gripper.open()
 
         with recording_manager:
@@ -413,7 +414,7 @@ def main():
             leader.robot.home()
         elif isinstance(leader, FACTRStreamedJoints):
             logger.info("Requesting FACTR leader home.")
-            leader.send_home()
+            leader.send_home(home_config=list(env.robot.config.home_config))
         logger.info("Homing follower.")
         env.home()
 

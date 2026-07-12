@@ -129,21 +129,33 @@ A wrong-size pose now raises immediately. (Previously the 7-joint Franka pose
 was sent to the 6-joint UR and silently rejected — the robot never homed.)
 
 **FACTR leader homing.** After each episode (and at shutdown) the recorder
-publishes `std_msgs/Bool (data: true)` on:
+publishes two topics:
 
 ```
-/factr_teleop/{name}/go_home
+/factr_teleop/{name}/home_pose   sensor_msgs/JointState  (position[0:6])
+/factr_teleop/{name}/go_home     std_msgs/Bool           (data: true)
 ```
 
-This is only a TRIGGER — the FACTR leader node must subscribe to this topic
-and execute its own homing motion. If it doesn't subscribe, a warning is
-logged and the leader simply stays where it is. Example subscriber for the
-FACTR node:
+`home_pose` carries the EXACT joint configuration the follower is homing to —
+with `--home-config-noise` this differs every episode, so the leader cannot
+assume a fixed home. It is published just before the `go_home` trigger. Both
+are only MESSAGES — the FACTR leader node must subscribe and execute its own
+homing motion. If it doesn't subscribe, a warning is logged and the leader
+stays where it is. Example subscriber pair for the FACTR node:
 
 ```python
-node.create_subscription(Bool, f"/factr_teleop/{name}/go_home",
-                         lambda msg: factr.go_to_home_pose() if msg.data else None, 10)
+latest_home = {"pose": None}
+node.create_subscription(
+    JointState, f"/factr_teleop/{name}/home_pose",
+    lambda msg: latest_home.update(pose=list(msg.position)), 10)
+node.create_subscription(
+    Bool, f"/factr_teleop/{name}/go_home",
+    lambda msg: factr.go_to(latest_home["pose"] or DEFAULT_HOME) if msg.data else None, 10)
 ```
+
+Order of arrival is guaranteed by publish order (pose first, then trigger),
+but a robust FACTR node should fall back to its own default home if no
+`home_pose` was ever received.
 
 ---
 
