@@ -119,6 +119,43 @@ def _src_joint_efforts(env, **_) -> np.ndarray:
     return np.asarray(env.robot.current_joint_effort, dtype=np.float32)
 
 
+@register_source("robot.external_effort")
+def _src_external_effort(env, calibration: str | None = None, **_) -> np.ndarray:
+    """Gravity-free (external) joint effort: tau_ext = tau_measured - g(q).
+
+    Uses crisp_gym.util.external_effort.ExternalEffortEstimator (Pinocchio),
+    built once from the robot's live /robot_description and cached on the env.
+    pinocchio is imported LAZILY here so the training/GPU import paths stay
+    free of it. Requires has_effort_feedback and a spinning robot node.
+
+    Params (record config):
+        calibration: optional path to a JSON file with per-joint
+            {"scale": [...], "offset": [...]} from a contact-free fit
+            (ExternalEffortEstimator.fit_calibration). Resolved via
+            find_config (crisp_gym.config.path), then treated as a literal path.
+    """
+    est = getattr(env, "_external_effort_estimator", None)
+    if est is None:
+        from crisp_gym.util.external_effort import ExternalEffortEstimator
+
+        scale = offset = None
+        if calibration:
+            import json
+
+            from crisp_gym.config.path import find_config
+
+            cal_path = find_config(calibration) or Path(calibration)
+            with open(cal_path) as f:
+                cal = json.load(f)
+            scale = cal.get("scale")
+            offset = cal.get("offset")
+        est = ExternalEffortEstimator.from_robot(env.robot, scale=scale, offset=offset)
+        env._external_effort_estimator = est  # cache: build the model only once
+    q = np.asarray(env.robot.joint_values, dtype=float)
+    tau = np.asarray(env.robot.current_joint_effort, dtype=float)
+    return est.external_effort(q, tau).astype(np.float32)
+
+
 @register_source("robot.target_pose")
 def _src_target_pose(env, representation: str = "rotation_6d", **_) -> np.ndarray:
     """Commanded (target) TCP pose — useful to analyze controller tracking."""
