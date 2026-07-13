@@ -11,7 +11,9 @@ authors = [
 dependencies = [
     "ruff>=0.11.9",
     "gymnasium>=0.26.3,<2",
-    "scipy>=1.15.2,<2",
+    # Loosened so the conda-provided scipy (robostack ROS stack) satisfies it
+    # instead of a conflicting pip install — see pixi.toml [dependencies].
+    "scipy>=1.10,<2",
     "crisp_python>=3.0.0,<4",
     "rich>=14.0.0, <15",
     "pyyaml",
