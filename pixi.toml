@@ -75,15 +75,17 @@ ros-humble-ros2-controllers = "*"
 rosdep = "*"
 ros-humble-rmw-cyclonedds-cpp = "*"
 ros-humble-image-transport-plugins = "*"
-# scipy pinned to the robostack channel EXPLICITLY. The workspace channel is
-# conda-forge (higher priority), so a plain `scipy = ">=1.10"` here still lets
-# the solver take conda-forge's numpy-2-built scipy 1.15.2 — which breaks under
-# the robostack numpy 1.26 (ImportError: cannot import name '_spropack'). This
-# is worse in the humble-lerobot env because the lerobot pip deps pull the
-# solve toward conda-forge. Forcing the channel guarantees the robostack build
-# (ABI-matched to numpy 1.26), and it satisfies the pyproject/lerobot pip
-# `scipy` requirement so no PyPI wheel is layered on.
-scipy = { version = ">=1.10", channel = "https://prefix.dev/robostack-humble" }
+# scipy comes from conda-forge (robostack does NOT host scipy — it layers ROS
+# on conda-forge). The bug was BUILD selection, not channel: conda-forge ships
+# scipy 1.15.2 built against BOTH numpy 1.x and numpy 2.x; in the humble-lerobot
+# env the lerobot deps nudged the solve to the numpy-2 build, which breaks under
+# the robostack numpy 1.26 (ImportError: cannot import name '_spropack').
+# Constraining numpy <2 makes the solver reject the numpy-2 scipy build and pick
+# a numpy-1.x-compatible one (robostack's numpy 1.26 already satisfies <2, so
+# this forces no upgrade). scipy itself is left as a direct conda dep so uv
+# treats the pip requirement as satisfied and adds no PyPI wheel.
+numpy = "<2"
+scipy = ">=1.10"
 
 [feature.jazzy]
 channels = ["https://prefix.dev/robostack-jazzy"]
