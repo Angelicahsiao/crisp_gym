@@ -25,11 +25,12 @@ typing_inspect = ">=0.9.0,<0.10"
 libstdcxx-ng = ">=12.2.0"
 typing-extensions = ">=4.14.0,<5"
 pinocchio = ">=2.7"
-# scipy/numpy via conda so they are ABI-consistent with the robostack ROS
-# stack. Without this, the crisp_gym pyproject pip requirement pulls a pip
-# scipy over the conda one -> broken compiled extensions (e.g. the
-# `_spropack` ImportError). The pyproject pin is loosened to match.
-numpy = "*"
+# scipy via conda so it is ABI-consistent with the robostack numpy (1.26).
+# Without this the crisp_gym pyproject pip requirement pulls a PyPI scipy
+# wheel built against numpy 2.x, whose f2py modules break under numpy 1.26
+# (ImportError: cannot import name '_spropack'). numpy itself is left to the
+# ROS stack — do NOT pin it here (forcing numpy 2 would conflict with humble).
+# The conda solver auto-selects a scipy build matching the installed numpy.
 scipy = ">=1.10"
 
 
