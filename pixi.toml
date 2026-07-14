@@ -75,17 +75,15 @@ ros-humble-ros2-controllers = "*"
 rosdep = "*"
 ros-humble-rmw-cyclonedds-cpp = "*"
 ros-humble-image-transport-plugins = "*"
-# scipy comes from conda-forge (robostack does NOT host scipy — it layers ROS
-# on conda-forge). The bug was BUILD selection, not channel: conda-forge ships
-# scipy 1.15.2 built against BOTH numpy 1.x and numpy 2.x; in the humble-lerobot
-# env the lerobot deps nudged the solve to the numpy-2 build, which breaks under
-# the robostack numpy 1.26 (ImportError: cannot import name '_spropack').
-# Constraining numpy <2 makes the solver reject the numpy-2 scipy build and pick
-# a numpy-1.x-compatible one (robostack's numpy 1.26 already satisfies <2, so
-# this forces no upgrade). scipy itself is left as a direct conda dep so uv
-# treats the pip requirement as satisfied and adds no PyPI wheel.
-numpy = "<2"
-scipy = ">=1.10"
+# scipy is DELIBERATELY NOT a conda dependency here. conda-forge's scipy is
+# built against numpy 2.x; forcing it into this env (which uses robostack's
+# numpy 1.26) yields the _spropack ImportError. crisp_py's working humble env
+# proves the fix: it has NO conda scipy — scipy is pulled as a PyPI manylinux
+# wheel (via uv, satisfying lerobot's `scipy==1.15.3` pin). PyPI scipy wheels
+# are built for numpy-ABI compatibility and coexist fine with conda numpy 1.26.
+# So: let lerobot's pip requirement provide scipy from PyPI; do not add a conda
+# scipy (or a numpy pin) here. robostack's ros-humble-desktop already fixes
+# numpy at 1.26.
 
 [feature.jazzy]
 channels = ["https://prefix.dev/robostack-jazzy"]
