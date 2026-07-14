@@ -24,11 +24,15 @@ ninja = "*"
 typing_inspect = ">=0.9.0,<0.10"
 libstdcxx-ng = ">=12.2.0"
 typing-extensions = ">=4.14.0,<5"
-pinocchio = ">=2.7"
+# pinocchio is NOT here on purpose: it exists only on conda-forge (not
+# robostack), so requiring it forced the shared scientific stack to resolve
+# from conda-forge — which pulled conda-forge's numpy-2-built scipy and broke
+# it under the robostack numpy 1.26 (the _spropack ImportError). The external
+# joint-effort estimator that needs pinocchio is being relocated to a robot
+# bring-up node (crisp_controllers_demos); crisp_gym only consumes its topic.
 # NOTE: scipy is pinned per-ROS-feature (see [feature.humble.dependencies]),
 # NOT here — it must come from the robostack channel so its build matches the
-# robostack numpy (1.26). A conda-forge scipy in this shared table resolves
-# against the wrong numpy ABI and the PyPI wheel still wins.
+# robostack numpy (1.26).
 
 
 [target.linux.dependencies]

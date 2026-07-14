@@ -136,7 +136,19 @@ def _src_external_effort(env, calibration: str | None = None, **_) -> np.ndarray
     """
     est = getattr(env, "_external_effort_estimator", None)
     if est is None:
-        from crisp_gym.util.external_effort import ExternalEffortEstimator
+        try:
+            from crisp_gym.util.external_effort import ExternalEffortEstimator
+        except ImportError as e:
+            # pinocchio is intentionally NOT a crisp_gym dependency (it pulled a
+            # conda-forge scientific stack that broke scipy under the robostack
+            # numpy). Install it in this env, or consume the external effort as a
+            # ROS topic via a sensor_config instead of this source.
+            raise ImportError(
+                "robot.external_effort needs pinocchio, which crisp_gym does not "
+                "install by default. Either `pixi add pinocchio` in this env, or "
+                "record the external effort as a plain sensor (sensor_config with "
+                "the topic published by a robot-side estimator node)."
+            ) from e
 
         scale = offset = None
         if calibration:
