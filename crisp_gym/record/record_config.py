@@ -119,53 +119,25 @@ def _src_joint_efforts(env, **_) -> np.ndarray:
     return np.asarray(env.robot.current_joint_effort, dtype=np.float32)
 
 
-@register_source("robot.external_effort")
-def _src_external_effort(env, calibration: str | None = None, **_) -> np.ndarray:
-    """Gravity-free (external) joint effort: tau_ext = tau_measured - g(q).
+@register_source("robot.sensor")
+def _src_sensor(env, name: str = "", **_) -> np.ndarray:
+    """Value of a configured env sensor by name (crisp_py Sensor.value).
 
-    Uses crisp_gym.util.external_effort.ExternalEffortEstimator (Pinocchio),
-    built once from the robot's live /robot_description and cached on the env.
-    pinocchio is imported LAZILY here so the training/GPU import paths stay
-    free of it. Requires has_effort_feedback and a spinning robot node.
-
-    Params (record config):
-        calibration: optional path to a JSON file with per-joint
-            {"scale": [...], "offset": [...]} from a contact-free fit
-            (ExternalEffortEstimator.fit_calibration). Resolved via
-            find_config (crisp_gym.config.path), then treated as a literal path.
+    Generic path for any sensor_config in the env: F/T wrench
+    (sensor_type: force_torque) OR external joint effort published by the
+    robot bring-up node (sensor_type: float32_array on `external_joint_effort`,
+    from crisp_controllers_robot_demos external_effort_node). No Pinocchio /
+    heavy deps on the crisp_gym side — the estimator runs robot-side and this
+    just records its topic.
     """
-    est = getattr(env, "_external_effort_estimator", None)
-    if est is None:
-        try:
-            from crisp_gym.util.external_effort import ExternalEffortEstimator
-        except ImportError as e:
-            # pinocchio is intentionally NOT a crisp_gym dependency (it pulled a
-            # conda-forge scientific stack that broke scipy under the robostack
-            # numpy). Install it in this env, or consume the external effort as a
-            # ROS topic via a sensor_config instead of this source.
-            raise ImportError(
-                "robot.external_effort needs pinocchio, which crisp_gym does not "
-                "install by default. Either `pixi add pinocchio` in this env, or "
-                "record the external effort as a plain sensor (sensor_config with "
-                "the topic published by a robot-side estimator node)."
-            ) from e
-
-        scale = offset = None
-        if calibration:
-            import json
-
-            from crisp_gym.config.path import find_config
-
-            cal_path = find_config(calibration) or Path(calibration)
-            with open(cal_path) as f:
-                cal = json.load(f)
-            scale = cal.get("scale")
-            offset = cal.get("offset")
-        est = ExternalEffortEstimator.from_robot(env.robot, scale=scale, offset=offset)
-        env._external_effort_estimator = est  # cache: build the model only once
-    q = np.asarray(env.robot.joint_values, dtype=float)
-    tau = np.asarray(env.robot.current_joint_effort, dtype=float)
-    return est.external_effort(q, tau).astype(np.float32)
+    for s in getattr(env, "sensors", []):
+        if getattr(s.config, "name", None) == name:
+            return np.asarray(s.value, dtype=np.float32)
+    available = [getattr(s.config, "name", "?") for s in getattr(env, "sensors", [])]
+    raise KeyError(
+        f"sensor '{name}' (from the record config) not found in the env's "
+        f"sensors {available}. Add a matching sensor_config to the env config."
+    )
 
 
 @register_source("robot.target_pose")

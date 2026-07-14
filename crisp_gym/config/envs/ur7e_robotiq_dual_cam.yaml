@@ -56,6 +56,14 @@ sensor_configs:
     name: "ft_sensor"
     shape: [6]
     data_topic: "/force_torque_sensor_broadcaster/wrench"
+  # Gravity-free external JOINT effort, estimated robot-side by
+  # crisp_controllers_robot_demos external_effort_node (Pinocchio). Recorded
+  # via umi_robot_ext_effort_record.yaml (source: robot.sensor, name: ext_effort).
+  # Uncomment once the node is running:
+  # - sensor_type: "float32_array"
+  #   name: "ext_effort"
+  #   shape: [6]                 # 6 = UR joints
+  #   data_topic: "/external_joint_effort"
 
 cartesian_control_param_config: "control/ur_cartesian_impedance.yaml"
 joint_control_param_config: "control/ur_joint_control.yaml"

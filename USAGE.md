@@ -196,6 +196,30 @@ in the robot config.
 
 Recommended default for robot recording: storage is cheap, re-recording isn't.
 
+**External joint effort (contact signal).** Gravity-free joint effort
+(`tau_ext = tau_measured - g(q)`) is estimated ROBOT-SIDE by the
+`external_effort_node` in `crisp_controllers_robot_demos` (it needs Pinocchio;
+crisp_gym does not, which keeps its dependency stack clean). Run it and record
+its topic as a plain sensor:
+
+```bash
+# on the robot:
+ros2 launch crisp_controllers_robot_demos external_effort.launch.py \
+    joint_names:="['shoulder_pan_joint','shoulder_lift_joint','elbow_joint',\
+'wrist_1_joint','wrist_2_joint','wrist_3_joint']"
+```
+Add a matching sensor to the env config and record it as an extra:
+```yaml
+# env config sensor_configs:
+- sensor_type: "float32_array"
+  name: "ext_effort"
+  shape: [6]
+  data_topic: "/external_joint_effort"
+```
+then use `config/recording/umi_robot_ext_effort_record.yaml` (which pulls it via
+`source: robot.sensor`, `name: ext_effort`). This is the JOINT-space signal,
+complementary to the Cartesian `/force_torque_sensor_broadcaster` wrench.
+
 ---
 
 ## 6. Post-process: align datasets for mixed training

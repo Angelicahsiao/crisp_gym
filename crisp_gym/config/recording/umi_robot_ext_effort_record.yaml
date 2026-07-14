@@ -1,25 +1,29 @@
-# UMI robot recording + gravity-free EXTERNAL joint effort (contact signal).
+# UMI robot recording + EXTERNAL joint effort (gravity-free contact signal).
 #
 # Same policy-facing UMI contract as umi_robot_record.yaml (so datasets stay
 # mixable), plus the estimated external joint effort as an EXTRA (analysis)
-# column. The estimate is tau_ext = tau_measured - g(q), computed by
-# crisp_gym.util.external_effort.ExternalEffortEstimator (Pinocchio) from the
-# robot's live /robot_description. This is the JOINT-space external effort
-# (6 values for the UR) — complementary to the Cartesian TCP wrench from the
-# /force_torque_sensor_broadcaster force_torque sensor.
+# column, recorded as a generic SENSOR (no Pinocchio on the crisp_gym side).
+#
+# The estimate tau_ext = tau_measured - g(q) is computed ROBOT-SIDE by
+# crisp_controllers_robot_demos `external_effort_node`, which publishes
+# std_msgs/Float32MultiArray on `external_joint_effort`. This is the JOINT-space
+# external effort (6 values for the UR) — complementary to the Cartesian TCP
+# wrench from the /force_torque_sensor_broadcaster force_torque sensor.
 #
 # Requirements:
-#   * pinocchio available in the recording environment (pixi adds it).
-#   * has_effort_feedback: true in the robot config, and /joint_states carrying
-#     current-derived effort (UR does).
-#   * For accurate readings, provide a calibration file (see below); without it
-#     scale=1, offset=0 (raw current-to-torque errors and static friction are
-#     NOT compensated).
+#   * The env config must declare a matching sensor, e.g.:
+#       sensor_configs:
+#         - sensor_type: "float32_array"
+#           name: "ext_effort"
+#           shape: [6]                 # 6 = UR, 7 = Franka
+#           data_topic: "/external_joint_effort"
+#   * Run the estimator node on the robot:
+#       ros2 launch crisp_controllers_robot_demos external_effort.launch.py \
+#           joint_names:="[...your arm joints...]"
 #
 # To make it a POLICY INPUT instead of an analysis extra, change the key to
 # `observation.state.external_effort` and set include_in_state: true — but then
-# datasets without this column (e.g. handheld) are no longer mixable, exactly
-# like the joint extras.
+# datasets without this column (e.g. handheld) are no longer mixable.
 name: "umi_robot_ext_effort"
 rate_hz: 15.0
 
@@ -39,10 +43,10 @@ observations:
 
   # ── external joint effort (saved, NOT a policy input) ──────────────────────
   - key: extra.external_effort
-    source: robot.external_effort
+    source: robot.sensor
+    name: ext_effort               # must match the env sensor_config name
     shape: [6]                     # 6 = UR, 7 = Franka
     include_in_state: false
-    # calibration: "calibration/ur7e_ext_effort.json"   # optional scale/offset
 
 action:
   definition: next_tcp_pose
