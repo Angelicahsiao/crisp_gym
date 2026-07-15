@@ -24,7 +24,7 @@ sibling of `crisp_gym` (e.g. `/workspace/lerobot` alongside `/workspace/crisp_gy
 **Set up LeRobot first, then install the environment:**
 
 ```bash
-# from the crisp_gym repo root
+cd /workspace/crisp_gym              # the crisp_gym repo root
 bash scripts/setup_lerobot.sh        # clones LeRobot v0.4.4 to ../lerobot and
                                      # patches its pyproject for ROS 2 Humble
 rm -f pixi.lock
