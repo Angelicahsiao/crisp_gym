@@ -99,7 +99,14 @@ ros-jazzy-rmw-zenoh-cpp = "*"
 
 [pypi-dependencies]
 crisp_gym = { path = ".", editable = true }
-# crisp_python = { path = "../crisp_py", editable = true }
+# Use the LOCAL crisp_py checkout (editable) rather than the PyPI `crisp_python`
+# wheel that `crisp_gym`'s pyproject pin (crisp_python>=3.0.0,<4) would otherwise
+# resolve. The published wheel lags this repo — e.g. it predates RobotConfig's
+# `has_effort_feedback` field (added in crisp_py d7e45d5), so recording configs
+# that set `has_effort_feedback: true` crash with
+# `URConfig.__init__() got an unexpected keyword argument 'has_effort_feedback'`.
+# The path override satisfies the same `crisp_python` requirement from source.
+crisp_python = { path = "../crisp_py", editable = true }
 
 [tasks]
 configure = "bash scripts/configure.sh"
