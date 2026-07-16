@@ -1,0 +1,27 @@
+# Local (in-process) deployment of a relative-pose rot6d checkpoint trained
+# with scripts/lerobot_relative_pose.py — for VERIFYING the model without the
+# websocket server. Requires the robot machine's lerobot version to match the
+# training version (0.4.4). Canonical long-term path: remote_policy
+# (REMOTE_INFERENCE.md).
+#
+# Use with a deploy env config (rotation_6d + use_relative_actions: false),
+# e.g. config/envs/ur7e_robotiq_deploy_umi.yaml:
+#   python -m crisp_gym.scripts.deploy_policy \
+#       --env-config ur7e_robotiq_deploy_umi \
+#       --policy-config relative_lerobot_policy --path <.../pretrained_model>
+name: "relative_lerobot_policy"
+
+# Physical gripper width in meters at Gripper.value = 1.0 — REQUIRED, must
+# match the record config's device_max_width:
+#   0.140 Robotiq 2F-140 | 0.085 Robotiq 2F-85 | 0.08 Franka Hand
+device_max_width: 0.140
+
+# Shared UMI reference width used at recording (gripper.width_normalized).
+reference_width: 0.09
+
+# Execute at most this many steps per returned chunk before re-inferring.
+# null -> the checkpoint's own n_action_steps (full returned chunk).
+n_action_steps: null
+
+# Optional lerobot policy-config overrides, e.g. {num_inference_steps: 10}.
+# overrides: {}

@@ -256,6 +256,62 @@ def recompute_relative_stats(wrapped: RelativePoseDataset, num_samples: int = 20
         logger.info(f"Recomputed relative-pose stats for '{k}' over {len(data)} frames.")
 
 
+# ── Provenance stamping ───────────────────────────────────────────────────────
+
+def stamp_pose_repr(cfg, dataset) -> None:
+    """Write pose_repr.json next to the checkpoints (HANDOFF §4.2).
+
+    Records what the model ACTUALLY sees, so the serving side (remote policy
+    server / local RelativeLerobotPolicy) can verify its contract instead of
+    guessing. Never fails training.
+    """
+    import json
+    from pathlib import Path
+
+    try:
+        pol = getattr(cfg, "policy", None)
+        meta = getattr(dataset, "meta", None)
+        info = {
+            "pose_layout": "pos3_rot6d_rows",
+            "rot6d_convention": "first_two_rows_row_major_gram_schmidt_decode",
+            "action": {
+                "pose_repr": "relative",
+                "base": "last_obs_frame_tcp",
+                "compose_base": "obs_time",
+                "layout": "[x, y, z, rot6d(6), gripper]",
+            },
+            "observation": {
+                # lerobot-0.4.4 policies consume the CONCATENATED
+                # observation.state, which this wrapper does NOT convert:
+                # the state input is ABSOLUTE [cartesian9, gripper_ref1].
+                "observation.state": "absolute",
+                # The sub-key IS converted (relative to the last obs frame)
+                # but is not read by 0.4.4 policies — normalizer passthrough.
+                "observation.state.cartesian": "relative_to_last_obs_frame",
+                "wrt_start_key": WRT_START_KEY,
+                "start_pose_noise_scale": START_POSE_NOISE_SCALE,
+            },
+            "gripper": {
+                "semantics": "clip(width_m / reference_width, 0, 1)",
+                "note": "reference_width/device_max_width are stamped in the "
+                        "dataset's meta/record_config.json",
+            },
+            "normalization": "relative stats recomputed pre-training "
+                             "(recompute_relative_stats), saved with checkpoint",
+            "fps": getattr(meta, "fps", None),
+            "n_obs_steps": getattr(pol, "n_obs_steps", None),
+            "horizon": getattr(pol, "horizon", None),
+            "n_action_steps": getattr(pol, "n_action_steps", None),
+            "lerobot_version_target": "0.4.4",
+        }
+        out_dir = Path(cfg.output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "pose_repr.json").write_text(json.dumps(info, indent=2))
+        logger.info(f"Stamped {out_dir / 'pose_repr.json'}")
+    except Exception as e:  # provenance must never kill a training run
+        logger.warning(f"Could not stamp pose_repr.json: {e}")
+
+
 # ── Training launcher ─────────────────────────────────────────────────────────
 
 def main():
@@ -269,6 +325,7 @@ def main():
         wrapped = RelativePoseDataset(dataset)
         logger.info("Wrapped dataset with RelativePoseDataset (UMI-style relative poses).")
         recompute_relative_stats(wrapped)
+        stamp_pose_repr(cfg, wrapped)
         return wrapped
 
     lerobot_train.make_dataset = make_dataset_with_relative

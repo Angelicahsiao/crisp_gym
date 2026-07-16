@@ -1,0 +1,49 @@
+# UR7e + Robotiq 2F-140 — DEPLOYMENT env for a UMI relative-pose rot6d model
+# (trained with scripts/lerobot_relative_pose.py on umi_robot_record.yaml data).
+#
+# Differences from ur7e_robotiq.yaml (the teleop/recording config), all
+# REQUIRED by the deployment math — do not "simplify" them away:
+#
+#   orientation_representation: rotation_6d
+#       observation.state.cartesian must be the 9D [pos3, rot6d-rows] absolute
+#       pose the model was trained on (HANDOFF §1.1).
+#   use_relative_actions: false
+#       The policy client composes T_cmd = T_base(obs time) @ T_rel itself and
+#       sends ABSOLUTE commands. The env's own relative branch is a decoupled
+#       world-frame add — NOT the UMI body-frame composition — and must stay
+#       off.
+#   camera "primary"
+#       The trained image key is observation.images.primary (224x224). The
+#       camera NAME here defines the obs key — keep it "primary" and point the
+#       topics at whichever RealSense you recorded with.
+control_frequency: 15.0          # = recording rate_hz (umi_robot_record.yaml)
+
+robot_config:
+  robot_type: "ur"
+  has_effort_feedback: true
+  # For UMI-compatible deployment the TCP must be the SAME frame used at
+  # recording (fingertip TCP, not the flange) — see ur7e_robotiq.yaml notes.
+  # target_frame: "robotiq_2f140_tcp"
+
+gripper_config:
+  from_yaml: "grippers/gripper_robotiq_2f140.yaml"
+
+gripper_mode: "absolute_continuous"
+gripper_threshold: 0.1
+
+orientation_representation: "rotation_6d"
+use_relative_actions: false
+
+camera_configs:
+  - camera_name: "primary"       # -> observation.images.primary (training key)
+    camera_frame: "primary_link"
+    resolution: [224, 224]       # = trained input size
+    # SET THESE to the camera you recorded observation.images.primary with:
+    camera_color_image_topic: "/env/env_cam/color/image_raw"
+    camera_color_info_topic: "/env/env_cam/color/camera_info"
+    image_transport: "compressed"
+
+sensor_configs: []
+
+cartesian_control_param_config: "control/ur_cartesian_impedance.yaml"
+joint_control_param_config: "control/ur_joint_control.yaml"
