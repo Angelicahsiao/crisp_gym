@@ -197,6 +197,76 @@ def test_build_obs_frame_layout_and_guards():
         assert "rotation_6d" in str(e)
 
 
+# ── 5. training wrapper converts observation.state (the model input) ─────────
+
+def test_training_converts_observation_state():
+    T = _random_traj(2, seed=11)  # n_obs_steps = 2 window
+    cart = _pose9(T).astype(np.float32)                      # (2, 9) absolute
+    state = np.concatenate([cart, [[0.4], [0.5]]], axis=-1)  # (2, 10) + gripper
+    ds = lrp.RelativePoseDataset(None, start_pose_noise_scale=0.0)
+    item = ds.convert_item({
+        "observation.state.cartesian": cart.copy(),
+        "observation.state": state.copy(),
+    })
+    out = np.asarray(item["observation.state"].numpy(), dtype=np.float64)
+    # current frame -> identity pose, gripper untouched
+    np.testing.assert_allclose(out[-1, :9], [0, 0, 0, 1, 0, 0, 0, 1, 0], atol=1e-6)
+    np.testing.assert_allclose(out[:, 9], [0.4, 0.5], atol=1e-7)
+    # pose dims match the sub-key conversion exactly
+    np.testing.assert_allclose(
+        out[:, :9], np.asarray(item["observation.state.cartesian"].numpy()),
+        atol=1e-6,
+    )
+    # round-trip: T_base @ T_rel recovers the absolute window (as matrices)
+    for k in range(2):
+        np.testing.assert_allclose(
+            rlp.compose_relative_pose(out[k, :9], T[-1]), T[k], atol=1e-5
+        )
+
+
+# ── 6. deploy-side window conversion matches the training wrapper ────────────
+
+def test_worker_window_conversion_matches_training():
+    T = _random_traj(2, seed=23)
+    cart = _pose9(T).astype(np.float32)
+    frames = [
+        {
+            "observation.state.cartesian": cart[k],
+            "observation.state": np.concatenate([cart[k], [0.3 + 0.1 * k]]).astype(
+                np.float32
+            ),
+            "observation.images.primary": np.zeros((4, 4, 3), np.uint8),
+        }
+        for k in range(2)
+    ]
+    converted = rlp.convert_window_state_to_relative(frames)
+
+    # training reference on the same window
+    ds = lrp.RelativePoseDataset(None, start_pose_noise_scale=0.0)
+    ref = ds.convert_item({
+        "observation.state.cartesian": cart.copy(),
+        "observation.state": np.stack(
+            [f["observation.state"] for f in frames]
+        ).copy(),
+    })
+    for k in range(2):
+        np.testing.assert_allclose(
+            converted[k]["observation.state"],
+            np.asarray(ref["observation.state"].numpy())[k],
+            atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            converted[k]["observation.state.cartesian"],
+            np.asarray(ref["observation.state.cartesian"].numpy())[k],
+            atol=1e-6,
+        )
+    # images pass through untouched; inputs not mutated
+    assert converted[0]["observation.images.primary"] is frames[0][
+        "observation.images.primary"
+    ]
+    np.testing.assert_allclose(frames[1]["observation.state"][:9], cart[1], atol=0)
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

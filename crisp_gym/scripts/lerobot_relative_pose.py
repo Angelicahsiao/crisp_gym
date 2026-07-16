@@ -14,12 +14,19 @@ decoding uses Gram-Schmidt orthogonalization (same as UMI's rot6d_to_mat).
 The dataset on disk stays in absolute poses. With diffusion policy's default
 n_obs_steps=2, the wrapper produces:
 
+    observation.state               (2, 10): [pose rel. dims, gripper raw] —
+                                    the CONCATENATED key lerobot-0.4.4 policies
+                                    actually consume (OBS_STATE); its first 9
+                                    dims are converted like the sub-key below
     observation.state.cartesian     (2, 9):  [t-1 rel. to t, identity]
                                     identity rot6d = [1,0,0, 0,1,0], pos = 0
     observation.state.rot_wrt_start (2, 6):  rot6d of each obs frame relative
                                     to the (noised) episode-start pose — UMI's
                                     robot0_eef_rot_axis_angle_wrt_start analog
     action                          (16, 10): each step rel. to t, gripper raw
+
+Checkpoints trained BEFORE observation.state was converted saw ABSOLUTE state
+input; the stamped pose_repr.json disambiguates (missing file => absolute).
 
 Normalization stats are recomputed on the relative values (LeRobot normalizes
 with dataset-wide stats which were computed on absolute poses and would
@@ -54,6 +61,12 @@ logger = logging.getLogger(__name__)
 # Keys holding absolute poses as [x, y, z, rot6d(6)(, gripper...)]
 POSE_OBS_KEYS = ["observation.state.cartesian"]
 POSE_ACTION_KEY = "action"
+# The CONCATENATED state [cartesian9, gripper1, ...]: this is the key
+# lerobot-0.4.4 policies actually consume (OBS_STATE queue) — converting only
+# the .cartesian sub-key leaves the MODEL INPUT absolute. Its first 9 dims are
+# converted like the sub-key; trailing dims (gripper, promoted extras) pass
+# through untouched.
+STATE_KEY = "observation.state"
 # Which key provides the "current" base pose (last frame of its window)
 BASE_KEY = "observation.state.cartesian"
 # Wrapper-generated observation: rot6d of each obs frame wrt episode start
@@ -163,7 +176,7 @@ class RelativePoseDataset(torch.utils.data.Dataset):
         return self._episode_start_pose[ep]
 
     def convert_item(self, item: dict, start_pose: np.ndarray | None = None) -> dict:
-        base = self._to_np(item[BASE_KEY])
+        base = self._to_np(item[BASE_KEY] if BASE_KEY in item else item[STATE_KEY])
         base_pose = (base[-1] if base.ndim == 2 else base)[:9].astype(np.float64)
 
         # Rotation wrt (noised) episode start — computed BEFORE overwriting obs
@@ -190,6 +203,15 @@ class RelativePoseDataset(torch.utils.data.Dataset):
             rel = make_relative(base_pose, v[..., :9])
             item[key] = torch.from_numpy(rel.astype(np.float32))
 
+        # The concatenated state — the tensor 0.4.4 policies actually read.
+        # Convert its pose dims so the MODEL INPUT is relative (current frame
+        # -> identity); gripper / promoted extras (dims 9+) pass through.
+        if STATE_KEY in item:
+            v = self._to_np(item[STATE_KEY]).astype(np.float64)
+            rel = make_relative(base_pose, v[..., :9])
+            out = np.concatenate([rel, v[..., 9:]], axis=-1)
+            item[STATE_KEY] = torch.from_numpy(out.astype(np.float32))
+
         if POSE_ACTION_KEY in item:
             a = self._to_np(item[POSE_ACTION_KEY]).astype(np.float64)
             rel = make_relative(base_pose, a[..., :9])
@@ -214,7 +236,7 @@ def recompute_relative_stats(wrapped: RelativePoseDataset, num_samples: int = 20
     are completely different, so we sample the wrapped dataset and overwrite
     the stats for the converted keys (and add stats for WRT_START_KEY).
     """
-    keys = [k for k in POSE_OBS_KEYS] + [POSE_ACTION_KEY, WRT_START_KEY]
+    keys = [k for k in POSE_OBS_KEYS] + [STATE_KEY, POSE_ACTION_KEY, WRT_START_KEY]
     n = len(wrapped)
     indices = np.linspace(0, n - 1, min(num_samples, n)).astype(int)
 
@@ -282,11 +304,12 @@ def stamp_pose_repr(cfg, dataset) -> None:
             },
             "observation": {
                 # lerobot-0.4.4 policies consume the CONCATENATED
-                # observation.state, which this wrapper does NOT convert:
-                # the state input is ABSOLUTE [cartesian9, gripper_ref1].
-                "observation.state": "absolute",
-                # The sub-key IS converted (relative to the last obs frame)
-                # but is not read by 0.4.4 policies — normalizer passthrough.
+                # observation.state; its pose dims are converted, so the
+                # MODEL INPUT is relative (current frame -> identity).
+                # Checkpoints trained BEFORE this conversion existed have no
+                # pose_repr.json (or one saying "absolute") — the deploy side
+                # keys its behavior off this field.
+                "observation.state": "relative_to_last_obs_frame",
                 "observation.state.cartesian": "relative_to_last_obs_frame",
                 "wrt_start_key": WRT_START_KEY,
                 "start_pose_noise_scale": START_POSE_NOISE_SCALE,

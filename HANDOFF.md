@@ -49,6 +49,16 @@ Repos involved (same owner, branch conventions apply to all):
   `T_rel = T_current^-1 @ T_target` with the base = LAST frame of the obs
   window (the current frame). This mirrors UMI `umi_dataset.py`
   (`base_pose_mat = pose_mat[-1]`, `pose_rep='relative'`).
+- The wrapper converts `observation.state.cartesian`, `action`, AND the
+  CONCATENATED `observation.state` (pose dims only; gripper/extras pass
+  through). The last one is what lerobot-0.4.4 policies actually consume
+  (OBS_STATE queue) — before this conversion existed, models trained with the
+  wrapper saw ABSOLUTE state input (relative actions were always correct).
+  Provenance: `pose_repr.json` stamped next to checkpoints says which;
+  missing stamp => absolute-state checkpoint. Deployment
+  (`relative_lerobot_policy`, and later the remote server) keys its obs
+  conversion off that stamp — do not deploy a relative-state checkpoint with
+  absolute obs or vice versa.
 - Consequences the next developer must preserve:
   - Current obs frame becomes identity (pos zeros + rot6d [1,0,0,0,1,0]) — this
     is CORRECT, not a bug. Information lives in the t-1 frame and images.

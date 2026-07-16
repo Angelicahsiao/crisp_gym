@@ -21,14 +21,21 @@ only the transport:
 
 Training parity (lerobot 0.4.4 — verified against its modeling_diffusion.py):
   - The 0.4.4 policy consumes the CONCATENATED `observation.state` (OBS_STATE
-    queue), which the training wrapper does NOT relative-convert. So the model
-    was trained on ABSOLUTE state input and RELATIVE action output, and this
-    client sends `observation.state` = [cartesian9 absolute, gripper_ref1]
-    exactly as recorded.
+    queue). Whether that tensor was ABSOLUTE or RELATIVE at training depends
+    on the wrapper version that trained the checkpoint:
+      * old wrapper (before observation.state conversion): ABSOLUTE state —
+        no pose_repr.json next to the checkpoint, or one saying "absolute";
+      * fixed wrapper: RELATIVE state (current frame -> identity) — stamped
+        "relative_to_last_obs_frame" in pose_repr.json.
+    The worker auto-detects this from pose_repr.json (missing => absolute,
+    with a loud warning) and, for relative checkpoints, converts the obs
+    window server-side (convert_window_state_to_relative — the same role the
+    remote policy server owns in REMOTE_INFERENCE.md). Override with the
+    `state_input` config param if needed.
   - `observation.state.cartesian` / `.gripper` sub-keys exist in the dataset
     (RecordConfig.to_features) and therefore in the checkpoint's
     input_features/normalizer, but the 0.4.4 diffusion model never reads them.
-    They are sent absolute (as stored on disk) purely to satisfy the
+    They are sent along (converted in relative mode) to satisfy the
     normalizer.
   - `observation.state.rot_wrt_start` is wrapper-generated and NOT in the
     dataset features, hence not in the checkpoint's input_features — it is not
@@ -95,6 +102,51 @@ def compose_relative_pose(action9: np.ndarray, T_base: np.ndarray) -> np.ndarray
     return T_base @ pose9d_to_mat(np.asarray(action9[:9], dtype=np.float64))
 
 
+def convert_window_state_to_relative(frames: List[dict]) -> List[dict]:
+    """Server-side obs conversion for RELATIVE-state checkpoints.
+
+    Mirrors RelativePoseDataset.convert_item on a deploy window: the pose dims
+    of `observation.state` (and `.cartesian`) of EVERY frame are re-expressed
+    relative to the LAST frame — the current observation becomes the identity
+    pose [0,0,0, 1,0,0, 0,1,0]. Gripper / extra dims pass through untouched.
+    Input frames are not mutated.
+    """
+    from crisp_gym.util.rot6d import mat_to_pose9d, pose9d_to_mat
+
+    base = np.asarray(frames[-1]["observation.state"][:9], dtype=np.float64)
+    T_base_inv = np.linalg.inv(pose9d_to_mat(base))
+    converted = []
+    for frame in frames:
+        out = dict(frame)
+        for key in ("observation.state", "observation.state.cartesian"):
+            if key in out:
+                v = np.asarray(out[key], dtype=np.float64)
+                rel = mat_to_pose9d(T_base_inv @ pose9d_to_mat(v[:9]))
+                out[key] = np.concatenate([rel, v[9:]]).astype(np.float32)
+        converted.append(out)
+    return converted
+
+
+def find_pose_repr(pretrained_path: str) -> dict | None:
+    """Load pose_repr.json stamped by lerobot_relative_pose.py, if present.
+
+    The stamp lives at the training output root; pretrained_path is usually
+    <output_dir>/checkpoints/<step>/pretrained_model — walk up a few levels.
+    """
+    import json
+    from pathlib import Path
+
+    p = Path(pretrained_path).resolve()
+    for candidate in (p, *list(p.parents)[:4]):
+        f = candidate / "pose_repr.json"
+        if f.exists():
+            try:
+                return json.loads(f.read_text())
+            except Exception:
+                return None
+    return None
+
+
 def build_obs_frame(
     obs_raw: dict,
     reference_width: float,
@@ -146,6 +198,11 @@ class RelativeLerobotPolicy(Policy):
         n_action_steps: Execute at most this many steps of each chunk before
             requesting a new one. None -> the policy config's own value
             (the full returned chunk).
+        state_input: What the checkpoint's observation.state input was at
+            training. "auto" (default) reads pose_repr.json next to the
+            checkpoint (missing => absolute, with a warning — all checkpoints
+            trained before the wrapper converted observation.state).
+            "absolute" / "relative" force it.
         overrides: Optional lerobot policy-config overrides (as LerobotPolicy).
     """
 
@@ -156,8 +213,14 @@ class RelativeLerobotPolicy(Policy):
         device_max_width: float | None = None,
         reference_width: float = DEFAULT_REFERENCE_WIDTH,
         n_action_steps: int | None = None,
+        state_input: str = "auto",
         overrides: dict | None = None,
     ):
+        if state_input not in ("auto", "absolute", "relative"):
+            raise ValueError(
+                f"state_input must be 'auto', 'absolute' or 'relative', "
+                f"got {state_input!r}"
+            )
         if device_max_width is None:
             raise ValueError(
                 "device_max_width is required (meters at gripper value 1.0): "
@@ -187,6 +250,7 @@ class RelativeLerobotPolicy(Policy):
             kwargs={
                 "conn": child_conn,
                 "pretrained_path": pretrained_path,
+                "state_input": state_input,
                 "overrides": overrides or {},
             },
             daemon=True,
@@ -205,7 +269,8 @@ class RelativeLerobotPolicy(Policy):
         logger.info(
             f"Relative policy ready: n_obs_steps={self.n_obs_steps}, chunk="
             f"{chunk_len}, executing {self.n_action_steps}/chunk, "
-            f"image_keys={meta.get('image_keys')}"
+            f"image_keys={meta.get('image_keys')}, "
+            f"state_input={meta.get('state_input')}"
         )
 
         from collections import deque
@@ -319,7 +384,8 @@ class RelativeLerobotPolicy(Policy):
 
 # ── worker (subprocess: torch + lerobot live only here) ───────────────────────
 
-def inference_worker(conn, pretrained_path: str, overrides: dict):  # noqa: ANN001
+def inference_worker(conn, pretrained_path: str, overrides: dict,
+                     state_input: str = "auto"):  # noqa: ANN001
     """Load the checkpoint; per request, run the obs window through the policy
     queues and return one raw-unit action chunk (numpy (n, dim)).
 
@@ -379,15 +445,44 @@ def inference_worker(conn, pretrained_path: str, overrides: dict):  # noqa: ANN0
             wlog.info("[RelInference] No processor support; assuming the "
                       "policy normalizes internally.")
 
+        # ── what did this checkpoint train on? (pose_repr.json provenance) ──
+        pose_repr = find_pose_repr(pretrained_path)
+        if state_input == "auto":
+            stamped = (pose_repr or {}).get("observation", {}).get(
+                "observation.state", ""
+            )
+            if str(stamped).startswith("relative"):
+                state_mode = "relative"
+            else:
+                state_mode = "absolute"
+                if pose_repr is None:
+                    wlog.warning(
+                        "[RelInference] No pose_repr.json found next to the "
+                        "checkpoint — assuming ABSOLUTE observation.state "
+                        "(all checkpoints trained before the wrapper converted "
+                        "observation.state). Force with state_input: "
+                        "'relative' if this is wrong."
+                    )
+        else:
+            state_mode = state_input
+        wlog.info(f"[RelInference] observation.state input mode: {state_mode}")
+        wlog.info(
+            "[RelInference] checkpoint input_features: "
+            f"{list(getattr(policy.config, 'input_features', {}) or {})}"
+        )
+
         image_features = list(getattr(policy.config, "image_features", []) or [])
         meta = {
             "n_obs_steps": int(getattr(policy.config, "n_obs_steps", 1)),
             "n_action_steps": int(getattr(policy.config, "n_action_steps", 1)),
             "image_keys": image_features,
             "policy_type": train_config.policy.type,
+            "state_input": state_mode,
         }
         conn.send(meta)
         wlog.info(f"[RelInference] Ready: {meta}")
+
+        first_infer = True
 
         def _prepare(frame: dict) -> dict:
             batch = numpy_obs_to_torch(frame)
@@ -415,6 +510,29 @@ def inference_worker(conn, pretrained_path: str, overrides: dict):  # noqa: ANN0
                 wlog.warning(f"[RelInference] Unknown message {kind!r}")
                 continue
             try:
+                # Server-side obs conversion (mirrors the training wrapper /
+                # the remote server's role): relative-state checkpoints get
+                # the window re-expressed against its LAST frame.
+                window = (
+                    convert_window_state_to_relative(payload)
+                    if state_mode == "relative"
+                    else payload
+                )
+                if first_infer:
+                    # One-shot sanity print: what the policy actually eats.
+                    # Relative state => |pos| ~ 0 and rot6d ~ [1,0,0,0,1,0];
+                    # absolute state => workspace-scale positions (~0.3-0.8 m).
+                    s = np.asarray(window[-1]["observation.state"], np.float64)
+                    wlog.info(
+                        "[RelInference] CHECK first observation.state fed to "
+                        f"the policy ({state_mode} mode): "
+                        f"{np.round(s, 4).tolist()}"
+                    )
+                    wlog.info(
+                        f"[RelInference] CHECK |pos| = {np.linalg.norm(s[:3]):.4f} m "
+                        f"-> looks {'RELATIVE (near zero)' if np.linalg.norm(s[:3]) < 0.05 else 'ABSOLUTE (workspace scale)'}"
+                    )
+                    first_infer = False
                 with torch.inference_mode():
                     # Deterministic windowing: rebuild the obs queues from the
                     # client's window every request (deques cap at n_obs_steps;
@@ -422,7 +540,7 @@ def inference_worker(conn, pretrained_path: str, overrides: dict):  # noqa: ANN0
                     # first frame, matching lerobot's own reset behavior).
                     policy.reset()
                     batch = None
-                    for frame in payload:
+                    for frame in window:
                         batch = _prepare(frame)
                         policy._queues = populate_queues(policy._queues, batch)
                     actions = policy.predict_action_chunk(batch)
