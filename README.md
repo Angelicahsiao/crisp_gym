@@ -53,4 +53,45 @@ pixi install -e humble-lerobot
 > just run `bash scripts/setup_lerobot.sh` (it will patch your existing clone),
 > then `rm -f pixi.lock && pixi install -e humble-lerobot`.
 
+## Deploying a relative-pose (rot6d) model
+
+Models trained with `scripts/lerobot_relative_pose.py` output UMI-style
+RELATIVE poses that must be composed with the TCP pose captured at
+observation time. Two deployment paths:
+
+**Local (verification)** — robot machine's lerobot matches the training
+version (0.4.4). The `relative_lerobot_policy` runs inference in a worker
+process and handles the composition, gripper unit conversion, and obs
+history:
+
+```bash
+python -m crisp_gym.scripts.deploy_policy \
+    --env-config ur7e_robotiq_deploy_umi \
+    --policy-config relative_lerobot_policy \
+    --path outputs/train/<run>/checkpoints/last/pretrained_model \
+    --repo-id my_org/deploy_eval --fps 15
+```
+
+Before running: set `device_max_width` in
+`config/policy/relative_lerobot_policy.yaml` to YOUR gripper (0.140 for a
+Robotiq 2F-140), and point the deploy env config's `primary` camera at the
+topics you recorded with. The deploy env must keep
+`orientation_representation: rotation_6d` and `use_relative_actions: false`
+(see `config/envs/ur7e_robotiq_deploy_umi.yaml` for why).
+
+At startup the worker logs the checkpoint's input features and, on the first
+inference, the exact `observation.state` fed to the policy with an
+absolute/relative heuristic — use it to sanity-check what a checkpoint was
+trained on.
+
+**Remote (canonical)** — inference on the GPU machine over websocket, robot
+machine stays torch-free. Contract and wire protocol: [REMOTE_INFERENCE.md](REMOTE_INFERENCE.md).
+
+**Checkpoint generations.** Training stamps `pose_repr.json` next to the
+checkpoints recording the pose conventions and (critically) whether the
+policy's `observation.state` input was ABSOLUTE (checkpoints trained before
+the wrapper converted the concatenated state — includes any checkpoint
+without the stamp) or RELATIVE (current wrapper). Deployment auto-detects
+this from the stamp (`state_input: auto`); don't mix them up manually.
+
 Check the [docs](https://utiasdsl.github.io/crisp_controllers/getting_started/#4-using-the-gym) to get started.

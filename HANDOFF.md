@@ -124,7 +124,9 @@ Repos involved (same owner, branch conventions apply to all):
 | `crisp_gym/config/envs/umi_handheld.yaml` | Topics, rot6d, identity transforms, `max_gripper_width`. |
 | `crisp_gym/record/record_functions.py::make_record_fn` | Config-driven recorder; 1-step lookahead pairing done per RecordConfig. |
 | `crisp_gym/scripts/record_umi_handheld.py` | Recording entry point (KeyboardRecordingManager: r/s/d/q). |
-| `crisp_gym/scripts/lerobot_relative_pose.py` | Training-side dataset wrapper + `lerobot-train` launcher (patches `make_dataset`). Runs on the GPU PC, needs only lerobot/torch/numpy — NO crisp imports, keep it that way. |
+| `crisp_gym/scripts/lerobot_relative_pose.py` | Training-side dataset wrapper + `lerobot-train` launcher (patches `make_dataset`). Converts `observation.state.cartesian`, `action`, AND the CONCATENATED `observation.state` (§1.2); recomputes relative stats; stamps `pose_repr.json` into the output dir. Runs on the GPU PC, needs only lerobot/torch/numpy — NO crisp imports, keep it that way. |
+| `crisp_gym/policy/relative_lerobot_policy.py` | LOCAL deployment of a relative-pose rot6d checkpoint (robot lerobot == training lerobot == 0.4.4). Mirrors the REMOTE_INFERENCE.md division of labor: client (main proc) = obs history, obs-time chunk base, T_cmd composition, gripper unit conversion; worker (subprocess) = checkpoint + processors, window→queues→`predict_action_chunk`, and the server-side obs conversion `convert_window_state_to_relative` for relative-state checkpoints. Auto-detects the checkpoint generation from `pose_repr.json` (`state_input: auto`; missing stamp => absolute). Logs the first `observation.state` fed to the policy (absolute/relative eyeball check). Config: `config/policy/relative_lerobot_policy.yaml` (`device_max_width` REQUIRED); deploy env: `config/envs/ur7e_robotiq_deploy_umi.yaml` (rotation_6d + use_relative_actions:false + `primary` camera). |
+| `tests/test_relative_deploy.py` | Deploy math vs training reference on synthetic SE(3): composition inverts `make_relative`, obs-time chunk base, gripper ref<->device scaling parity with the record source, obs frame layout, training `observation.state` conversion, worker window conversion == training conversion. Numpy-only (torch stubbed). |
 | `crisp_gym/scripts/migrate_euler_delta_to_rot6d.py` | One-time migration of LEGACY datasets (Euler pose + delta-command action from the old `stream_fn` recorder) to the UMI absolute rot6d schema. File surgery: copies the dataset (videos byte-identical, NO re-encode), rewrites only low-dim parquet columns (cartesian Euler(6)→rot6d(9), rebuilt `observation.state`, reconstructed `next_tcp_pose` action) + `info.json` + stats. Handles BOTH v2.x (`episode_*.parquet`) and v3.0 (`data/file-*.parquet` multi-episode + `meta/episodes/*.parquet` stats) layouts. USAGE.md §11. |
 | `crisp_gym/scripts/check_relative_pose.py` | Verify a rot6d dataset's relative-pose conversion: identity (current frame → identity), round-trip (`T_current ∘ T_rel` recovers the on-disk absolute `next_tcp_pose` — deploy parity), Δpos magnitude, gripper pass-through. Runs `RelativePoseDataset` with no start-pose noise. USAGE.md §8. |
 | `crisp_gym/util/lerobot_features.py` | LEGACY feature schema (no---record-config path only; config-driven recording uses `RecordConfig.to_features`). Rotation-rep-aware dims/names AND v0.4.x/v0.5.x lerobot compatibility + fps parameter — both aspects must survive future edits. ROS-free at import time. |
@@ -177,9 +179,16 @@ norm ~1.0 and dot ~0.0 (they are rows of a real rotation matrix).
    normalization="server_side", reset message support.
    **The server itself is NOT this project's job** — the owner builds it; we
    provide the client + the metadata contract.
-2. **Training script should stamp `pose_repr.json`** next to checkpoints
-   (pose layout, relative convention, rot6d convention, fps, gripper scaling)
-   so the serving side can pass it through.
+2. **(IMPLEMENTED) `pose_repr.json` stamping**: `lerobot_relative_pose.py`
+   writes it into the training output dir (pose layout, relative convention,
+   rot6d convention, fps, window sizes, and per-key `observation.state`
+   semantics — the field deployment keys its obs conversion off, §1.2).
+   Checkpoints WITHOUT the stamp are absolute-state (pre-fix) by definition.
+2b. **(IMPLEMENTED) Local deployment for verification**:
+   `relative_lerobot_policy` (see file map) runs a 0.4.4 checkpoint in-process
+   before the remote path is hardened; deliberately mirrors the remote
+   division of labor so route B reuses `convert_window_state_to_relative`
+   verbatim as the server-side conversion.
 3. **Config-driven recording (IMPLEMENTED)**: `record/record_config.py` +
    `make_record_fn` in `record/record_functions.py`. RecordConfig YAMLs in
    `config/recording/` (`record_config_example.yaml` documents every
