@@ -127,6 +127,29 @@ def convert_window_state_to_relative(frames: List[dict]) -> List[dict]:
     return converted
 
 
+def append_wrt_start_to_window(frames: List[dict], start_pose9: np.ndarray) -> List[dict]:
+    """Append the wrt-start rot6d to each frame's observation.state (UMI parity).
+
+    Mirrors the training wrapper: wrt-start is computed from the ABSOLUTE
+    frame poses against the episode-start pose (rotation-only, NOISE OFF at
+    inference — UMI real_inference_util.py), and appended AFTER all existing
+    state dims. Must run BEFORE convert_window_state_to_relative (which only
+    rewrites the first 9 dims and passes appended dims through). Input frames
+    are not mutated.
+    """
+    from crisp_gym.util.rot6d import mat_to_pose9d, pose9d_to_mat
+
+    T_start_inv = np.linalg.inv(pose9d_to_mat(np.asarray(start_pose9[:9], np.float64)))
+    out_frames = []
+    for frame in frames:
+        out = dict(frame)
+        v = np.asarray(out["observation.state"], dtype=np.float64)
+        wrt6 = mat_to_pose9d(T_start_inv @ pose9d_to_mat(v[:9]))[3:9]
+        out["observation.state"] = np.concatenate([v, wrt6]).astype(np.float32)
+        out_frames.append(out)
+    return out_frames
+
+
 def find_pose_repr(pretrained_path: str) -> dict | None:
     """Load pose_repr.json stamped by lerobot_relative_pose.py, if present.
 
@@ -202,7 +225,8 @@ class RelativeLerobotPolicy(Policy):
             training. "auto" (default) reads pose_repr.json next to the
             checkpoint (missing => absolute, with a warning — all checkpoints
             trained before the wrapper converted observation.state).
-            "absolute" / "relative" force it.
+            "absolute" / "relative" / "relative_wrt_start" (16-D UMI parity:
+            wrt-start rot6d appended server-side, noise off) force it.
         overrides: Optional lerobot policy-config overrides (as LerobotPolicy).
     """
 
@@ -216,10 +240,10 @@ class RelativeLerobotPolicy(Policy):
         state_input: str = "auto",
         overrides: dict | None = None,
     ):
-        if state_input not in ("auto", "absolute", "relative"):
+        if state_input not in ("auto", "absolute", "relative", "relative_wrt_start"):
             raise ValueError(
-                f"state_input must be 'auto', 'absolute' or 'relative', "
-                f"got {state_input!r}"
+                "state_input must be 'auto', 'absolute', 'relative' or "
+                f"'relative_wrt_start', got {state_input!r}"
             )
         if device_max_width is None:
             raise ValueError(
@@ -446,13 +470,21 @@ def inference_worker(conn, pretrained_path: str, overrides: dict,
                       "policy normalizes internally.")
 
         # ── what did this checkpoint train on? (pose_repr.json provenance) ──
+        # Three generations:
+        #   absolute           — pre-fix checkpoints (no stamp / no fields)
+        #   relative           — state converted, 10-D
+        #   relative_wrt_start — state converted + wrt-start appended (16-D,
+        #                        UMI parity)
         pose_repr = find_pose_repr(pretrained_path)
         if state_input == "auto":
-            stamped = (pose_repr or {}).get("observation", {}).get(
-                "observation.state", ""
-            )
+            obs_stamp = (pose_repr or {}).get("observation", {})
+            stamped = obs_stamp.get("observation.state", "")
             if str(stamped).startswith("relative"):
-                state_mode = "relative"
+                state_mode = (
+                    "relative_wrt_start"
+                    if obs_stamp.get("state_includes_wrt_start")
+                    else "relative"
+                )
             else:
                 state_mode = "absolute"
                 if pose_repr is None:
@@ -460,8 +492,7 @@ def inference_worker(conn, pretrained_path: str, overrides: dict,
                         "[RelInference] No pose_repr.json found next to the "
                         "checkpoint — assuming ABSOLUTE observation.state "
                         "(all checkpoints trained before the wrapper converted "
-                        "observation.state). Force with state_input: "
-                        "'relative' if this is wrong."
+                        "observation.state). Force with state_input if wrong."
                     )
         else:
             state_mode = state_input
@@ -483,6 +514,7 @@ def inference_worker(conn, pretrained_path: str, overrides: dict,
         wlog.info(f"[RelInference] Ready: {meta}")
 
         first_infer = True
+        episode_start_pose = None  # captured on the first infer after reset
 
         def _prepare(frame: dict) -> dict:
             batch = numpy_obs_to_torch(frame)
@@ -502,6 +534,7 @@ def inference_worker(conn, pretrained_path: str, overrides: dict,
             kind, payload = msg
             if kind == "reset":
                 policy.reset()
+                episode_start_pose = None  # next infer re-captures it
                 if preprocessor is not None:
                     preprocessor.reset()
                     postprocessor.reset()
@@ -511,13 +544,26 @@ def inference_worker(conn, pretrained_path: str, overrides: dict,
                 continue
             try:
                 # Server-side obs conversion (mirrors the training wrapper /
-                # the remote server's role): relative-state checkpoints get
-                # the window re-expressed against its LAST frame.
-                window = (
-                    convert_window_state_to_relative(payload)
-                    if state_mode == "relative"
-                    else payload
-                )
+                # the remote server's role). Order matters and mirrors
+                # training: wrt-start is computed from the ABSOLUTE poses
+                # first, then the window is re-expressed against its LAST
+                # frame (which only rewrites dims 0-8, keeping the appended
+                # wrt dims intact).
+                window = payload
+                if state_mode == "relative_wrt_start":
+                    if episode_start_pose is None:
+                        # Episode start = first obs after reset = the oldest
+                        # frame of the first post-reset window (noise OFF).
+                        episode_start_pose = np.asarray(
+                            window[0]["observation.state"][:9], np.float64
+                        ).copy()
+                        wlog.info(
+                            "[RelInference] Captured episode-start pose for "
+                            f"wrt_start: {np.round(episode_start_pose, 4).tolist()}"
+                        )
+                    window = append_wrt_start_to_window(window, episode_start_pose)
+                if state_mode in ("relative", "relative_wrt_start"):
+                    window = convert_window_state_to_relative(window)
                 if first_infer:
                     # One-shot sanity print: what the policy actually eats.
                     # Relative state => |pos| ~ 0 and rot6d ~ [1,0,0,0,1,0];

@@ -51,14 +51,22 @@ Repos involved (same owner, branch conventions apply to all):
   (`base_pose_mat = pose_mat[-1]`, `pose_rep='relative'`).
 - The wrapper converts `observation.state.cartesian`, `action`, AND the
   CONCATENATED `observation.state` (pose dims only; gripper/extras pass
-  through). The last one is what lerobot-0.4.4 policies actually consume
-  (OBS_STATE queue) — before this conversion existed, models trained with the
-  wrapper saw ABSOLUTE state input (relative actions were always correct).
-  Provenance: `pose_repr.json` stamped next to checkpoints says which;
-  missing stamp => absolute-state checkpoint. Deployment
-  (`relative_lerobot_policy`, and later the remote server) keys its obs
-  conversion off that stamp — do not deploy a relative-state checkpoint with
-  absolute obs or vice versa.
+  through), then APPENDS the wrt-start rot6d to `observation.state` — final
+  model input `[rel_pose9, gripper1(, extras...), rot_wrt_start6]` = UMI's
+  16-D low-dim state (position-wrt-start deliberately excluded, as in UMI).
+  `observation.state` is what lerobot-0.4.4 policies actually consume
+  (OBS_STATE queue); the wrapper also widens its `meta.features` entry so the
+  policy input layer is sized correctly. THREE checkpoint generations exist:
+    1. absolute (pre-conversion wrapper; no pose_repr.json) — ABSOLUTE 10-D
+       state input (relative actions were always correct);
+    2. relative 10-D (state converted, no wrt-start appended);
+    3. relative_wrt_start 16-D (current — `state_includes_wrt_start: true`
+       in pose_repr.json).
+  Deployment (`relative_lerobot_policy`, and later the remote server) keys
+  its obs conversion off the stamp (`state_input: auto`) — never deploy a
+  checkpoint with another generation's obs semantics. Deploy-side wrt-start:
+  computed from ABSOLUTE poses FIRST (episode start = first obs after reset,
+  NOISE OFF), then the relative conversion rewrites dims 0-8 only.
 - Consequences the next developer must preserve:
   - Current obs frame becomes identity (pos zeros + rot6d [1,0,0,0,1,0]) — this
     is CORRECT, not a bug. Information lives in the t-1 frame and images.
@@ -77,6 +85,10 @@ Repos involved (same owner, branch conventions apply to all):
 - UMI records the full start pose but feeds only rotation to the policy
   (position-wrt-start is deliberately commented out in UMI — do not "fix" this
   by adding position; it would break spatial generalization).
+- Since the 16-D state change (§1.2), the wrt-start rot6d ALSO gets appended
+  into `observation.state` — that is how it actually reaches a lerobot-0.4.4
+  policy (the standalone `rot_wrt_start` key is not consumable there). The
+  standalone key is still emitted for stats/debugging.
 
 ### 1.4 Frames and calibration
 - `T_tcp = tx_world_correction @ T_optitrack_body @ tx_body_tcp`

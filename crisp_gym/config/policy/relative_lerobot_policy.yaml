@@ -27,9 +27,12 @@ n_action_steps: null
 #   auto     -> read pose_repr.json next to the checkpoint (missing => absolute
 #               — all checkpoints trained before the wrapper converted
 #               observation.state saw ABSOLUTE state input)
-#   absolute -> send the state as recorded (older checkpoints)
+#   absolute -> send the state as recorded (oldest checkpoints, 10-D)
 #   relative -> convert the obs window against its last frame before inference
-#               (checkpoints trained after the observation.state fix)
+#               (post-fix checkpoints without wrt-start, 10-D)
+#   relative_wrt_start -> additionally append the wrt-start rot6d computed
+#               from the episode-start pose (UMI 16-D parity; noise off);
+#               episode start = first obs after each reset
 state_input: "auto"
 
 # Optional lerobot policy-config overrides, e.g. {num_inference_steps: 10}.

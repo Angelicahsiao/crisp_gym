@@ -199,16 +199,20 @@ def test_build_obs_frame_layout_and_guards():
 
 # ── 5. training wrapper converts observation.state (the model input) ─────────
 
-def test_training_converts_observation_state():
+def test_training_converts_observation_state_10d():
+    """Old relative generation (append_wrt_start_to_state=False): 10-D state."""
     T = _random_traj(2, seed=11)  # n_obs_steps = 2 window
     cart = _pose9(T).astype(np.float32)                      # (2, 9) absolute
     state = np.concatenate([cart, [[0.4], [0.5]]], axis=-1)  # (2, 10) + gripper
-    ds = lrp.RelativePoseDataset(None, start_pose_noise_scale=0.0)
+    ds = lrp.RelativePoseDataset(
+        None, start_pose_noise_scale=0.0, append_wrt_start_to_state=False
+    )
     item = ds.convert_item({
         "observation.state.cartesian": cart.copy(),
         "observation.state": state.copy(),
     })
     out = np.asarray(item["observation.state"].numpy(), dtype=np.float64)
+    assert out.shape == (2, 10)
     # current frame -> identity pose, gripper untouched
     np.testing.assert_allclose(out[-1, :9], [0, 0, 0, 1, 0, 0, 0, 1, 0], atol=1e-6)
     np.testing.assert_allclose(out[:, 9], [0.4, 0.5], atol=1e-7)
@@ -224,12 +228,46 @@ def test_training_converts_observation_state():
         )
 
 
+def test_training_state_is_16d_umi_parity():
+    """New generation (default): [rel_pose9, gripper1, rot_wrt_start6]."""
+    T = _random_traj(2, seed=13)
+    cart = _pose9(T).astype(np.float32)
+    state = np.concatenate([cart, [[0.4], [0.5]]], axis=-1)
+    start_pose = _pose9(T[0]).astype(np.float64)  # episode start = frame 0
+    ds = lrp.RelativePoseDataset(None, start_pose_noise_scale=0.0)  # append=True
+    item = ds.convert_item(
+        {
+            "observation.state.cartesian": cart.copy(),
+            "observation.state": state.copy(),
+        },
+        start_pose=start_pose,
+    )
+    out = np.asarray(item["observation.state"].numpy(), dtype=np.float64)
+    assert out.shape == (2, 16)
+    # dims 0-9 unchanged semantics: rel pose + gripper
+    np.testing.assert_allclose(out[-1, :9], [0, 0, 0, 1, 0, 0, 0, 1, 0], atol=1e-6)
+    np.testing.assert_allclose(out[:, 9], [0.4, 0.5], atol=1e-7)
+    # appended dims == the WRT_START_KEY tensor (rotation-only, wrt start)
+    wrt = np.asarray(item[lrp.WRT_START_KEY].numpy(), dtype=np.float64)
+    np.testing.assert_allclose(out[:, 10:16], wrt, atol=1e-7)
+    # frame 0 IS the (un-noised) start -> its wrt rotation is identity rot6d
+    np.testing.assert_allclose(out[0, 10:16], [1, 0, 0, 0, 1, 0], atol=1e-6)
+    # wrt rows are valid rotations
+    for row in out[:, 10:16]:
+        R = lrp.rot6d_to_mat(row)
+        np.testing.assert_allclose(R @ R.T, np.eye(3), atol=1e-6)
+    # convert_item without a start pose must fail loudly (dim mismatch trap)
+    try:
+        ds.convert_item({"observation.state": state.copy()})
+        raise AssertionError("missing start pose not rejected")
+    except ValueError as e:
+        assert "start pose" in str(e)
+
+
 # ── 6. deploy-side window conversion matches the training wrapper ────────────
 
-def test_worker_window_conversion_matches_training():
-    T = _random_traj(2, seed=23)
-    cart = _pose9(T).astype(np.float32)
-    frames = [
+def _client_frames(cart):
+    return [
         {
             "observation.state.cartesian": cart[k],
             "observation.state": np.concatenate([cart[k], [0.3 + 0.1 * k]]).astype(
@@ -237,12 +275,20 @@ def test_worker_window_conversion_matches_training():
             ),
             "observation.images.primary": np.zeros((4, 4, 3), np.uint8),
         }
-        for k in range(2)
+        for k in range(len(cart))
     ]
+
+
+def test_worker_window_conversion_matches_training_10d():
+    T = _random_traj(2, seed=23)
+    cart = _pose9(T).astype(np.float32)
+    frames = _client_frames(cart)
     converted = rlp.convert_window_state_to_relative(frames)
 
-    # training reference on the same window
-    ds = lrp.RelativePoseDataset(None, start_pose_noise_scale=0.0)
+    # training reference on the same window (old relative generation)
+    ds = lrp.RelativePoseDataset(
+        None, start_pose_noise_scale=0.0, append_wrt_start_to_state=False
+    )
     ref = ds.convert_item({
         "observation.state.cartesian": cart.copy(),
         "observation.state": np.stack(
@@ -265,6 +311,43 @@ def test_worker_window_conversion_matches_training():
         "observation.images.primary"
     ]
     np.testing.assert_allclose(frames[1]["observation.state"][:9], cart[1], atol=0)
+
+
+def test_worker_16d_pipeline_matches_training():
+    """Full deploy order (wrt-start FIRST from absolute, then relative
+    conversion) == training convert_item with noise off."""
+    T = _random_traj(2, seed=29)
+    cart = _pose9(T).astype(np.float32)
+    frames = _client_frames(cart)
+    start_pose = np.asarray(frames[0]["observation.state"][:9], np.float64)
+
+    with_wrt = rlp.append_wrt_start_to_window(frames, start_pose)
+    converted = rlp.convert_window_state_to_relative(with_wrt)
+
+    ds = lrp.RelativePoseDataset(None, start_pose_noise_scale=0.0)
+    ref = ds.convert_item(
+        {
+            "observation.state.cartesian": cart.copy(),
+            "observation.state": np.stack(
+                [f["observation.state"] for f in frames]
+            ).copy(),
+        },
+        start_pose=start_pose.copy(),
+    )
+    ref_state = np.asarray(ref["observation.state"].numpy())
+    assert ref_state.shape == (2, 16)
+    for k in range(2):
+        assert converted[k]["observation.state"].shape == (16,)
+        np.testing.assert_allclose(
+            converted[k]["observation.state"], ref_state[k], atol=1e-6
+        )
+    # frame 0 == episode start -> wrt dims identity rot6d
+    np.testing.assert_allclose(
+        converted[0]["observation.state"][10:16], [1, 0, 0, 0, 1, 0], atol=1e-6
+    )
+    # inputs not mutated by either step
+    np.testing.assert_allclose(frames[1]["observation.state"][:9], cart[1], atol=0)
+    assert frames[0]["observation.state"].shape == (10,)
 
 
 if __name__ == "__main__":

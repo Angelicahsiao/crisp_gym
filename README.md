@@ -88,10 +88,16 @@ trained on.
 machine stays torch-free. Contract and wire protocol: [REMOTE_INFERENCE.md](REMOTE_INFERENCE.md).
 
 **Checkpoint generations.** Training stamps `pose_repr.json` next to the
-checkpoints recording the pose conventions and (critically) whether the
-policy's `observation.state` input was ABSOLUTE (checkpoints trained before
-the wrapper converted the concatenated state — includes any checkpoint
-without the stamp) or RELATIVE (current wrapper). Deployment auto-detects
-this from the stamp (`state_input: auto`); don't mix them up manually.
+checkpoints recording the pose conventions and (critically) what the
+policy's `observation.state` input was. Three generations exist:
+ABSOLUTE 10-D (checkpoints trained before the wrapper converted the
+concatenated state — includes any checkpoint without the stamp),
+RELATIVE 10-D (converted state, no wrt-start), and RELATIVE 16-D
+(current wrapper — UMI parity: `[rel_pose9, gripper1, rot_wrt_start6]`,
+with the episode-start relative rotation appended). Deployment
+auto-detects this from the stamp (`state_input: auto`); don't mix them up
+manually. Remote-inference contract templates per generation:
+`config/policy/remote_umi_absolute_state.yaml` (gen 1) and
+`config/policy/remote_umi_relative_state.yaml` (gen 3).
 
 Check the [docs](https://utiasdsl.github.io/crisp_controllers/getting_started/#4-using-the-gym) to get started.

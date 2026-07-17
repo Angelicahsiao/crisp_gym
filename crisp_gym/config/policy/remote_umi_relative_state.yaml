@@ -1,21 +1,31 @@
-# Remote-inference contract — UMI rot6d checkpoint, RELATIVE-state generation.
+# Remote-inference contract — UMI rot6d checkpoint, RELATIVE-state generation
+# with wrt-start (16-D state, full UMI parity).
 #
 # For checkpoints trained with the CURRENT lerobot_relative_pose.py
 # (identified by pose_repr.json stamping
-# observation.state: "relative_to_last_obs_frame"). The wrapper converts the
-# concatenated observation.state the 0.4.4 policy consumes, so the MODEL
-# INPUT pose is relative to the newest observation (current frame = identity
-# [0,0,0, 1,0,0, 0,1,0]); the ACTION is relative as before.
+# observation.state: "relative_to_last_obs_frame" AND
+# state_includes_wrt_start: true). The wrapper converts the concatenated
+# observation.state the 0.4.4 policy consumes AND appends the wrt-start
+# rot6d, so the MODEL INPUT is UMI's 16-D low-dim state:
+#   [rel_pos3, rel_rot6d6, gripper1, rot_wrt_start6]
+# current frame pose = identity [0,0,0, 1,0,0, 0,1,0]; rot_wrt_start =
+# rotation of each obs frame relative to the EPISODE-START pose (rotation
+# only — position-wrt-start deliberately excluded, as in UMI). The ACTION is
+# relative as in every generation.
 #
 # Wire behavior is identical to the absolute-state contract (the client
 # always sends ABSOLUTE poses / raw units): the generations differ ONLY in
 # the server-side model_input conversion, declared per key below so the
-# handshake can reject a server built for the other generation. The server's
-# conversion must byte-match the training wrapper — reference implementation:
-# crisp_gym/policy/relative_lerobot_policy.py::convert_window_state_to_relative
-# (parity-tested against RelativePoseDataset.convert_item in
-# tests/test_relative_deploy.py). Local-deployment equivalent:
-# relative_lerobot_policy with state_input: relative (auto-detected).
+# handshake can reject a server built for another generation. The server's
+# conversions must byte-match the training wrapper — reference
+# implementations in crisp_gym/policy/relative_lerobot_policy.py:
+#   append_wrt_start_to_window   (FIRST — from absolute poses, noise OFF;
+#                                 episode start = first obs after reset)
+#   convert_window_state_to_relative  (THEN — rewrites dims 0-8 only)
+# both parity-tested against RelativePoseDataset.convert_item in
+# tests/test_relative_deploy.py. Local-deployment equivalent:
+# relative_lerobot_policy with state_input: relative_wrt_start
+# (auto-detected).
 name: "remote_policy"
 
 server:
@@ -44,16 +54,21 @@ observation:
       reference_width: 0.09
       device_max_width: 0.140       # SET to your gripper (0.085 2F-85)
       model_input: "as_sent"
-    # The tensor the 0.4.4 policy ACTUALLY consumes: [cartesian9, gripper1].
-    # Server concatenates it from the two keys above.
+    # The tensor the 0.4.4 policy ACTUALLY consumes (UMI 16-D parity):
+    # [rel_pose9, gripper1, rot_wrt_start6]. Server builds it from the two
+    # keys above: concat -> append wrt-start (from ABSOLUTE poses vs the
+    # episode-start pose, rotation only, NOISE OFF) -> re-express dims 0-8
+    # relative to the window's LAST frame. Order matters (wrt-start first).
     observation.state:
-      source: concat                # server-side: [cartesian, gripper]
-      shape: [10]
+      source: concat                # server-side: [cartesian, gripper] + wrt
+      shape: [16]
       dtype: float32
-      frame: "robot_base_absolute"
-      # NEW GENERATION: pose dims (first 9) re-expressed relative to the
-      # window's LAST frame before inference; gripper dim passes through.
-      model_input: "relative_to_last_obs_frame"
+      frame: "robot_base_absolute"  # as sent; conversions happen server-side
+      model_input: "relative_to_last_obs_frame + rot_wrt_start(6) appended"
+      wrt_start:
+        rotation_only: true         # position-wrt-start excluded (as in UMI)
+        noise: 0.0                  # training noise 0.05 is TRAIN-ONLY
+        episode_start: "first observation after reset"
     observation.images.primary:
       source: camera.image
       camera: primary

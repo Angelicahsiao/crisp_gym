@@ -14,10 +14,13 @@ decoding uses Gram-Schmidt orthogonalization (same as UMI's rot6d_to_mat).
 The dataset on disk stays in absolute poses. With diffusion policy's default
 n_obs_steps=2, the wrapper produces:
 
-    observation.state               (2, 10): [pose rel. dims, gripper raw] —
-                                    the CONCATENATED key lerobot-0.4.4 policies
-                                    actually consume (OBS_STATE); its first 9
-                                    dims are converted like the sub-key below
+    observation.state               (2, 16): [rel_pose9, gripper1, wrt_start6]
+                                    — the CONCATENATED key lerobot-0.4.4
+                                    policies actually consume (OBS_STATE):
+                                    pose dims converted like the sub-key below,
+                                    then the wrt-start rot6d appended (UMI's
+                                    16-D low-dim input; position-wrt-start is
+                                    deliberately excluded, as in UMI)
     observation.state.cartesian     (2, 9):  [t-1 rel. to t, identity]
                                     identity rot6d = [1,0,0, 0,1,0], pos = 0
     observation.state.rot_wrt_start (2, 6):  rot6d of each obs frame relative
@@ -131,10 +134,38 @@ class RelativePoseDataset(torch.utils.data.Dataset):
     (with noise, rotation-only — UMI's *_rot_axis_angle_wrt_start).
     """
 
-    def __init__(self, dataset, start_pose_noise_scale: float = START_POSE_NOISE_SCALE):
+    def __init__(
+        self,
+        dataset,
+        start_pose_noise_scale: float = START_POSE_NOISE_SCALE,
+        append_wrt_start_to_state: bool = True,
+    ):
         self._dataset = dataset
         self._start_pose_noise_scale = start_pose_noise_scale
+        # UMI parity: append the wrt-start rot6d to the CONCATENATED state so
+        # the policy actually consumes it (UMI's 16-D low-dim input:
+        # eef_pos(3) + eef_rot6d(6) + gripper(1) + rot_wrt_start(6); position
+        # wrt start stays deliberately excluded, as in UMI). Requires items to
+        # carry episode/frame indices (any LeRobotDataset does).
+        self._append_wrt = append_wrt_start_to_state
         self._episode_start_pose: dict[int, np.ndarray] = {}
+
+        # The policy's input layer + normalizer are sized from meta.features
+        # BEFORE conversion, so widen observation.state there to match.
+        if append_wrt_start_to_state and dataset is not None:
+            features = getattr(getattr(dataset, "meta", None), "features", None)
+            if features and STATE_KEY in features:
+                feat = dict(features[STATE_KEY])
+                old_dim = int(np.prod(feat["shape"]))
+                feat["shape"] = (old_dim + 6,)
+                feat["names"] = list(feat.get("names") or []) + [
+                    f"rot_wrt_start_{i}" for i in range(6)
+                ]
+                features[STATE_KEY] = feat
+                logger.info(
+                    f"{STATE_KEY}: widened {old_dim} -> {old_dim + 6} dims "
+                    "(appended rot_wrt_start, UMI parity)."
+                )
 
     def __len__(self) -> int:
         return len(self._dataset)
@@ -179,7 +210,9 @@ class RelativePoseDataset(torch.utils.data.Dataset):
         base = self._to_np(item[BASE_KEY] if BASE_KEY in item else item[STATE_KEY])
         base_pose = (base[-1] if base.ndim == 2 else base)[:9].astype(np.float64)
 
-        # Rotation wrt (noised) episode start — computed BEFORE overwriting obs
+        # Rotation wrt (noised) episode start — computed from the ABSOLUTE obs,
+        # BEFORE any relative conversion overwrites them.
+        rel_to_start = None
         if start_pose is not None:
             noised = start_pose.copy()
             if self._start_pose_noise_scale > 0:
@@ -188,7 +221,8 @@ class RelativePoseDataset(torch.utils.data.Dataset):
                 noised = noised + np.random.normal(
                     scale=self._start_pose_noise_scale, size=noised.shape
                 )
-            obs_abs = self._to_np(item[BASE_KEY]).astype(np.float64)
+            obs_key = BASE_KEY if BASE_KEY in item else STATE_KEY
+            obs_abs = self._to_np(item[obs_key]).astype(np.float64)
             if obs_abs.ndim == 1:
                 obs_abs = obs_abs[None]
             rel_to_start = make_relative(noised, obs_abs[..., :9])
@@ -205,11 +239,26 @@ class RelativePoseDataset(torch.utils.data.Dataset):
 
         # The concatenated state — the tensor 0.4.4 policies actually read.
         # Convert its pose dims so the MODEL INPUT is relative (current frame
-        # -> identity); gripper / promoted extras (dims 9+) pass through.
+        # -> identity); gripper / promoted extras (dims 9+) pass through; then
+        # (UMI parity) append the wrt-start rot6d so the policy consumes it:
+        # [rel_pose9, gripper1(, extras...), rot_wrt_start6].
         if STATE_KEY in item:
             v = self._to_np(item[STATE_KEY]).astype(np.float64)
             rel = make_relative(base_pose, v[..., :9])
-            out = np.concatenate([rel, v[..., 9:]], axis=-1)
+            parts = [rel, v[..., 9:]]
+            if self._append_wrt and rel_to_start is not None:
+                wrt = rel_to_start[..., 3:9]
+                if v.ndim == 1:  # single frame: rel_to_start is (1, 9)
+                    wrt = wrt[0]
+                parts.append(wrt)
+            elif self._append_wrt:
+                raise ValueError(
+                    "append_wrt_start_to_state=True but no episode start pose "
+                    "is available (items lack episode_index/frame_index, or "
+                    "convert_item was called without start_pose). The state "
+                    "dim would silently disagree with meta.features."
+                )
+            out = np.concatenate(parts, axis=-1)
             item[STATE_KEY] = torch.from_numpy(out.astype(np.float32))
 
         if POSE_ACTION_KEY in item:
@@ -305,12 +354,17 @@ def stamp_pose_repr(cfg, dataset) -> None:
             "observation": {
                 # lerobot-0.4.4 policies consume the CONCATENATED
                 # observation.state; its pose dims are converted, so the
-                # MODEL INPUT is relative (current frame -> identity).
-                # Checkpoints trained BEFORE this conversion existed have no
-                # pose_repr.json (or one saying "absolute") — the deploy side
-                # keys its behavior off this field.
+                # MODEL INPUT is relative (current frame -> identity), and the
+                # wrt-start rot6d is APPENDED (UMI 16-D parity). Checkpoints
+                # trained BEFORE these conversions have no pose_repr.json (or
+                # one without these fields) — the deploy side keys its
+                # behavior off them.
                 "observation.state": "relative_to_last_obs_frame",
                 "observation.state.cartesian": "relative_to_last_obs_frame",
+                # Deploy side: generate wrt-start (rotation-only, NOISE OFF)
+                # from the episode-start pose and append after all other dims.
+                "state_includes_wrt_start": True,
+                "state_layout": "[rel_pose9, gripper1(, extras...), rot_wrt_start6]",
                 "wrt_start_key": WRT_START_KEY,
                 "start_pose_noise_scale": START_POSE_NOISE_SCALE,
             },
