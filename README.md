@@ -14,6 +14,37 @@ Check the [docs](https://utiasdsl.github.io/crisp_controllers/getting_started/#4
 
 For the UMI-style data pipeline (handheld/robot recording, dataset alignment, relative-pose training, deployment), see **[USAGE.md](USAGE.md)**; remote model serving is specified in [REMOTE_INFERENCE.md](REMOTE_INFERENCE.md); development conventions live in [HANDOFF.md](HANDOFF.md).
 
+## Workspace layout
+
+Clone `crisp_gym` and its sibling repositories into a common workspace folder
+(e.g. `~/workspace`) — several paths assume the repos sit **next to each
+other**:
+
+```
+workspace/
+├── crisp_controllers_demos/   # robot bring-up (Docker); mounts ../crisp_py into its containers
+├── crisp_gym/                 # this repository
+├── crisp_py/                  # robot/gripper Python client
+└── lerobot/                   # created by crisp_gym/scripts/setup_lerobot.sh (../lerobot)
+```
+
+```bash
+mkdir -p ~/workspace && cd ~/workspace
+git clone https://github.com/utiasDSL/crisp_controllers_demos.git
+git clone https://github.com/utiasDSL/crisp_gym.git
+git clone https://github.com/utiasDSL/crisp_py.git
+```
+
+Concretely, the sibling layout matters because:
+
+- `pixi.toml` installs LeRobot editable from `../lerobot` (cloned by
+  `scripts/setup_lerobot.sh` — see Installation below),
+- `pixi.toml` installs `crisp_py` editable from `../crisp_py` (the local
+  checkout satisfies the `crisp_python` requirement instead of the lagging
+  PyPI wheel),
+- `crisp_controllers_demos/docker-compose.yaml` bind-mounts `../crisp_py`
+  into the robot containers.
+
 ## Installation
 
 The environments run inside a [pixi](https://pixi.sh) workspace. The
