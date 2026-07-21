@@ -6,7 +6,7 @@ services:
     image: crisp-gym-pixi:test
     container_name: crisp-gym-lerobot044
     volumes:
-      - ~/workspace:/workspace
+      - ..:/workspace
       - $HOME/.Xauthority:/root/.Xauthority
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /dev:/dev
@@ -40,7 +40,7 @@ services:
     image: crisp-gym-pixi:cuda
     container_name: crisp-gym-deploy-lerobot044
     volumes:
-      - ~/workspace:/workspace
+      - ..:/workspace
       - $HOME/.Xauthority:/root/.Xauthority
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /dev:/dev
