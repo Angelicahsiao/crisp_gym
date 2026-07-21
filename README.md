@@ -84,6 +84,62 @@ pixi install -e humble-lerobot
 > just run `bash scripts/setup_lerobot.sh` (it will patch your existing clone),
 > then `rm -f pixi.lock && pixi install -e humble-lerobot`.
 
+## Data pipeline: record → train → deploy
+
+```mermaid
+flowchart TD
+    subgraph RECORD["1 — Record (robot PC, ROS 2 Humble)"]
+        H["Handheld UMI gripper<br/>scripts/record_umi_handheld.py"]
+        R["Robot teleop (FACTR / leader-follower)<br/>scripts/record_lerobot_format_leader_follower.py<br/>--record-config umi_robot_record.yaml"]
+        OLD["LEGACY dataset<br/>(old recorder: Euler pose obs +<br/>delta-command actions)"]
+        MIG["ONE-TIME MIGRATION<br/>scripts/migrate_euler_delta_to_rot6d.py<br/>--input old --output old_rot6d<br/>(videos byte-identical; Euler(6)→rot6d(9);<br/>action rebuilt as next_tcp_pose)"]
+        DS[("LeRobot dataset — ABSOLUTE poses<br/>obs: [x,y,z, rot6d(6)] + gripper + images<br/>action: absolute TCP pose t+1 + gripper<br/>+ meta/record_config.json")]
+        H --> DS
+        R --> DS
+        OLD --> MIG --> DS
+    end
+
+    CHK["VERIFY before training<br/>scripts/check_relative_pose.py<br/>(identity, round-trip, rot6d sanity)"]
+    DS --> CHK
+
+    subgraph TRAIN["2 — Train (GPU PC, lerobot 0.4.4)"]
+        TR["scripts/lerobot_relative_pose.py<br/>+ any lerobot-train args"]
+        W["RelativePoseDataset (in __getitem__):<br/>abs → RELATIVE wrt last obs frame;<br/>state = [rel_pose9, gripper1, rot_wrt_start6] (16-D);<br/>relative stats recomputed"]
+        CKPT[("checkpoint<br/>+ pose_repr.json<br/>(generation stamp)")]
+        TR --> W --> CKPT
+    end
+    CHK --> TR
+
+    subgraph DEPLOY["3 — Deploy (robot PC)"]
+        GEN{"pose_repr.json?<br/>(state_input: auto)"}
+        G1["missing / absolute → gen-1:<br/>ABSOLUTE 10-D state"]
+        G3["state_includes_wrt_start → gen-3:<br/>RELATIVE 16-D state (wrt-start appended,<br/>noise off, episode start = first obs)"]
+        LOC["LOCAL verification<br/>scripts/deploy_policy.py<br/>--policy-config relative_lerobot_policy<br/>--env-config *_deploy_umi (rot6d,<br/>use_relative_actions: false)"]
+        REM["REMOTE (canonical)<br/>RemotePolicy ⇆ websocket server<br/>contracts: config/policy/remote_umi_*.yaml"]
+        ACT["every action chunk composed<br/>T_cmd = T_tcp(obs time) ∘ T_rel"]
+        CKPT --> GEN
+        GEN --> G1 --> LOC
+        GEN --> G3 --> LOC
+        G1 -.-> REM
+        G3 -.-> REM
+        LOC --> ACT
+        REM --> ACT
+    end
+```
+
+Notes:
+
+- **Never store relative poses on disk** — datasets hold ABSOLUTE poses; the
+  relative conversion happens inside the training wrapper and (mirrored) at
+  inference. Details/invariants: [HANDOFF.md](HANDOFF.md) §1.
+- **Migrated legacy data caveat (gripper units):** the old recorder stored the
+  device-normalized gripper value, not the UMI reference-width scale. Don't
+  mix migrated and UMI-recorded datasets in one training, and when deploying a
+  model trained on migrated data set `reference_width: == device_max_width`
+  in `config/policy/relative_lerobot_policy.yaml` so the unit conversion is
+  identity.
+- Full step-by-step commands: [USAGE.md](USAGE.md).
+
 ## Deploying a relative-pose (rot6d) model
 
 Models trained with `scripts/lerobot_relative_pose.py` output UMI-style
