@@ -162,7 +162,9 @@ def main():
             pos_err.append(float(np.linalg.norm(Tp[:3, 3] - Tr[:3, 3])))
             rot_err.append(_geodesic_deg(Tp[:3, :3], Tr[:3, :3]))
             grip_err.append(abs(float(pred0[-1]) - float(rec0[-1])))
-            motion.append(float(np.linalg.norm(Tr[:3, 3])))  # recorded step size
+            # Motion SCALE = span of the recorded chunk (NOT |action[0]|, which
+            # is ~0 since the first step sits at the current frame).
+            motion.append(float(np.linalg.norm(rec[-1][:3] - rec[0][:3])))
             n_done += 1
 
     if not pos_err:
@@ -171,16 +173,20 @@ def main():
 
     pos = np.array(pos_err); rot = np.array(rot_err); grp = np.array(grip_err); mot = np.array(motion)
     logger.info(f"\n[openloop] evaluated {len(pos)} frames")
-    logger.info(f"  recorded per-step motion (m): mean {mot.mean():.4f}  median {np.median(mot):.4f}")
-    logger.info(f"  action position error   (m): mean {pos.mean():.4f}  median {np.median(pos):.4f}  p90 {np.percentile(pos,90):.4f}  max {pos.max():.4f}")
-    logger.info(f"  action rotation error (deg): mean {rot.mean():.2f}   median {np.median(rot):.2f}   p90 {np.percentile(rot,90):.2f}")
-    logger.info(f"  action gripper error  [0,1]: mean {grp.mean():.4f}  median {np.median(grp):.4f}  max {grp.max():.4f}")
-    ratio = pos.mean() / max(mot.mean(), 1e-9)
+    logger.info(f"  recorded chunk motion span (m): mean {mot.mean():.4f}  median {np.median(mot):.4f}")
+    logger.info(f"  action position error    (m): mean {pos.mean():.4f}  median {np.median(pos):.4f}  p90 {np.percentile(pos,90):.4f}  max {pos.max():.4f}")
+    logger.info(f"  action rotation error  (deg): mean {rot.mean():.2f}   median {np.median(rot):.2f}   p90 {np.percentile(rot,90):.2f}")
+    logger.info(f"  action gripper error   [0,1]: mean {grp.mean():.4f}  median {np.median(grp):.4f}  max {grp.max():.4f}")
+    # Verdict on ABSOLUTE thresholds (not a ratio — action[0] motion is ~0).
+    good = pos.mean() < 0.005 and rot.mean() < 2.0
     logger.info(
-        f"\n[openloop] position-error / recorded-motion ratio = {ratio:.2f}\n"
-        "  << 1  -> policy REPRODUCES the demos; drift is a DEPLOY problem\n"
-        "          (images OOD, control rate << training fps, obs timing).\n"
-        "  ~1 or > -> policy did NOT learn the task; retrain / debug training."
+        f"\n[openloop] verdict: {'POLICY GOOD' if good else 'POLICY WEAK'} "
+        f"(pos {pos.mean()*1000:.1f}mm, rot {rot.mean():.2f}deg vs chunk span "
+        f"{mot.mean()*1000:.0f}mm)\n"
+        "  GOOD  (pos < ~5mm, rot < ~2deg) -> policy reproduces the demos; a\n"
+        "        drifting rollout is a DEPLOY problem (images OOD, control rate\n"
+        "        << training fps, obs timing) — not undertraining.\n"
+        "  WEAK  -> policy did not learn the task; retrain / debug training."
     )
 
 
