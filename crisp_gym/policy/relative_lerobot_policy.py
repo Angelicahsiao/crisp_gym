@@ -191,13 +191,27 @@ def build_obs_frame(
     g_dev = float(np.asarray(obs_raw["observation.state.gripper"]).reshape(-1)[0])
     g_ref = gripper_device_to_ref(g_dev, reference_width, device_max_width)
 
-    frame = {
-        "observation.state.cartesian": cart,
-        "observation.state.gripper": np.array([g_ref], dtype=np.float32),
-        "observation.state": np.concatenate(
-            [cart, np.array([g_ref], dtype=np.float32)]
-        ),
-    }
+    # observation.state must reproduce the DATASET's concatenation: every
+    # observation.state.* sub-key the env produces, in the env's insertion
+    # order — the same order the recording side concatenated them (a UMI
+    # record config yields [cartesian9, gripper1]; legacy/promoted-state
+    # datasets add joints/target/... — the env config controls which sub-keys
+    # exist, and it must match the recording env). The gripper sub-key is
+    # unit-converted; everything else passes through.
+    frame: dict = {}
+    state_parts = []
+    for key, value in obs_raw.items():
+        if not key.startswith("observation.state.") or key == "observation.state":
+            continue
+        if key == "observation.state.gripper":
+            part = np.array([g_ref], dtype=np.float32)
+        elif key == "observation.state.cartesian":
+            part = cart
+        else:
+            part = np.asarray(value, dtype=np.float32).reshape(-1)
+        frame[key] = part
+        state_parts.append(part.reshape(-1))
+    frame["observation.state"] = np.concatenate(state_parts)
     for key, value in obs_raw.items():
         if key.startswith("observation.images"):
             if image_keys is None or key in image_keys:
@@ -300,6 +314,7 @@ class RelativeLerobotPolicy(Policy):
         from collections import deque
 
         self._history: deque = deque(maxlen=self.n_obs_steps)
+        self._state_dim_checked = False
         self._chunk: np.ndarray | None = None
         self._chunk_idx = 0
         # Base pose for the CURRENT chunk, captured at observation time
@@ -341,6 +356,40 @@ class RelativeLerobotPolicy(Policy):
         )
         return np.concatenate([pos, rot_arr, [gripper]]).astype(np.float32)
 
+    def _verify_state_dim(self, frame: dict) -> None:
+        """Fail BEFORE inference if the built observation.state cannot match
+        the checkpoint's normalizer — a mismatch inside lerobot's normalize
+        step is a cryptic 'size of tensor a must match tensor b' error.
+        """
+        if self._state_dim_checked:
+            return
+        self._state_dim_checked = True
+        expected = self.meta.get("state_dim")
+        if not expected:
+            return
+        wrt_extra = 6 if self.meta.get("state_input") == "relative_wrt_start" else 0
+        built = int(frame["observation.state"].shape[-1])
+        if built + wrt_extra != int(expected):
+            parts = {
+                k: int(np.prod(np.asarray(v).shape))
+                for k, v in frame.items()
+                if k.startswith("observation.state.")
+            }
+            raise ValueError(
+                f"observation.state dim mismatch: checkpoint expects {expected}, "
+                f"client built {built}"
+                + (f" (+{wrt_extra} wrt-start appended in the worker)" if wrt_extra else "")
+                + f". Sub-keys from the env (insertion order): {parts}. "
+                "Fix by making the deploy env config produce the SAME state "
+                "components (observations_to_include_to_state / sensors) and "
+                "representations as the RECORDING env of the training dataset "
+                "— compare with the dataset's info.json "
+                "features['observation.state']['names']. If the wrt-start "
+                "+6 is wrong for this checkpoint, a stale pose_repr.json from "
+                "another run may sit in a parent directory of --path; override "
+                "with state_input: 'absolute' or 'relative'."
+            )
+
     # ── Policy interface ──────────────────────────────────────────────────────
 
     def make_data_fn(self) -> Callable[[], Tuple[Observation, Action]]:
@@ -354,6 +403,7 @@ class RelativeLerobotPolicy(Policy):
                 self.device_max_width,
                 image_keys=self.meta.get("image_keys"),
             )
+            self._verify_state_dim(frame)
             self._history.append(frame)
 
             if self._chunk is None or self._chunk_idx >= min(
@@ -503,12 +553,23 @@ def inference_worker(conn, pretrained_path: str, overrides: dict,
         )
 
         image_features = list(getattr(policy.config, "image_features", []) or [])
+        state_dim = None
+        try:
+            in_feats = getattr(policy.config, "input_features", {}) or {}
+            if "observation.state" in in_feats:
+                state_dim = int(np.prod(in_feats["observation.state"].shape))
+        except Exception:
+            pass
         meta = {
             "n_obs_steps": int(getattr(policy.config, "n_obs_steps", 1)),
             "n_action_steps": int(getattr(policy.config, "n_action_steps", 1)),
             "image_keys": image_features,
             "policy_type": train_config.policy.type,
             "state_input": state_mode,
+            # Total observation.state dim the checkpoint's normalizer expects —
+            # the client verifies its built state against this BEFORE the first
+            # inference (a mismatch inside the normalizer is cryptic).
+            "state_dim": state_dim,
         }
         conn.send(meta)
         wlog.info(f"[RelInference] Ready: {meta}")
