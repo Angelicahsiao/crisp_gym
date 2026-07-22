@@ -392,12 +392,17 @@ class RelativeLerobotPolicy(Policy):
 
         if self._log_actions and self._action_log_left > 0:
             self._action_log_left -= 1
-            rel_pos = np.round(np.asarray(action[:3]), 4).tolist()
             cur = self._chunk_base[:3, 3]
             d_base = np.round(T_cmd[:3, 3] - cur, 4).tolist()
+            full = np.round(np.asarray(action, dtype=float), 4).tolist()
             logger.info(
-                f"[action] mode={self.compose_mode} rel_pos(EE)={rel_pos} "
-                f"grip={float(action[9]):.3f} | Δpos(base)={d_base} "
+                f"[action] dim={len(action)} raw={full}"
+            )
+            logger.info(
+                f"[action] mode={self.compose_mode} rel_pos(EE)="
+                f"{np.round(np.asarray(action[:3]), 4).tolist()} "
+                f"grip=action[{len(action) - 1}]={float(action[-1]):.4f} "
+                f"(idx9={float(action[9]):.4f}) | Δpos(base)={d_base} "
                 f"|Δ|={np.linalg.norm(T_cmd[:3, 3] - cur) * 1000:.1f}mm"
             )
 
@@ -416,8 +421,9 @@ class RelativeLerobotPolicy(Policy):
         else:  # euler
             rot_arr = rot.as_euler("xyz")
 
+        # gripper is the LAST action dim (robust to any pose-dim count).
         gripper = gripper_ref_to_device(
-            float(action[9]), self.reference_width, self.device_max_width
+            float(action[-1]), self.reference_width, self.device_max_width
         )
         return np.concatenate([pos, rot_arr, [gripper]]).astype(np.float32)
 
