@@ -383,6 +383,129 @@ def test_build_obs_frame_promoted_state_with_euler_target():
     assert frame26["observation.state"].shape == (26,)
 
 
+# ── 8. END-TO-END client loop: obs -> frame -> window -> chunk -> env.step ───
+
+def test_client_loop_end_to_end():
+    """Drive the REAL RelativeLerobotPolicy data_fn with a scripted env and a
+    ground-truth 'server': every commanded pose must reproduce the ground-truth
+    trajectory (as matrices), across TWO chunks, with the obs-time base held
+    per chunk; gripper and state layout checked along the way."""
+    GT = _random_traj(20, seed=41)  # ground-truth TCP trajectory
+    ref = dev = 0.085
+
+    class _FakeEnv:
+        def __init__(self):
+            self.k = 0                       # current pose index (perfect tracking)
+            self.commands = []               # (t_index, action) received by step
+            self.config = types.SimpleNamespace(
+                orientation_representation="rotation_6d",
+                use_relative_actions=False,
+            )
+            self.robot = types.SimpleNamespace()
+            self._sync_robot()
+
+        def _sync_robot(self):
+            T = GT[self.k]
+            self.robot.end_effector_pose = types.SimpleNamespace(
+                position=T[:3, 3].copy(),
+                orientation=Rotation.from_matrix(T[:3, :3]),
+            )
+
+        def get_obs(self):
+            return {
+                "observation.state.cartesian": _pose9(GT[self.k]).astype(np.float32),
+                "observation.state.gripper": np.array([0.6], np.float32),
+                "observation.state.joints": np.zeros(7, np.float32),
+                "observation.state.target": _pose9(GT[self.k]).astype(np.float32),
+                "observation.images.primary": np.zeros((4, 4, 3), np.uint8),
+            }
+
+        def step(self, action, block=False):
+            assert action.shape == (10,), f"action dim {action.shape} != 10"
+            self.commands.append((self.k, np.asarray(action, np.float64).copy()))
+            self.k += 1                      # perfect tracking of the command
+            self._sync_robot()
+
+    class _FakeConn:
+        """Emulates a CORRECT inference worker: returns the ground-truth
+        relative chunk wrt the LAST frame of the received window."""
+
+        def __init__(self, env):
+            self.env = env
+            self.windows = []
+
+        def send(self, msg):
+            kind, window = msg
+            assert kind == "infer"
+            self.windows.append(window)
+            base9 = np.asarray(window[-1]["observation.state"][:9], np.float64)
+            # sanity: the window's newest frame is the env's CURRENT abs pose
+            np.testing.assert_allclose(base9, _pose9(GT[self.env.k]), atol=1e-6)
+            T_base_inv = np.linalg.inv(_mat(base9))  # T_base from the sent obs
+            chunk = []
+            for j in range(8):
+                T_rel = T_base_inv @ GT[self.env.k + 1 + j]
+                chunk.append(np.concatenate(
+                    [_pose9(T_rel), [0.7]]).astype(np.float32))
+            self._chunk = np.stack(chunk)
+
+        def recv(self):
+            return self._chunk
+
+    def _mat(p9):
+        T = np.eye(4)
+        a1, a2 = p9[3:6], p9[6:9]
+        b1 = a1 / np.linalg.norm(a1)
+        b2 = a2 - np.dot(b1, a2) * b1
+        b2 = b2 / np.linalg.norm(b2)
+        T[:3, :3] = np.stack([b1, b2, np.cross(b1, b2)])
+        T[:3, 3] = p9[:3]
+        return T
+
+    from collections import deque
+
+    env = _FakeEnv()
+    pol = object.__new__(rlp.RelativeLerobotPolicy)
+    pol.env = env
+    pol.reference_width = ref
+    pol.device_max_width = dev
+    pol.target_to_euler = False
+    pol.meta = {"n_obs_steps": 2, "n_action_steps": 8, "state_input":
+                "relative_wrt_start", "state_dim": 29 + 3,  # 26 disk (target 9D) + 6
+                "image_keys": ["observation.images.primary"]}
+    pol.n_obs_steps = 2
+    pol.n_action_steps = 8
+    pol._history = deque(maxlen=2)
+    pol._state_dim_checked = False
+    pol._chunk = None
+    pol._chunk_idx = 0
+    pol._chunk_base = None
+    pol.parent_conn = _FakeConn(env)
+
+    fn = pol.make_data_fn()
+    for _ in range(16):                      # two full chunks
+        obs, act = fn()
+        assert act is not None
+
+    # every commanded pose reproduces ground truth — compared as MATRICES
+    assert len(env.commands) == 16
+    for k, action in env.commands:
+        T_cmd = _mat(np.asarray(action[:9]))
+        np.testing.assert_allclose(T_cmd, GT[k + 1], atol=1e-6)
+        assert abs(action[9] - 0.7) < 1e-6   # identity gripper scaling
+    # exactly two inferences (chunking works), window capped at n_obs_steps
+    assert len(pol.parent_conn.windows) == 2
+    assert len(pol.parent_conn.windows[1]) == 2
+    # frames sent contain the full promoted state (26-D here: target kept 9-D)
+    assert pol.parent_conn.windows[0][0]["observation.state"].shape == (26,)
+
+    # reset clears client state
+    pol.parent_conn.send_raw = None
+    pol.parent_conn.send = lambda msg: None  # ignore the reset message
+    pol.reset()
+    assert pol._chunk is None and len(pol._history) == 0 and pol._chunk_base is None
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
