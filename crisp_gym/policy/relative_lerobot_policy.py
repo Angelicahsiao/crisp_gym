@@ -424,33 +424,50 @@ class RelativeLerobotPolicy(Policy):
 
         if self._log_actions and self._action_log_left > 0:
             self._action_log_left -= 1
-            # (a) MODEL OUTPUT — relative action, EE/body frame (what the
-            #     policy predicts): position + rot6d relative to the obs-time
-            #     TCP; current frame is identity, so pure translation reads as
-            #     motion along the EE axes.
+            # T_base_tcp_current — the OBS-time TCP pose used as the
+            # composition base: T_cmd = T_base_tcp_current @ T_rel.
+            Tb = self._chunk_base
+            base_euler = Rotation.from_matrix(Tb[:3, :3]).as_euler("xyz")
+            # (a) MODEL OUTPUT — relative action, EE/body frame (identity
+            #     current frame -> pure translation reads as EE-axis motion),
+            #     INCLUDING the raw gripper value the policy predicts.
             rel_euler = Rotation.from_matrix(
                 rot6d_to_mat(np.asarray(action[3:9]))
             ).as_euler("xyz")
-            # (b) CIC INPUT — absolute command, ROBOT-BASE frame (what
-            #     env.step feeds robot.set_target and the Cartesian impedance
-            #     controller tracks): composed T_cmd = base ∘ rel.
+            # (c) gripper value actually PUBLISHED to the gripper ROS2 topic:
+            #     crisp_py Gripper.set_target(t) publishes _unnormalize(t) =
+            #     (max-min)*t + min (GripperCommand position / command topic).
+            g_min = float(getattr(self.env.gripper, "min_value", 0.0))
+            g_max = float(getattr(self.env.gripper, "max_value", 1.0))
+            topic_cmd = (g_max - g_min) * float(np.clip(gripper, 0.0, 1.0)) + g_min
+            # (b) CIC INPUT — absolute command, ROBOT-BASE frame.
             cmd_euler = rot.as_euler("xyz")
             logger.info(
-                "[action] MODEL rel(EE)  pos=%s rot_euler=%s grip=%.4f "
-                "-> cmd_grip=%.4f (invert=%s)  (dim=%d)"
-                % (np.round(action[:3], 4).tolist(),
-                   np.round(rel_euler, 4).tolist(),
-                   float(action[-1]), float(gripper), self.invert_gripper,
-                   len(action))
+                "[base ] T_base_tcp_current pos=%s rot_euler=%s"
+                % (np.round(Tb[:3, 3], 4).tolist(),
+                   np.round(base_euler, 4).tolist())
             )
             logger.info(
-                "[action] CIC   abs(base) pos=%s rot_euler=%s grip=%.4f  "
+                "[action] MODEL rel(EE)  pos=%s rot_euler=%s grip=%.4f  (dim=%d)"
+                % (np.round(action[:3], 4).tolist(),
+                   np.round(rel_euler, 4).tolist(),
+                   float(action[-1]), len(action))
+            )
+            logger.info(
+                "[action] CIC   abs(base) pos=%s rot_euler=%s  "
                 "(mode=%s, Δpos_base=%s, |Δ|=%.1fmm)"
                 % (np.round(pos, 4).tolist(),
                    np.round(cmd_euler, 4).tolist(),
-                   float(gripper), self.compose_mode,
-                   np.round(pos - self._chunk_base[:3, 3], 4).tolist(),
-                   float(np.linalg.norm(pos - self._chunk_base[:3, 3]) * 1000))
+                   self.compose_mode,
+                   np.round(pos - Tb[:3, 3], 4).tolist(),
+                   float(np.linalg.norm(pos - Tb[:3, 3]) * 1000))
+            )
+            logger.info(
+                "[gripper] model=%.4f -> invert(%s)=%.4f -> device=%.4f "
+                "-> ROS2 topic cmd=%.4f  (gripper norm range min=%.3f max=%.3f)"
+                % (float(action[-1]), self.invert_gripper,
+                   (1.0 - float(action[-1])) if self.invert_gripper else float(action[-1]),
+                   float(gripper), topic_cmd, g_min, g_max)
             )
 
         return np.concatenate([pos, rot_arr, [gripper]]).astype(np.float32)
