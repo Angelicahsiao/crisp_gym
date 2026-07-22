@@ -62,8 +62,10 @@ compose_mode: "coupled"
 # open/close every step, and the logged model grip sits near 0 while open.
 invert_gripper: false
 
-# Log the first N composed actions (model rel(EE) action + composed base-frame
-# CIC command + raw/commanded gripper) to diagnose conventions. 0 = off.
+# Log the first N steps of EVERY action chunk (model rel(EE) action + composed
+# base-frame CIC command + T_base + raw/commanded gripper + gripper obs) to
+# diagnose conventions. Re-armed each new inference, so later chunks log too.
+# 0 = off.
 log_actions: 0
 
 # Optional lerobot policy-config overrides, e.g. {num_inference_steps: 10}.

@@ -318,7 +318,10 @@ class RelativeLerobotPolicy(Policy):
         self.target_to_euler = bool(target_to_euler)
         self.compose_mode = compose_mode
         self.invert_gripper = bool(invert_gripper)
+        # log_actions = how many steps to log PER CHUNK (reset every new
+        # inference), so later chunks are logged too — not just the first.
         self._log_actions = int(log_actions) > 0
+        self._log_actions_n = int(log_actions)
         self._action_log_left = int(log_actions)
         self._requested_n_action_steps = n_action_steps
 
@@ -550,6 +553,9 @@ class RelativeLerobotPolicy(Policy):
                 self._chunk = np.asarray(result)
                 self._chunk_idx = 0
                 self._chunk_base = chunk_base
+                # Re-arm per-chunk logging so every new chunk logs its first
+                # _log_actions_n steps (not only the very first chunk).
+                self._action_log_left = self._log_actions_n
                 logger.debug(
                     f"Chunk {self._chunk.shape} in "
                     f"{(time.monotonic() - t0) * 1e3:.1f} ms"
