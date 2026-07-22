@@ -147,10 +147,11 @@ def main():
 
     if args.env_namespace is None:
         args.env_namespace = prompt.prompt(
-            "Please enter the follower robot namespace (e.g., 'left', 'right', ...)",
-            default="right",
+            "Please enter the follower robot namespace (e.g., 'left', 'right', "
+            "...; empty = no namespace)",
+            default="",
         )
-        logger.info(f"Using follower namespace: {args.env_namespace}")
+        logger.info(f"Using follower namespace: {args.env_namespace!r}")
 
     if args.env_config is None:
         follower_configs = list_env_configs()
