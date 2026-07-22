@@ -235,6 +235,13 @@ def build_obs_frame(
     for key, value in obs_raw.items():
         if key.startswith("observation.images"):
             if image_keys is None or key in image_keys:
+                if value is None:
+                    raise ValueError(
+                        f"camera image '{key}' is None — the camera has not "
+                        "published a frame yet. Check the topic is streaming "
+                        "(ros2 topic hz) and the deploy env camera name/topic "
+                        "match what the checkpoint was trained on."
+                    )
                 frame[key] = np.asarray(value)
     return frame
 
@@ -507,6 +514,10 @@ def inference_worker(conn, pretrained_path: str, overrides: dict,
             from lerobot.constants import OBS_IMAGES
         except ImportError:  # older/newer layout
             OBS_IMAGES = "observation.images"
+        try:
+            from lerobot.constants import ACTION
+        except ImportError:
+            ACTION = "action"
 
         from crisp_gym.util.lerobot_features import numpy_obs_to_torch
 
@@ -674,6 +685,12 @@ def inference_worker(conn, pretrained_path: str, overrides: dict,
                     batch = None
                     for frame in window:
                         batch = _prepare(frame)
+                        # The lerobot preprocessor injects an `action` key into
+                        # the observation batch; left in, populate_queues pushes
+                        # it into the policy's ACTION queue and
+                        # predict_action_chunk then torch.stacks a NoneType.
+                        # select_action drops it for the same reason — mirror it.
+                        batch.pop(ACTION, None)
                         policy._queues = populate_queues(policy._queues, batch)
                     actions = policy.predict_action_chunk(batch)
                     if postprocessor is not None:
