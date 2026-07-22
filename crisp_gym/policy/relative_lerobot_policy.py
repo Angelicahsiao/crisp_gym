@@ -390,22 +390,6 @@ class RelativeLerobotPolicy(Policy):
         else:  # coupled (UMI 'relative'): T_cmd = T_base @ T_rel
             T_cmd = compose_relative_pose(action[:9], self._chunk_base)
 
-        if self._log_actions and self._action_log_left > 0:
-            self._action_log_left -= 1
-            cur = self._chunk_base[:3, 3]
-            d_base = np.round(T_cmd[:3, 3] - cur, 4).tolist()
-            full = np.round(np.asarray(action, dtype=float), 4).tolist()
-            logger.info(
-                f"[action] dim={len(action)} raw={full}"
-            )
-            logger.info(
-                f"[action] mode={self.compose_mode} rel_pos(EE)="
-                f"{np.round(np.asarray(action[:3]), 4).tolist()} "
-                f"grip=action[{len(action) - 1}]={float(action[-1]):.4f} "
-                f"(idx9={float(action[9]):.4f}) | Δpos(base)={d_base} "
-                f"|Δ|={np.linalg.norm(T_cmd[:3, 3] - cur) * 1000:.1f}mm"
-            )
-
         pos = T_cmd[:3, 3]
         rot = Rotation.from_matrix(T_cmd[:3, :3])
         rep = self.env.config.orientation_representation
@@ -425,6 +409,36 @@ class RelativeLerobotPolicy(Policy):
         gripper = gripper_ref_to_device(
             float(action[-1]), self.reference_width, self.device_max_width
         )
+
+        if self._log_actions and self._action_log_left > 0:
+            self._action_log_left -= 1
+            # (a) MODEL OUTPUT — relative action, EE/body frame (what the
+            #     policy predicts): position + rot6d relative to the obs-time
+            #     TCP; current frame is identity, so pure translation reads as
+            #     motion along the EE axes.
+            rel_euler = Rotation.from_matrix(
+                rot6d_to_mat(np.asarray(action[3:9]))
+            ).as_euler("xyz")
+            # (b) CIC INPUT — absolute command, ROBOT-BASE frame (what
+            #     env.step feeds robot.set_target and the Cartesian impedance
+            #     controller tracks): composed T_cmd = base ∘ rel.
+            cmd_euler = rot.as_euler("xyz")
+            logger.info(
+                "[action] MODEL rel(EE)  pos=%s rot_euler=%s grip=%.4f  (dim=%d)"
+                % (np.round(action[:3], 4).tolist(),
+                   np.round(rel_euler, 4).tolist(),
+                   float(action[-1]), len(action))
+            )
+            logger.info(
+                "[action] CIC   abs(base) pos=%s rot_euler=%s grip=%.4f  "
+                "(mode=%s, Δpos_base=%s, |Δ|=%.1fmm)"
+                % (np.round(pos, 4).tolist(),
+                   np.round(cmd_euler, 4).tolist(),
+                   float(gripper), self.compose_mode,
+                   np.round(pos - self._chunk_base[:3, 3], 4).tolist(),
+                   float(np.linalg.norm(pos - self._chunk_base[:3, 3]) * 1000))
+            )
+
         return np.concatenate([pos, rot_arr, [gripper]]).astype(np.float32)
 
     def _verify_state_dim(self, frame: dict) -> None:
