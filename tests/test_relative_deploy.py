@@ -518,6 +518,9 @@ def test_client_loop_end_to_end():
     pol.reference_width = ref
     pol.device_max_width = dev
     pol.target_to_euler = False
+    pol.compose_mode = "coupled"
+    pol._log_actions = False
+    pol._action_log_left = 0
     pol.meta = {"n_obs_steps": 2, "n_action_steps": 8, "state_input":
                 "relative_wrt_start", "state_dim": 29 + 3,  # 26 disk (target 9D) + 6
                 "image_keys": ["observation.images.primary"]}
@@ -552,6 +555,39 @@ def test_client_loop_end_to_end():
     pol.parent_conn.send = lambda msg: None  # ignore the reset message
     pol.reset()
     assert pol._chunk is None and len(pol._history) == 0 and pol._chunk_base is None
+
+
+# ── 9. decoupled composition = UMI 'rel' backward (base-frame position) ───────
+
+def test_decoupled_composition_matches_umi_rel():
+    """compose_mode='decoupled' must equal UMI 'rel' eval transform:
+    pos = rel_pos + base_pos (base frame), rot = rel_rot @ base_rot."""
+    T_base = _random_traj(1, seed=51)[0]
+    Trel = _random_traj(1, seed=52)[0]
+    action = np.concatenate([_pose9(Trel), [0.5]]).astype(np.float64)
+
+    pol = object.__new__(rlp.RelativeLerobotPolicy)
+    pol._chunk_base = T_base
+    pol.reference_width = pol.device_max_width = 0.085
+    pol._log_actions = False
+    pol._action_log_left = 0
+
+    class _Cfg:
+        orientation_representation = "rotation_6d"
+    pol.env = types.SimpleNamespace(config=_Cfg())
+
+    # coupled: position rotated by base -> EE frame
+    pol.compose_mode = "coupled"
+    out_c = pol._to_env_action(action)
+    exp_c = rlp.compose_relative_pose(action[:9], T_base)[:3, 3]
+    np.testing.assert_allclose(out_c[:3], exp_c, atol=1e-9)
+
+    # decoupled: position added in base frame (UMI 'rel')
+    pol.compose_mode = "decoupled"
+    out_d = pol._to_env_action(action)
+    np.testing.assert_allclose(out_d[:3], action[:3] + T_base[:3, 3], atol=1e-9)
+    # the two modes give DIFFERENT commands (unless base rotation is identity)
+    assert np.linalg.norm(out_c[:3] - out_d[:3]) > 1e-3
 
 
 if __name__ == "__main__":

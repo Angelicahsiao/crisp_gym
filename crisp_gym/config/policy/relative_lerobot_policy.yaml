@@ -42,5 +42,21 @@ state_input: "auto"
 # recorded natively with rot6d record configs.
 target_to_euler: false
 
+# How the relative action's POSITION is composed with the current TCP pose:
+#   coupled   -> T_cmd = T_base @ T_rel (UMI 'relative'): the relative position
+#                is in the EE/body frame — a +z action moves along the EE z
+#                axis. This is what lerobot_relative_pose.py trains with.
+#   decoupled -> T_cmd position = T_base_position + action_position (UMI 'rel'):
+#                the relative position is a BASE-frame delta — a +z action
+#                moves along the ROBOT-BASE z axis. Only for checkpoints
+#                trained with action_pose_repr: rel.
+# If the robot moves along the base axes when you expect EE-frame motion (or
+# vice versa), the checkpoint's convention differs from this setting — flip it.
+compose_mode: "coupled"
+
+# Log the first N composed actions (raw EE-frame relative + resulting base-frame
+# Δposition) to diagnose which convention the checkpoint wants. 0 = off.
+log_actions: 0
+
 # Optional lerobot policy-config overrides, e.g. {num_inference_steps: 10}.
 # overrides: {}

@@ -280,8 +280,16 @@ class RelativeLerobotPolicy(Policy):
         n_action_steps: int | None = None,
         state_input: str = "auto",
         target_to_euler: bool = False,
+        compose_mode: str = "coupled",
+        log_actions: int = 0,
         overrides: dict | None = None,
     ):
+        if compose_mode not in ("coupled", "decoupled"):
+            raise ValueError(
+                f"compose_mode must be 'coupled' (UMI 'relative', T_base@T_rel) "
+                f"or 'decoupled' (UMI 'rel', base-frame position delta), got "
+                f"{compose_mode!r}"
+            )
         if state_input not in ("auto", "absolute", "relative", "relative_wrt_start"):
             raise ValueError(
                 "state_input must be 'auto', 'absolute', 'relative' or "
@@ -307,6 +315,9 @@ class RelativeLerobotPolicy(Policy):
         self.reference_width = float(reference_width)
         self.device_max_width = float(device_max_width)
         self.target_to_euler = bool(target_to_euler)
+        self.compose_mode = compose_mode
+        self._log_actions = int(log_actions) > 0
+        self._action_log_left = int(log_actions)
         self._requested_n_action_steps = n_action_steps
 
         from multiprocessing import Pipe, Process
@@ -364,7 +375,32 @@ class RelativeLerobotPolicy(Policy):
         """Relative model action -> absolute env command in the env's units."""
         from scipy.spatial.transform import Rotation
 
-        T_cmd = compose_relative_pose(action[:9], self._chunk_base)
+        from crisp_gym.util.rot6d import rot6d_to_mat
+
+        if self.compose_mode == "decoupled":
+            # UMI 'rel' (legacy/decoupled): position is a BASE-frame delta
+            # (NOT rotated by the current EE orientation), rotation composes
+            # in the body frame. Use only if the checkpoint was trained with
+            # action_pose_repr: rel rather than relative.
+            T_cmd = np.eye(4)
+            T_cmd[:3, :3] = (
+                rot6d_to_mat(np.asarray(action[3:9])) @ self._chunk_base[:3, :3]
+            )
+            T_cmd[:3, 3] = np.asarray(action[:3]) + self._chunk_base[:3, 3]
+        else:  # coupled (UMI 'relative'): T_cmd = T_base @ T_rel
+            T_cmd = compose_relative_pose(action[:9], self._chunk_base)
+
+        if self._log_actions and self._action_log_left > 0:
+            self._action_log_left -= 1
+            rel_pos = np.round(np.asarray(action[:3]), 4).tolist()
+            cur = self._chunk_base[:3, 3]
+            d_base = np.round(T_cmd[:3, 3] - cur, 4).tolist()
+            logger.info(
+                f"[action] mode={self.compose_mode} rel_pos(EE)={rel_pos} "
+                f"grip={float(action[9]):.3f} | Δpos(base)={d_base} "
+                f"|Δ|={np.linalg.norm(T_cmd[:3, 3] - cur) * 1000:.1f}mm"
+            )
+
         pos = T_cmd[:3, 3]
         rot = Rotation.from_matrix(T_cmd[:3, :3])
         rep = self.env.config.orientation_representation
