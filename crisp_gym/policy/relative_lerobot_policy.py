@@ -260,8 +260,16 @@ class RelativeLerobotPolicy(Policy):
             wrong value silently mis-scales the gripper channel both ways.
         reference_width: Shared UMI reference width used at recording (0.09).
         n_action_steps: Execute at most this many steps of each chunk before
-            requesting a new one. None -> the policy config's own value
-            (the full returned chunk).
+            requesting a new one (receding horizon — the rest of the chunk is
+            discarded and a fresh one requested). None -> the policy config's
+            own value. LOWER it (e.g. 2-4) to re-observe/re-plan more often
+            when the control loop runs well below the training fps, which
+            shrinks the open-loop window that lets action bias accumulate.
+        num_inference_steps: Override the diffusion denoising steps. LOWER it
+            (e.g. 10) to speed up inference toward the training fps — the
+            single biggest lever on control-loop rate. None -> checkpoint
+            default. Verify accuracy still holds with check_policy_openloop.py
+            --num-inference-steps before trusting a low value.
         state_input: What the checkpoint's observation.state input was at
             training. "auto" (default) reads pose_repr.json next to the
             checkpoint (missing => absolute, with a warning — all checkpoints
@@ -278,6 +286,7 @@ class RelativeLerobotPolicy(Policy):
         device_max_width: float | None = None,
         reference_width: float = DEFAULT_REFERENCE_WIDTH,
         n_action_steps: int | None = None,
+        num_inference_steps: int | None = None,
         state_input: str = "auto",
         target_to_euler: bool = False,
         compose_mode: str = "coupled",
@@ -325,6 +334,12 @@ class RelativeLerobotPolicy(Policy):
         self._action_log_left = int(log_actions)
         self._requested_n_action_steps = n_action_steps
 
+        # num_inference_steps is applied worker-side as a policy-config override
+        # (setattr on the loaded policy.config, alongside any user overrides).
+        merged_overrides = dict(overrides or {})
+        if num_inference_steps is not None:
+            merged_overrides["num_inference_steps"] = int(num_inference_steps)
+
         from multiprocessing import Pipe, Process
 
         self.parent_conn, child_conn = Pipe()
@@ -334,7 +349,7 @@ class RelativeLerobotPolicy(Policy):
                 "conn": child_conn,
                 "pretrained_path": pretrained_path,
                 "state_input": state_input,
-                "overrides": overrides or {},
+                "overrides": merged_overrides,
             },
             daemon=True,
         )

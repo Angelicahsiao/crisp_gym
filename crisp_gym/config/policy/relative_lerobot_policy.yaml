@@ -19,8 +19,22 @@ device_max_width: 0.140
 # Shared UMI reference width used at recording (gripper.width_normalized).
 reference_width: 0.09
 
-# Execute at most this many steps per returned chunk before re-inferring.
-# null -> the checkpoint's own n_action_steps (full returned chunk).
+# ── control-loop rate knobs (tune these if the arm drifts at low FPS) ────────
+# The policy was trained at a fixed fps (e.g. 15). If the deploy loop runs much
+# slower (e.g. ~1 FPS from slow inference), the n_obs_steps observation window
+# spans far more real time than in training -> out-of-distribution obs -> drift.
+# Two levers:
+#
+# num_inference_steps: diffusion denoising steps. LOWER (e.g. 10) to speed up
+#   inference toward the training fps — the biggest lever on loop rate. null ->
+#   checkpoint default. Verify accuracy still holds first:
+#     python3 check_policy_openloop.py ... --num-inference-steps 10
+num_inference_steps: null
+#
+# n_action_steps: how many steps of each chunk to execute before re-planning
+#   (receding horizon; the rest of the chunk is discarded). LOWER (e.g. 2-4) to
+#   re-observe more often and shrink the open-loop window where bias accumulates.
+#   null -> the checkpoint's own n_action_steps (full returned chunk).
 n_action_steps: null
 
 # What the checkpoint's observation.state input was at training:
