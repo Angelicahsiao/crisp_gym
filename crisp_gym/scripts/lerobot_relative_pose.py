@@ -342,6 +342,47 @@ def stamp_pose_repr(cfg, dataset) -> None:
     try:
         pol = getattr(cfg, "policy", None)
         meta = getattr(dataset, "meta", None)
+
+        # Machine-readable composition of the observation.state tensor the
+        # MODEL consumes: ordered sub-key components (from the dataset's real
+        # feature layout) + the wrapper-generated wrt-start block. This is
+        # what lets a policy server / deploy client BUILD the state instead
+        # of guessing from prose. transform enum:
+        #   none | relative_to_last_obs_frame | wrt_episode_start_rotation
+        state_components = None
+        features = getattr(meta, "features", None) or {}
+        if STATE_KEY in features:
+            append_wrt = bool(getattr(dataset, "_append_wrt", True))
+            comps = []
+            for key in features:
+                if not key.startswith(STATE_KEY + ".") or key == WRT_START_KEY:
+                    continue
+                comps.append({
+                    "key": key,
+                    "dims": int(np.prod(features[key]["shape"])),
+                    "transform": (
+                        "relative_to_last_obs_frame" if key == BASE_KEY else "none"
+                    ),
+                })
+            if append_wrt:
+                comps.append({
+                    "generated": "rot_wrt_start",
+                    "dims": 6,
+                    "transform": "wrt_episode_start_rotation",
+                    "rotation_only": True,
+                    "noise_train_only": START_POSE_NOISE_SCALE,
+                })
+            total = sum(c["dims"] for c in comps)
+            state_dim = int(np.prod(features[STATE_KEY]["shape"]))
+            if total == state_dim:
+                state_components = comps
+            else:
+                logger.warning(
+                    f"state_components dims sum {total} != {STATE_KEY} dim "
+                    f"{state_dim} — omitting components from pose_repr.json "
+                    "(sub-features do not fully describe the concat)."
+                )
+
         info = {
             "pose_layout": "pos3_rot6d_rows",
             "rot6d_convention": "first_two_rows_row_major_gram_schmidt_decode",
@@ -365,6 +406,9 @@ def stamp_pose_repr(cfg, dataset) -> None:
                 # from the episode-start pose and append after all other dims.
                 "state_includes_wrt_start": True,
                 "state_layout": "[rel_pose9, gripper1(, extras...), rot_wrt_start6]",
+                # Ordered, machine-readable composition of observation.state
+                # (None when the sub-features can't fully describe the concat).
+                "state_components": state_components,
                 "wrt_start_key": WRT_START_KEY,
                 "start_pose_noise_scale": START_POSE_NOISE_SCALE,
             },

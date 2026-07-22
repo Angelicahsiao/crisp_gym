@@ -43,16 +43,24 @@ observation:
       reference_width: 0.09
       device_max_width: 0.140       # SET to your gripper (0.085 2F-85)
       model_input: "as_sent"
-    # The tensor the 0.4.4 policy ACTUALLY consumes: [cartesian9, gripper1].
-    # Server concatenates it from the two keys above.
+    # The tensor the 0.4.4 policy ACTUALLY consumes. `components` is the
+    # MACHINE-READABLE build recipe (concat the sent keys in order, applying
+    # each transform — see remote_umi_relative_state.yaml for the transform
+    # enum). OLD GENERATION: the training wrapper did NOT convert this key,
+    # so every transform is `none` — the model input is ABSOLUTE, exactly as
+    # recorded, and there is NO generated wrt-start block.
     observation.state:
-      source: concat                # server-side: [cartesian, gripper]
-      shape: [10]
+      source: concat
+      shape: [10]                   # must equal the sum of component dims
       dtype: float32
       frame: "robot_base_absolute"
-      # OLD GENERATION: the training wrapper did NOT convert this key —
-      # the server must feed it ABSOLUTE, exactly as recorded.
-      model_input: "absolute"
+      components:
+        - key: observation.state.cartesian
+          dims: 9
+          transform: none
+        - key: observation.state.gripper
+          dims: 1
+          transform: none
     observation.images.primary:
       source: camera.image
       camera: primary

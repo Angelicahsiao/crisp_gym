@@ -54,21 +54,38 @@ observation:
       reference_width: 0.09
       device_max_width: 0.140       # SET to your gripper (0.085 2F-85)
       model_input: "as_sent"
-    # The tensor the 0.4.4 policy ACTUALLY consumes (UMI 16-D parity):
-    # [rel_pose9, gripper1, rot_wrt_start6]. Server builds it from the two
-    # keys above: concat -> append wrt-start (from ABSOLUTE poses vs the
-    # episode-start pose, rotation only, NOISE OFF) -> re-express dims 0-8
-    # relative to the window's LAST frame. Order matters (wrt-start first).
+    # The tensor the 0.4.4 policy ACTUALLY consumes (UMI 16-D parity).
+    # `components` is the MACHINE-READABLE build recipe: the server
+    # concatenates the listed sent keys IN ORDER, applying each `transform`,
+    # then appends generated blocks. It must match the checkpoint's
+    # pose_repr.json `observation.state_components` (stamped from the
+    # dataset's real feature layout at training) — verify at handshake.
+    # transform enum:
+    #   none                        pass through as sent
+    #   relative_to_last_obs_frame  re-express pose9 against the window's
+    #                               newest frame (computed from ABSOLUTE
+    #                               poses BEFORE any other transform)
+    #   wrt_episode_start_rotation  generated rot6d of each frame's rotation
+    #                               wrt the episode-start pose (rotation
+    #                               only, NOISE OFF at inference; episode
+    #                               start = first observation after reset)
+    # A promoted-state checkpoint simply lists more components (e.g. joints
+    # dims 7 transform none, target dims 6 transform euler_from_rot6d).
     observation.state:
-      source: concat                # server-side: [cartesian, gripper] + wrt
-      shape: [16]
+      source: concat
+      shape: [16]                   # must equal the sum of component dims
       dtype: float32
       frame: "robot_base_absolute"  # as sent; conversions happen server-side
-      model_input: "relative_to_last_obs_frame + rot_wrt_start(6) appended"
-      wrt_start:
-        rotation_only: true         # position-wrt-start excluded (as in UMI)
-        noise: 0.0                  # training noise 0.05 is TRAIN-ONLY
-        episode_start: "first observation after reset"
+      components:
+        - key: observation.state.cartesian
+          dims: 9
+          transform: relative_to_last_obs_frame
+        - key: observation.state.gripper
+          dims: 1
+          transform: none
+        - generated: rot_wrt_start
+          dims: 6
+          transform: wrt_episode_start_rotation
     observation.images.primary:
       source: camera.image
       camera: primary

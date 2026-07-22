@@ -383,6 +383,54 @@ def test_build_obs_frame_promoted_state_with_euler_target():
     assert frame26["observation.state"].shape == (26,)
 
 
+# ── 7b. pose_repr stamp: machine-readable state composition ──────────────────
+
+def test_stamp_state_components():
+    import json
+    import tempfile
+
+    features = {
+        "observation.state.cartesian": {"shape": (9,)},
+        "observation.state.gripper": {"shape": (1,)},
+        "observation.state.joints": {"shape": (7,)},
+        "observation.state": {"shape": (23,)},  # 17 disk + 6 widened wrt
+        "observation.images.primary": {"shape": (224, 224, 3)},
+    }
+    dataset = types.SimpleNamespace(
+        meta=types.SimpleNamespace(features=features, fps=15), _append_wrt=True
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = types.SimpleNamespace(
+            output_dir=tmp,
+            policy=types.SimpleNamespace(n_obs_steps=2, horizon=16, n_action_steps=8),
+        )
+        lrp.stamp_pose_repr(cfg, dataset)
+        stamp = json.loads((Path(tmp) / "pose_repr.json").read_text())
+
+    comps = stamp["observation"]["state_components"]
+    assert [c.get("key", c.get("generated")) for c in comps] == [
+        "observation.state.cartesian", "observation.state.gripper",
+        "observation.state.joints", "rot_wrt_start",
+    ]
+    assert [c["dims"] for c in comps] == [9, 1, 7, 6]
+    assert comps[0]["transform"] == "relative_to_last_obs_frame"
+    assert comps[1]["transform"] == "none" and comps[2]["transform"] == "none"
+    assert comps[3]["transform"] == "wrt_episode_start_rotation"
+    assert sum(c["dims"] for c in comps) == 23  # matches the widened state dim
+
+    # dims mismatch (sub-features can't explain the concat) -> components omitted
+    features_bad = dict(features)
+    features_bad["observation.state"] = {"shape": (29,)}
+    dataset_bad = types.SimpleNamespace(
+        meta=types.SimpleNamespace(features=features_bad, fps=15), _append_wrt=True
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = types.SimpleNamespace(output_dir=tmp, policy=None)
+        lrp.stamp_pose_repr(cfg, dataset_bad)
+        stamp = json.loads((Path(tmp) / "pose_repr.json").read_text())
+    assert stamp["observation"]["state_components"] is None
+
+
 # ── 8. END-TO-END client loop: obs -> frame -> window -> chunk -> env.step ───
 
 def test_client_loop_end_to_end():
