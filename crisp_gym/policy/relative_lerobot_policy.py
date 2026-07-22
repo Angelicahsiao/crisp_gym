@@ -525,6 +525,16 @@ class RelativeLerobotPolicy(Policy):
             self._verify_state_dim(frame)
             self._history.append(frame)
 
+            if self._log_actions and self._action_log_left > 0:
+                # What gripper value the MODEL is being fed (must vary as the
+                # gripper moves, else the model can't learn to actuate it).
+                g_obs = float(np.asarray(frame["observation.state.gripper"]).reshape(-1)[0])
+                g_raw = float(getattr(self.env.gripper, "value", float("nan")))
+                logger.info(
+                    "[gripper-obs] fed_to_model=%.4f  (raw gripper.value=%.4f, "
+                    "env obs = 1 - value)" % (g_obs, g_raw)
+                )
+
             if self._chunk is None or self._chunk_idx >= min(
                 self.n_action_steps, len(self._chunk)
             ):
