@@ -521,6 +521,7 @@ def test_client_loop_end_to_end():
     pol.compose_mode = "coupled"
     pol.invert_gripper = False
     pol._log_actions = False
+    pol._log_actions_n = 0
     pol._action_log_left = 0
     pol.meta = {"n_obs_steps": 2, "n_action_steps": 8, "state_input":
                 "relative_wrt_start", "state_dim": 29 + 3,  # 26 disk (target 9D) + 6
@@ -572,6 +573,7 @@ def test_decoupled_composition_matches_umi_rel():
     pol.reference_width = pol.device_max_width = 0.085
     pol.invert_gripper = False
     pol._log_actions = False
+    pol._log_actions_n = 0
     pol._action_log_left = 0
 
     class _Cfg:
