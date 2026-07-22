@@ -54,8 +54,16 @@ target_to_euler: false
 # vice versa), the checkpoint's convention differs from this setting — flip it.
 compose_mode: "coupled"
 
-# Log the first N composed actions (raw EE-frame relative + resulting base-frame
-# Δposition) to diagnose which convention the checkpoint wants. 0 = off.
+# The env OBSERVATION gripper is `1 - gripper.value` but the COMMAND path
+# (_set_gripper_action -> set_target) uses `value` directly. If the model's
+# action-gripper is in the OBSERVATION convention (action gripper == obs
+# gripper, as in the MIGRATED legacy demos), set true to invert it back before
+# commanding. Symptom of it being WRONG (either way): the gripper oscillates
+# open/close every step, and the logged model grip sits near 0 while open.
+invert_gripper: false
+
+# Log the first N composed actions (model rel(EE) action + composed base-frame
+# CIC command + raw/commanded gripper) to diagnose conventions. 0 = off.
 log_actions: 0
 
 # Optional lerobot policy-config overrides, e.g. {num_inference_steps: 10}.

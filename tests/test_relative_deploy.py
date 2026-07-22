@@ -519,6 +519,7 @@ def test_client_loop_end_to_end():
     pol.device_max_width = dev
     pol.target_to_euler = False
     pol.compose_mode = "coupled"
+    pol.invert_gripper = False
     pol._log_actions = False
     pol._action_log_left = 0
     pol.meta = {"n_obs_steps": 2, "n_action_steps": 8, "state_input":
@@ -569,6 +570,7 @@ def test_decoupled_composition_matches_umi_rel():
     pol = object.__new__(rlp.RelativeLerobotPolicy)
     pol._chunk_base = T_base
     pol.reference_width = pol.device_max_width = 0.085
+    pol.invert_gripper = False
     pol._log_actions = False
     pol._action_log_left = 0
 
@@ -588,6 +590,15 @@ def test_decoupled_composition_matches_umi_rel():
     np.testing.assert_allclose(out_d[:3], action[:3] + T_base[:3, 3], atol=1e-9)
     # the two modes give DIFFERENT commands (unless base rotation is identity)
     assert np.linalg.norm(out_c[:3] - out_d[:3]) > 1e-3
+
+    # invert_gripper flips the commanded gripper (1 - a); identity ref==dev
+    pol.compose_mode = "coupled"
+    a2 = action.copy()
+    a2[-1] = 0.2
+    pol.invert_gripper = False
+    assert abs(pol._to_env_action(a2)[-1] - 0.2) < 1e-6
+    pol.invert_gripper = True
+    assert abs(pol._to_env_action(a2)[-1] - 0.8) < 1e-6
 
 
 if __name__ == "__main__":

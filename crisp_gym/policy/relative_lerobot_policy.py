@@ -281,6 +281,7 @@ class RelativeLerobotPolicy(Policy):
         state_input: str = "auto",
         target_to_euler: bool = False,
         compose_mode: str = "coupled",
+        invert_gripper: bool = False,
         log_actions: int = 0,
         overrides: dict | None = None,
     ):
@@ -316,6 +317,7 @@ class RelativeLerobotPolicy(Policy):
         self.device_max_width = float(device_max_width)
         self.target_to_euler = bool(target_to_euler)
         self.compose_mode = compose_mode
+        self.invert_gripper = bool(invert_gripper)
         self._log_actions = int(log_actions) > 0
         self._action_log_left = int(log_actions)
         self._requested_n_action_steps = n_action_steps
@@ -406,8 +408,18 @@ class RelativeLerobotPolicy(Policy):
             rot_arr = rot.as_euler("xyz")
 
         # gripper is the LAST action dim (robust to any pose-dim count).
+        # invert_gripper: the env OBSERVATION is 1 - gripper.value but the
+        # COMMAND (_set_gripper_action -> set_target) uses value directly. If
+        # the model's action-gripper is in the OBSERVATION convention (e.g.
+        # datasets where the action gripper == obs gripper at t+1, such as the
+        # migrated legacy demos), it must be inverted back before commanding,
+        # otherwise the gripper oscillates (obs=0 -> cmd close -> obs=1 ->
+        # cmd open -> ...).
+        a_grip = float(action[-1])
+        if self.invert_gripper:
+            a_grip = 1.0 - a_grip
         gripper = gripper_ref_to_device(
-            float(action[-1]), self.reference_width, self.device_max_width
+            a_grip, self.reference_width, self.device_max_width
         )
 
         if self._log_actions and self._action_log_left > 0:
@@ -424,10 +436,12 @@ class RelativeLerobotPolicy(Policy):
             #     controller tracks): composed T_cmd = base ∘ rel.
             cmd_euler = rot.as_euler("xyz")
             logger.info(
-                "[action] MODEL rel(EE)  pos=%s rot_euler=%s grip=%.4f  (dim=%d)"
+                "[action] MODEL rel(EE)  pos=%s rot_euler=%s grip=%.4f "
+                "-> cmd_grip=%.4f (invert=%s)  (dim=%d)"
                 % (np.round(action[:3], 4).tolist(),
                    np.round(rel_euler, 4).tolist(),
-                   float(action[-1]), len(action))
+                   float(action[-1]), float(gripper), self.invert_gripper,
+                   len(action))
             )
             logger.info(
                 "[action] CIC   abs(base) pos=%s rot_euler=%s grip=%.4f  "
