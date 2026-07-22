@@ -350,6 +350,39 @@ def test_worker_16d_pipeline_matches_training():
     assert frames[0]["observation.state"].shape == (10,)
 
 
+# ── 7. promoted-state frame build (legacy migrated layout) ───────────────────
+
+def test_build_obs_frame_promoted_state_with_euler_target():
+    """Legacy migrated layout: state = [cart9, grip1, joints7, target6-euler]
+    = 23-D, built from a rot6d env whose target obs is 9-D."""
+    ref = dev = 0.085  # migrated data: identity gripper conversion
+    T = _random_traj(1, seed=31)[0]
+    cart = _pose9(T).astype(np.float32)
+    Tt = _random_traj(1, seed=37)[0]
+    target9 = _pose9(Tt).astype(np.float32)
+    joints = np.linspace(-1, 1, 7).astype(np.float32)
+    obs = {
+        "observation.state.cartesian": cart,
+        "observation.state.gripper": np.array([0.6], np.float32),
+        "observation.state.joints": joints,
+        "observation.state.target": target9,
+        "observation.images.primary": np.zeros((4, 4, 3), np.uint8),
+    }
+    frame = rlp.build_obs_frame(obs, ref, dev, target_to_euler=True)
+    s = frame["observation.state"]
+    assert s.shape == (23,)
+    np.testing.assert_allclose(s[:9], cart, atol=0)          # cartesian first
+    assert abs(s[9] - 0.6) < 1e-6                            # identity gripper
+    np.testing.assert_allclose(s[10:17], joints, atol=0)     # joints untouched
+    # target: 9-D rot6d -> 6-D euler, matching scipy on the same rotation
+    np.testing.assert_allclose(s[17:20], target9[:3], atol=1e-6)
+    expected_euler = Rotation.from_matrix(Tt[:3, :3]).as_euler("xyz")
+    np.testing.assert_allclose(s[20:23], expected_euler, atol=1e-5)
+    # without the flag the target stays 9-D -> 26-D state
+    frame26 = rlp.build_obs_frame(obs, ref, dev, target_to_euler=False)
+    assert frame26["observation.state"].shape == (26,)
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

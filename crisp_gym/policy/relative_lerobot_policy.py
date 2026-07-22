@@ -170,11 +170,29 @@ def find_pose_repr(pretrained_path: str) -> dict | None:
     return None
 
 
+def target_pose9d_to_euler6d(target9: np.ndarray) -> np.ndarray:
+    """9-D [pos3, rot6d] target -> 6-D [pos3, euler_xyz] (legacy state layout).
+
+    Datasets migrated from the old Euler recorder keep the observation.state
+    TARGET sub-key in Euler (the migration converts only the cartesian obs);
+    a rot6d deploy env emits the target as 9-D, so it must be converted back
+    to match the trained layout.
+    """
+    from scipy.spatial.transform import Rotation
+
+    from crisp_gym.util.rot6d import rot6d_to_mat
+
+    t = np.asarray(target9, dtype=np.float64).reshape(-1)
+    euler = Rotation.from_matrix(rot6d_to_mat(t[3:9])).as_euler("xyz")
+    return np.concatenate([t[:3], euler]).astype(np.float32)
+
+
 def build_obs_frame(
     obs_raw: dict,
     reference_width: float,
     device_max_width: float,
     image_keys: List[str] | None = None,
+    target_to_euler: bool = False,
 ) -> dict:
     """One history frame from a raw env observation, in TRAINING units.
 
@@ -207,6 +225,8 @@ def build_obs_frame(
             part = np.array([g_ref], dtype=np.float32)
         elif key == "observation.state.cartesian":
             part = cart
+        elif key == "observation.state.target" and target_to_euler:
+            part = target_pose9d_to_euler6d(np.asarray(value))
         else:
             part = np.asarray(value, dtype=np.float32).reshape(-1)
         frame[key] = part
@@ -252,6 +272,7 @@ class RelativeLerobotPolicy(Policy):
         reference_width: float = DEFAULT_REFERENCE_WIDTH,
         n_action_steps: int | None = None,
         state_input: str = "auto",
+        target_to_euler: bool = False,
         overrides: dict | None = None,
     ):
         if state_input not in ("auto", "absolute", "relative", "relative_wrt_start"):
@@ -278,6 +299,7 @@ class RelativeLerobotPolicy(Policy):
         self.env = env
         self.reference_width = float(reference_width)
         self.device_max_width = float(device_max_width)
+        self.target_to_euler = bool(target_to_euler)
         self._requested_n_action_steps = n_action_steps
 
         from multiprocessing import Pipe, Process
@@ -384,10 +406,12 @@ class RelativeLerobotPolicy(Policy):
                 "components (observations_to_include_to_state / sensors) and "
                 "representations as the RECORDING env of the training dataset "
                 "— compare with the dataset's info.json "
-                "features['observation.state']['names']. If the wrt-start "
-                "+6 is wrong for this checkpoint, a stale pose_repr.json from "
-                "another run may sit in a parent directory of --path; override "
-                "with state_input: 'absolute' or 'relative'."
+                "features['observation.state']['names']. For datasets migrated "
+                "from the Euler recorder, the state's target sub-key stayed "
+                "6-D Euler — set target_to_euler: true in the policy config. "
+                "If the wrt-start +6 is wrong for this checkpoint, a stale "
+                "pose_repr.json from another run may sit in a parent directory "
+                "of --path; override with state_input: 'absolute' or 'relative'."
             )
 
     # ── Policy interface ──────────────────────────────────────────────────────
@@ -402,6 +426,7 @@ class RelativeLerobotPolicy(Policy):
                 self.reference_width,
                 self.device_max_width,
                 image_keys=self.meta.get("image_keys"),
+                target_to_euler=self.target_to_euler,
             )
             self._verify_state_dim(frame)
             self._history.append(frame)

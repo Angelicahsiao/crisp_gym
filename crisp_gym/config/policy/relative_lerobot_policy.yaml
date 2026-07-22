@@ -35,5 +35,12 @@ n_action_steps: null
 #               episode start = first obs after each reset
 state_input: "auto"
 
+# Datasets MIGRATED from the legacy Euler recorder keep the observation.state
+# TARGET sub-key in 6-D Euler (the migration converts only the cartesian obs).
+# A rot6d deploy env emits the target as 9-D — set true to convert it back to
+# 6-D Euler so the state layout matches training. Leave false for datasets
+# recorded natively with rot6d record configs.
+target_to_euler: false
+
 # Optional lerobot policy-config overrides, e.g. {num_inference_steps: 10}.
 # overrides: {}
