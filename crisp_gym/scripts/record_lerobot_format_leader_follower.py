@@ -8,10 +8,19 @@ import numpy as np
 import rclpy
 
 import crisp_gym  # noqa: F401
-from crisp_gym.config.home import HomeConfig
+from crisp_gym.config.home import home_for_env
 from crisp_gym.envs.manipulator_env import ManipulatorCartesianEnv, make_env, ManipulatorJointEnv
 from crisp_gym.envs.manipulator_env_config import list_env_configs, FrankaEnvConfig
-from crisp_gym.record.record_functions import make_teleop_fn, make_teleop_streamer_fn
+from crisp_gym.record.record_config import RecordConfig
+from crisp_gym.record.record_functions import (
+    make_factr_drive_fn,
+    make_record_fn,
+    make_streamer_drive_fn,
+    make_teleop_drive_fn,
+    make_teleop_fn,
+    make_teleop_streamer_fn,
+)
+from crisp_gym.teleop.teleop_factr_stream import FACTRStreamedJoints
 from crisp_gym.record.recording_manager import make_recording_manager
 from crisp_gym.teleop.teleop_robot import TeleopRobot, make_leader
 from crisp_gym.teleop.teleop_robot_config import list_leader_configs
@@ -64,8 +73,8 @@ def main():
     parser.add_argument(
         "--push-to-hub",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Whether to push the dataset to the Hugging Face Hub.",
+        default=False,
+        help="Whether to push the dataset to the Hugging Face Hub. Default: off (pass --push-to-hub to enable).",
     )
     parser.add_argument(
         "--recording-manager-type",
@@ -111,6 +120,34 @@ def main():
     )
 
     parser.add_argument(
+        "--record-config",
+        type=str,
+        default=None,
+        help=(
+            "Optional RecordConfig YAML (data contract). When given, the "
+            "config-driven generic recorder is used (e.g. "
+            "config/recording/umi_robot_record.yaml records UMI-style actions "
+            "= measured TCP pose[t+1] while the teleop still drives the robot). "
+            "When omitted, the legacy command-recording behavior is kept."
+        ),
+    )
+    parser.add_argument(
+        "--use-factr",
+        action="store_true",
+        help=(
+            "Use a FACTR leader arm (joint-space teleop) to drive the follower. "
+            "Requires --joint-control and --record-config (the config-driven "
+            "recorder; e.g. umi_robot_record.yaml to store UMI-style measured "
+            "TCP actions while FACTR drives the joints)."
+        ),
+    )
+    parser.add_argument(
+        "--factr-name",
+        type=str,
+        default="right",
+        help="FACTR arm name used in the topic prefix (default: right).",
+    )
+    parser.add_argument(
         "--use-streamed-teleop",
         action="store_true",
         help="Whether to use streamed teleop (e.g., from a phone or VR device) for the leader robot.",
@@ -140,14 +177,14 @@ def main():
         )
         logger.info(f"Using follower namespace: {args.follower_namespace}")
 
-    if args.leader_namespace is None and not args.use_streamed_teleop:
+    if args.leader_namespace is None and not args.use_streamed_teleop and not args.use_factr:
         args.leader_namespace = prompt.prompt(
             "Please enter the leader robot namespace (e.g., 'left', 'right', ...)",
             default="left",
         )
         logger.info(f"Using leader namespace: {args.leader_namespace}")
 
-    if args.leader_config is None and not args.use_streamed_teleop:
+    if args.leader_config is None and not args.use_streamed_teleop and not args.use_factr:
         leader_configs = list_leader_configs()
         args.leader_config = prompt.prompt(
             "Please enter the leader robot configuration name.",
@@ -170,15 +207,10 @@ def main():
         # Set up Franka's custom environment config
         CTRL_FREQ = 50
         BASE_DIR = Path(crisp_gym.__file__).parent
+        # NOTE: CTRL_FREQ is decoupled from --fps by design here (control loop
+        # vs record rate); see HANDOFF known issues before changing.
         env_config = FrankaEnvConfig(control_frequency=CTRL_FREQ, gripper_config=None, camera_configs=[])
-        # env_config.cartesian_control_param_config = str(
-        #     BASE_DIR / "config/control/default_cartesian_impedance.yaml"
-        # )
-        # env_config.joint_control_param_config = str(
-        #     BASE_DIR / "config/control/joint_control.yaml"
-        # )
         ctrl_type = "cartesian" if not args.joint_control else "joint"
-        print("change path")
         # Choose the environment based on joint or cartesian control
         if args.joint_control:  # If joint control is enabled
             env = ManipulatorJointEnv(namespace=args.follower_namespace, config=env_config)
@@ -193,18 +225,28 @@ def main():
             control_type=ctrl_type,
             namespace=args.follower_namespace,
         )
-        print("Cartesian config:",
-            env.config.cartesian_control_param_config)
-
-        print("Joint config:",
-            env.config.joint_control_param_config)
-        print("Config class:", type(env.config))
-        print("Your env_type:", args.follower_config)
+        logger.debug(
+            "env %s: cartesian=%s joint=%s",
+            args.follower_config,
+            env.config.cartesian_control_param_config,
+            env.config.joint_control_param_config,
+        )
 
     try:
 
-        leader: TeleopRobot | TeleopStreamedPose | None = None
-        if args.use_streamed_teleop:
+        leader: TeleopRobot | TeleopStreamedPose | FACTRStreamedJoints | None = None
+        if args.use_factr:
+            if not args.joint_control:
+                raise ValueError("--use-factr requires --joint-control (FACTR drives joints).")
+            if args.record_config is None:
+                raise ValueError(
+                    "--use-factr requires --record-config (config-driven recorder), "
+                    "e.g. config/recording/umi_robot_record.yaml."
+                )
+            leader = FACTRStreamedJoints(name=args.factr_name)
+            leader.wait_until_ready()
+            logger.info("Using FACTR leader arm. FACTR stream is ready.")
+        elif args.use_streamed_teleop:
             leader = TeleopStreamedPose()
             logger.info("Using streamed teleop for the leader robot.")
         else:
@@ -212,8 +254,21 @@ def main():
             leader.wait_until_ready()
             logger.info("Using teleop robot for the leader robot. Leader is ready.")
 
-        keys_to_ignore = []
-        features = get_features(env=env, ignore_keys=keys_to_ignore, fps=args.fps)
+        record_config = None
+        if args.record_config is not None:
+            record_config = RecordConfig.from_yaml(args.record_config)
+            logger.info(f"Using record config contract '{record_config.name}'")
+            if float(args.fps) != float(record_config.rate_hz):
+                raise ValueError(
+                    f"--fps {args.fps} != record config rate_hz "
+                    f"{record_config.rate_hz}. Align them (part of the data contract)."
+                )
+            features = record_config.to_features(
+                joint_count=env.config.robot_config.num_joints()
+            )
+        else:
+            keys_to_ignore = []
+            features = get_features(env=env, ignore_keys=keys_to_ignore, fps=args.fps)
         logger.debug(f"Using the features: {features}")
 
         if args.use_streamed_teleop and ctrl_type != "cartesian":
@@ -239,6 +294,13 @@ def main():
         with open(recording_manager.dataset_directory / "meta" / "crisp_meta.json", "w") as f:
             json.dump(env_metadata, f, indent=4)
 
+        if record_config is not None:
+            with open(
+                recording_manager.dataset_directory / "meta" / "record_config.json", "w"
+            ) as f:
+                json.dump(record_config.to_metadata(), f, indent=4)
+            logger.info("Record contract saved to meta/record_config.json")
+
         logger.info(
             f"Environment metadata saved to {recording_manager.dataset_directory / 'meta' / 'crisp_meta.json'}"
         )
@@ -252,11 +314,11 @@ def main():
 
         env.wait_until_ready()
         logger.debug("[DEBUG] env.wait_until_ready() done")
-        env.home(home_config=HomeConfig.CLOSE_TO_TABLE.randomize(noise=args.home_config_noise))
+        env.home(home_config=home_for_env(
+            env, "close_to_table", noise=args.home_config_noise))
         logger.debug("[DEBUG] env.home() done")
-        print("HomeConfig:", HomeConfig.CLOSE_TO_TABLE.randomize(noise=args.home_config_noise))
-        print("HomeConfig:", HomeConfig.OPEN_POSE.randomize(noise=args.home_config_noise))
-        env.home(home_config=HomeConfig.OPEN_POSE.randomize(noise=args.home_config_noise))
+        env.home(home_config=home_for_env(
+            env, "open_pose", noise=args.home_config_noise))
         env.reset()
         logger.debug("[DEBUG] env.reset() done")
 
@@ -284,13 +346,22 @@ def main():
         def on_end():
             """Hook function to be called when stopping the recording."""
             env.robot.reset_targets()
-            random_home = HomeConfig.OPEN_POSE.randomize(noise=args.home_config_noise)
+            # Per-robot pose: env YAML named_home_configs["open_pose"] first,
+            # legacy Franka HomeConfig only when the joint count matches, else
+            # the robot's own home_config (a mismatched trajectory is silently
+            # rejected by the controller -> the robot never homed on UR).
+            random_home = home_for_env(env, "open_pose", noise=args.home_config_noise)
             env.robot.home(blocking=False, home_config=random_home)
             if isinstance(leader, TeleopRobot):
                 leader.robot.reset_targets()
                 # Activate incase leader should go to the same position as the follower
                 # leader.robot.home(blocking=False, home_config=random_home)
                 leader.robot.home(blocking=False)
+            elif isinstance(leader, FACTRStreamedJoints):
+                # Ask the FACTR leader node (external) to home too, passing the
+                # follower's (noise-randomized) home pose so both arms end up
+                # at the SAME configuration each episode.
+                leader.send_home(home_config=random_home)
             env.gripper.open()
 
         with recording_manager:
@@ -301,7 +372,23 @@ def main():
 
                 # Create a new teleop function for each episode to reset internal variables
                 teleop_fn = None
-                if isinstance(leader, TeleopRobot):
+                if record_config is not None:
+                    # Config-driven recorder: teleop only drives, the record
+                    # config decides what is stored (e.g. UMI next_tcp_pose).
+                    if isinstance(leader, FACTRStreamedJoints):
+                        drive_fn = make_factr_drive_fn(leader)
+                    elif isinstance(leader, TeleopRobot):
+                        drive_fn = make_teleop_drive_fn(env, leader)
+                    elif isinstance(leader, TeleopStreamedPose) and isinstance(
+                        env, ManipulatorCartesianEnv
+                    ):
+                        drive_fn = make_streamer_drive_fn(env, leader)
+                    else:
+                        raise ValueError(
+                            "Streamed teleop is only compatible with Cartesian control."
+                        )
+                    teleop_fn = make_record_fn(env, record_config, drive_fn=drive_fn)
+                elif isinstance(leader, TeleopRobot):
                     teleop_fn = make_teleop_fn(env, leader)
                 elif isinstance(leader, TeleopStreamedPose) and isinstance(
                     env, ManipulatorCartesianEnv
@@ -325,6 +412,9 @@ def main():
         if isinstance(leader, TeleopRobot):
             logger.info("Homing leader.")
             leader.robot.home()
+        elif isinstance(leader, FACTRStreamedJoints):
+            logger.info("Requesting FACTR leader home.")
+            leader.send_home(home_config=list(env.robot.config.home_config))
         logger.info("Homing follower.")
         env.home()
 

@@ -24,6 +24,15 @@ ninja = "*"
 typing_inspect = ">=0.9.0,<0.10"
 libstdcxx-ng = ">=12.2.0"
 typing-extensions = ">=4.14.0,<5"
+# pinocchio is NOT here on purpose: it exists only on conda-forge (not
+# robostack), so requiring it forced the shared scientific stack to resolve
+# from conda-forge — which pulled conda-forge's numpy-2-built scipy and broke
+# it under the robostack numpy 1.26 (the _spropack ImportError). The external
+# joint-effort estimator that needs pinocchio is being relocated to a robot
+# bring-up node (crisp_controllers_demos); crisp_gym only consumes its topic.
+# NOTE: scipy is pinned per-ROS-feature (see [feature.humble.dependencies]),
+# NOT here — it must come from the robostack channel so its build matches the
+# robostack numpy (1.26).
 
 
 [target.linux.dependencies]
@@ -66,6 +75,15 @@ ros-humble-ros2-controllers = "*"
 rosdep = "*"
 ros-humble-rmw-cyclonedds-cpp = "*"
 ros-humble-image-transport-plugins = "*"
+# scipy is DELIBERATELY NOT a conda dependency here. conda-forge's scipy is
+# built against numpy 2.x; forcing it into this env (which uses robostack's
+# numpy 1.26) yields the _spropack ImportError. crisp_py's working humble env
+# proves the fix: it has NO conda scipy — scipy is pulled as a PyPI manylinux
+# wheel (via uv, satisfying lerobot's `scipy==1.15.3` pin). PyPI scipy wheels
+# are built for numpy-ABI compatibility and coexist fine with conda numpy 1.26.
+# So: let lerobot's pip requirement provide scipy from PyPI; do not add a conda
+# scipy (or a numpy pin) here. robostack's ros-humble-desktop already fixes
+# numpy at 1.26.
 
 [feature.jazzy]
 channels = ["https://prefix.dev/robostack-jazzy"]
@@ -81,7 +99,14 @@ ros-jazzy-rmw-zenoh-cpp = "*"
 
 [pypi-dependencies]
 crisp_gym = { path = ".", editable = true }
-# crisp_python = { path = "../crisp_py", editable = true }
+# Use the LOCAL crisp_py checkout (editable) rather than the PyPI `crisp_python`
+# wheel that `crisp_gym`'s pyproject pin (crisp_python>=3.0.0,<4) would otherwise
+# resolve. The published wheel lags this repo — e.g. it predates RobotConfig's
+# `has_effort_feedback` field (added in crisp_py d7e45d5), so recording configs
+# that set `has_effort_feedback: true` crash with
+# `URConfig.__init__() got an unexpected keyword argument 'has_effort_feedback'`.
+# The path override satisfies the same `crisp_python` requirement from source.
+crisp_python = { path = "../crisp_py", editable = true }
 
 [tasks]
 configure = "bash scripts/configure.sh"

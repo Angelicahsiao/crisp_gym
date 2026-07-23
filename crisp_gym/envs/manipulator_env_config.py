@@ -97,6 +97,25 @@ class ManipulatorEnvConfig(ABC):
 
     max_episode_steps: int | None = None  # FIXME: This is not used. Remove?
 
+    # === Controller flexibility ===
+    # Map control mode ("cartesian" / "joint") to the ros2_control controller
+    # name to switch to. Unset entries fall back to the robot_config's
+    # controller-name fields (crisp_py RobotConfig), then to legacy defaults.
+    controller_names: dict = field(default_factory=dict)
+    # Controllers that must be loaded in the controller manager before the env
+    # reports ready. None (default) = only the controller for this env's own
+    # control mode. Set explicitly for setups needing more (e.g. a trajectory
+    # controller for homing).
+    required_controllers: List[str] | None = None
+
+    # === Named home poses (per-robot) ===
+    # Joint configurations for THIS robot, keyed by pose name (e.g.
+    # "close_to_table", "open_pose"). The recording scripts look here FIRST;
+    # if a name is absent they fall back to the legacy Franka HomeConfig enum
+    # (only when its joint count matches) and finally to the robot_config's
+    # own home_config. Lengths must equal the robot's joint count.
+    named_home_configs: dict = field(default_factory=dict)
+
     # Observation configuration (camera and sensor observations are always included if configured)
     observations_to_include_to_state: List[str] = field(
         default_factory=lambda: [
@@ -167,6 +186,7 @@ class ManipulatorEnvConfig(ABC):
             OrientationRepresentation.EULER,
             OrientationRepresentation.QUATERNION,
             OrientationRepresentation.ANGLE_AXIS,
+            OrientationRepresentation.ROTATION_6D,
         ]
         if self.orientation_representation not in supported_representations:
             raise ValueError(
@@ -206,7 +226,9 @@ class ManipulatorEnvConfig(ABC):
             "gripper_threshold": self.gripper_threshold,
             "cartesian_control_param_config": str(self.cartesian_control_param_config),
             "joint_control_param_config": str(self.joint_control_param_config),
-            "orientation_representation": str(self.orientation_representation),
+            "orientation_representation": getattr(
+                self.orientation_representation, "value", str(self.orientation_representation)
+            ),
             "use_relative_actions": self.use_relative_actions,
         }
 

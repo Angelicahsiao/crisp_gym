@@ -268,7 +268,63 @@ class ManipulatorBaseEnv(gym.Env):
                 file_path=self.config.joint_control_param_config
             )
 
-    _REQUIRED_CONTROLLERS = ["joint_trajectory_controller", "cartesian_impedance_controller"]
+    # Legacy fallback names, used only when neither the env config's
+    # controller_names mapping nor the robot config provides a name.
+    _LEGACY_CONTROLLER_NAMES = {
+        ControlType.CARTESIAN: "cartesian_impedance_controller",
+        ControlType.JOINT: "joint_impedance_controller",
+    }
+
+    def controller_name_for(self, control_type: "str | ControlType") -> str:
+        """Resolve the ros2_control controller name for a control mode.
+
+        Resolution order (configuration is the single source of truth):
+        1. env config `controller_names` mapping ({"cartesian": ..., "joint": ...})
+        2. robot config fields (crisp_py RobotConfig:
+           cartesian_impedance_controller_name / joint_trajectory_controller_name)
+        3. legacy hardcoded defaults (backwards compatible).
+        """
+        ctrl = (
+            ControlType.from_string(control_type)
+            if isinstance(control_type, str)
+            else control_type
+        )
+        configured = self.config.controller_names.get(ctrl.value)
+        if configured:
+            return configured
+        robot_cfg = self.config.robot_config
+        if ctrl is ControlType.CARTESIAN:
+            name = getattr(robot_cfg, "cartesian_impedance_controller_name", None)
+            if name:
+                return name
+        elif ctrl is ControlType.JOINT:
+            name = getattr(robot_cfg, "joint_trajectory_controller_name", None)
+            if name:
+                return name
+        if ctrl in self._LEGACY_CONTROLLER_NAMES:
+            return self._LEGACY_CONTROLLER_NAMES[ctrl]
+        raise ValueError(f"No controller available for control type: {ctrl.value}")
+
+    @property
+    def required_controllers(self) -> list[str]:
+        """Controllers that must exist before the env reports ready.
+
+        Explicit env config `required_controllers` wins; otherwise the
+        controller for this env's own control mode plus the homing controller
+        (robot config home_controller_name) — homing is used between episodes,
+        so its absence should fail fast at startup, not at the first home().
+        """
+        if self.config.required_controllers is not None:
+            return list(self.config.required_controllers)
+        required: list[str] = []
+        if self.ctrl_type is not ControlType.UNDEFINED:
+            required.append(self.controller_name_for(self.ctrl_type))
+        home_controller = getattr(
+            self.config.robot_config, "home_controller_name", "joint_trajectory_controller"
+        )
+        if home_controller and home_controller not in required:
+            required.append(home_controller)
+        return required
 
     def wait_until_ready(self):
         """Wait until the robot, gripper, cameras, and sensors are ready."""
@@ -306,7 +362,7 @@ class ManipulatorBaseEnv(gym.Env):
             controllers = self.robot.controller_switcher_client.get_controller_list()
             controller_names = [c.name for c in controllers]
             missing = [
-                name for name in self._REQUIRED_CONTROLLERS if name not in controller_names
+                name for name in self.required_controllers if name not in controller_names
             ]
             if not missing:
                 logger.debug("All required controllers are loaded.")
@@ -511,7 +567,7 @@ class ManipulatorBaseEnv(gym.Env):
                 controllers_that_should_be_active.append(topic_segments[-2])
 
         self.robot.controller_switcher_client.switch_controller(
-            desired_ctrl_type.controller_name(),
+            self.controller_name_for(desired_ctrl_type),
             controllers_that_should_be_active=controllers_that_should_be_active,
         )
 
@@ -586,7 +642,8 @@ class ManipulatorBaseEnv(gym.Env):
         """Get the dimension of the rotation representation.
 
         Returns:
-            int: The dimension of the rotation (3 for Euler/AngleAxis, 4 for Quaternion).
+            int: The dimension of the rotation (3 for Euler/AngleAxis, 4 for
+            Quaternion, 6 for Rotation6D).
         """
         if self.config.orientation_representation == OrientationRepresentation.EULER:
             return 3
@@ -594,6 +651,8 @@ class ManipulatorBaseEnv(gym.Env):
             return 4
         elif self.config.orientation_representation == OrientationRepresentation.ANGLE_AXIS:
             return 3
+        elif self.config.orientation_representation == OrientationRepresentation.ROTATION_6D:
+            return 6
         else:
             raise ValueError(
                 f"Unsupported orientation representation: {self.config.orientation_representation}"
@@ -614,6 +673,13 @@ class ManipulatorBaseEnv(gym.Env):
             return Rotation.from_quat(rot_action)
         elif self.config.orientation_representation == OrientationRepresentation.ANGLE_AXIS:
             return Rotation.from_rotvec(rot_action)
+        elif self.config.orientation_representation == OrientationRepresentation.ROTATION_6D:
+            # First two rows of R (UMI/pytorch3d convention), Gram-Schmidt.
+            a1, a2 = np.asarray(rot_action[:3], float), np.asarray(rot_action[3:6], float)
+            b1 = a1 / np.linalg.norm(a1)
+            b2 = a2 - np.dot(b1, a2) * b1
+            b2 = b2 / np.linalg.norm(b2)
+            return Rotation.from_matrix(np.stack([b1, b2, np.cross(b1, b2)]))
         else:
             raise ValueError(
                 f"Unsupported orientation representation: {self.config.orientation_representation}"

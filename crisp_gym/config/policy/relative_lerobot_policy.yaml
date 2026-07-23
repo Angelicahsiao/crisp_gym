@@ -1,0 +1,86 @@
+# Local (in-process) deployment of a relative-pose rot6d checkpoint trained
+# with scripts/lerobot_relative_pose.py — for VERIFYING the model without the
+# websocket server. Requires the robot machine's lerobot version to match the
+# training version (0.4.4). Canonical long-term path: remote_policy
+# (REMOTE_INFERENCE.md).
+#
+# Use with a deploy env config (rotation_6d + use_relative_actions: false),
+# e.g. config/envs/ur7e_robotiq_deploy_umi.yaml:
+#   python -m crisp_gym.scripts.deploy_policy \
+#       --env-config ur7e_robotiq_deploy_umi \
+#       --policy-config relative_lerobot_policy --path <.../pretrained_model>
+name: "relative_lerobot_policy"
+
+# Physical gripper width in meters at Gripper.value = 1.0 — REQUIRED, must
+# match the record config's device_max_width:
+#   0.140 Robotiq 2F-140 | 0.085 Robotiq 2F-85 | 0.08 Franka Hand
+device_max_width: 0.140
+
+# Shared UMI reference width used at recording (gripper.width_normalized).
+reference_width: 0.09
+
+# ── control-loop rate knobs (tune these if the arm drifts at low FPS) ────────
+# The policy was trained at a fixed fps (e.g. 15). If the deploy loop runs much
+# slower (e.g. ~1 FPS from slow inference), the n_obs_steps observation window
+# spans far more real time than in training -> out-of-distribution obs -> drift.
+# Two levers:
+#
+# num_inference_steps: diffusion denoising steps. LOWER (e.g. 10) to speed up
+#   inference toward the training fps — the biggest lever on loop rate. null ->
+#   checkpoint default. Verify accuracy still holds first:
+#     python3 check_policy_openloop.py ... --num-inference-steps 10
+num_inference_steps: null
+#
+# n_action_steps: how many steps of each chunk to execute before re-planning
+#   (receding horizon; the rest of the chunk is discarded). LOWER (e.g. 2-4) to
+#   re-observe more often and shrink the open-loop window where bias accumulates.
+#   null -> the checkpoint's own n_action_steps (full returned chunk).
+n_action_steps: null
+
+# What the checkpoint's observation.state input was at training:
+#   auto     -> read pose_repr.json next to the checkpoint (missing => absolute
+#               — all checkpoints trained before the wrapper converted
+#               observation.state saw ABSOLUTE state input)
+#   absolute -> send the state as recorded (oldest checkpoints, 10-D)
+#   relative -> convert the obs window against its last frame before inference
+#               (post-fix checkpoints without wrt-start, 10-D)
+#   relative_wrt_start -> additionally append the wrt-start rot6d computed
+#               from the episode-start pose (UMI 16-D parity; noise off);
+#               episode start = first obs after each reset
+state_input: "auto"
+
+# Datasets MIGRATED from the legacy Euler recorder keep the observation.state
+# TARGET sub-key in 6-D Euler (the migration converts only the cartesian obs).
+# A rot6d deploy env emits the target as 9-D — set true to convert it back to
+# 6-D Euler so the state layout matches training. Leave false for datasets
+# recorded natively with rot6d record configs.
+target_to_euler: false
+
+# How the relative action's POSITION is composed with the current TCP pose:
+#   coupled   -> T_cmd = T_base @ T_rel (UMI 'relative'): the relative position
+#                is in the EE/body frame — a +z action moves along the EE z
+#                axis. This is what lerobot_relative_pose.py trains with.
+#   decoupled -> T_cmd position = T_base_position + action_position (UMI 'rel'):
+#                the relative position is a BASE-frame delta — a +z action
+#                moves along the ROBOT-BASE z axis. Only for checkpoints
+#                trained with action_pose_repr: rel.
+# If the robot moves along the base axes when you expect EE-frame motion (or
+# vice versa), the checkpoint's convention differs from this setting — flip it.
+compose_mode: "coupled"
+
+# The env OBSERVATION gripper is `1 - gripper.value` but the COMMAND path
+# (_set_gripper_action -> set_target) uses `value` directly. If the model's
+# action-gripper is in the OBSERVATION convention (action gripper == obs
+# gripper, as in the MIGRATED legacy demos), set true to invert it back before
+# commanding. Symptom of it being WRONG (either way): the gripper oscillates
+# open/close every step, and the logged model grip sits near 0 while open.
+invert_gripper: false
+
+# Log the first N steps of EVERY action chunk (model rel(EE) action + composed
+# base-frame CIC command + T_base + raw/commanded gripper + gripper obs) to
+# diagnose conventions. Re-armed each new inference, so later chunks log too.
+# 0 = off.
+log_actions: 0
+
+# Optional lerobot policy-config overrides, e.g. {num_inference_steps: 10}.
+# overrides: {}

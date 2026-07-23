@@ -1,0 +1,49 @@
+# FACTR leader → Franka FR3 + Robotiq 2F-85 JOINT teleoperation environment.
+#
+# Companion to examples/10_factr_franka_robotiq_teleop.py — the Franka analogue
+# of ur7e_robotiq.yaml (which backs examples/09_factr_ur7e_teleop.py).
+#
+# Gripper values mirror config/envs/dric_wrist_cam_franka.yaml (the reference
+# Franka + Robotiq 2F-85 setup) via the shared, namespaced gripper config.
+#
+# No cameras on purpose: joint teleop does not need them, and declaring a
+# RealSense here would make env.wait_until_ready() block until the camera
+# publishes. Add camera_configs (see dric_wrist_cam_franka.yaml) if you also
+# want image observations.
+control_frequency: 30.0
+
+robot_config:
+  robot_type: "franka"
+  # FR3 publishes joint effort on /joint_states. As in the UR7e example, FACTR
+  # can subscribe to that directly for force feedback; here it also surfaces the
+  # effort as an environment observation.
+  has_effort_feedback: true
+  # 7 joints (FR3). Copied from dric_wrist_cam_franka.yaml — replace with your
+  # own home if your workcell differs.
+  home_config:
+  - 0.425725623070977
+  - -0.013800044320084788
+  - -0.33286129072276527
+  - -2.7729492382868126
+  - 0.10167396715537252
+  - 4.262024898082136
+  - -0.021739227284989265
+
+# Robotiq 2F-85 on the /robotiq_2f85 namespace (dric setups). This shared config
+# carries min_value/max_value, the GripperCommand action topic, max_delta and
+# max_effort, and torque_interface: false (no Dynamixel reboot/torque services).
+gripper_config:
+  from_yaml: "grippers/gripper_robotiq_2f85_namespaced.yaml"
+
+# Continuous FACTR trigger [0=open, 1=closed] → continuous gripper target, same
+# as the UR7e example. Use "absolute_binary" instead for open/close-only.
+gripper_mode: "absolute_continuous"
+gripper_threshold: 0.1
+
+camera_configs: []
+sensor_configs: []
+
+# Franka defaults (same files FrankaEnvConfig would apply). The generic YAML
+# env class does not inject these, so set them explicitly for joint teleop.
+cartesian_control_param_config: "control/default_cartesian_impedance.yaml"
+joint_control_param_config: "control/joint_control.yaml"

@@ -1,0 +1,109 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# RecordConfig — ALL available parameters, documented.
+#
+# A record config declares WHAT goes into the dataset, independent of HOW the
+# robot is driven (leader arm, FACTR joints, phone, OptiTrack handheld).
+# It is the dataset's DATA CONTRACT: the resolved config is stamped into
+# meta/record_config.json, and the training wrapper refuses to mix datasets
+# whose contracts differ on rate_hz, action definition, or observation specs.
+#
+# Load with:  RecordConfig.from_yaml("...")   (crisp_gym/record/record_config.py)
+# Use with:   make_record_fn(env, record_config, drive_fn=...)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Free-text name, stored in metadata. Default: the YAML filename stem.
+name: "example"
+
+# Recording rate in Hz. Part of the data contract: with next_* action
+# definitions, action[t] means "pose 1/rate_hz * lookahead seconds ahead" —
+# datasets with different rates train different dynamics. Default: 15.0
+rate_hz: 15.0
+
+# ── observations ─────────────────────────────────────────────────────────────
+# List of dataset columns. Each entry:
+#   key:              dataset column name (LeRobot convention:
+#                     observation.state.* for state, observation.images.* for cams)
+#   source:           provider name (registry in record_config.py):
+#                       robot.tcp_pose            measured TCP pose
+#                       robot.joint_positions     measured joint positions
+#                       gripper.width_normalized  gripper opening in [0,1]
+#                       camera.image              one camera frame
+#                     (extend with @register_source("your.name") — new sources
+#                     need no changes to the recording loop)
+#   include_in_state: whether this column is concatenated into the combined
+#                     observation.state vector fed to policies. Default: true.
+#                     Set false for debug-only columns (they are still saved).
+#   shape:            required for camera.image ([H, W, C]) and any source
+#                     whose dim cannot be derived; optional otherwise.
+#
+# Source-specific parameters (any extra key on the entry is passed to the
+# provider):
+#   robot.tcp_pose:
+#     representation: euler(6) | angle_axis(6) | quaternion(7) | rotation_6d(9)
+#                     rotation_6d = first two ROWS of R, UMI/pytorch3d
+#                     convention — recommended for learning. Default: rotation_6d
+#   gripper.width_normalized:
+#     reference_width:  SHARED physical width (meters) that maps to 1.0 across
+#                       ALL devices recording for the same policy. null/omitted
+#                       = record the device's raw calibrated [0,1] value
+#                       (NOT comparable across different grippers!).
+#     device_max_width: physical opening (meters) of THIS device when its raw
+#                       value reads 1.0. Required on robot grippers when
+#                       reference_width is set (handheld env derives it from
+#                       its own max_gripper_width).
+#   camera.image:
+#     camera: the camera_name from the env's camera_configs.
+observations:
+  - key: observation.state.cartesian
+    source: robot.tcp_pose
+    representation: rotation_6d
+
+  - key: observation.state.gripper
+    source: gripper.width_normalized
+    reference_width: 0.09          # 9 cm == 1.0 for every device in this project
+    device_max_width: 0.140        # e.g. Robotiq 2F-140 (omit for handheld env)
+
+  - key: observation.images.primary
+    source: camera.image
+    camera: primary
+    shape: [224, 224, 3]
+
+  # Example: extra column kept out of the policy state (debug/analysis only).
+  # MUST use the "extra." prefix: LeRobot feeds every observation.* key to the
+  # policy regardless of include_in_state (validate() rejects the combination).
+  - key: extra.joints
+    source: robot.joint_positions
+    shape: [7]
+    include_in_state: false
+
+# ── action ───────────────────────────────────────────────────────────────────
+# definition — the MEANING of the action column (closed set, on purpose):
+#   next_tcp_pose        UMI convention. action[t] = MEASURED TCP pose at
+#                        t+lookahead, absolute, in `representation`, plus
+#                        gripper if include_gripper. Identical for handheld
+#                        and robot recording -> datasets are mixable.
+#   command              classic crisp_gym. action[t] = the command vector the
+#                        drive_fn sent to the robot this tick (delta pose,
+#                        joint delta, ... — document via command_semantics).
+#                        Requires: command_dim; drive_fn must be provided.
+#   next_joint_positions action[t] = measured joint positions at t+lookahead
+#                        (+ gripper if include_gripper).
+#
+# lookahead:          steps ahead for next_* definitions. Default: 1
+#                     (action[t] = state at t + 1/rate_hz seconds).
+# representation:     pose representation for next_tcp_pose. Default: rotation_6d
+# include_gripper:    append the gripper value to the action. Default: true
+# gripper_params:     same params as the gripper.width_normalized source —
+#                     keep IDENTICAL to the observation entry so obs and action
+#                     gripper values share one scale.
+# command_dim:        (command only) length of the command vector.
+# command_semantics:  (command only) free-text tag stamped into metadata,
+#                     e.g. "delta_pose_euler_gripper", "joint_delta_gripper".
+action:
+  definition: next_tcp_pose
+  lookahead: 1
+  representation: rotation_6d
+  include_gripper: true
+  gripper_params:
+    reference_width: 0.09
+    device_max_width: 0.140

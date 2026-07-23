@@ -1,0 +1,119 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Remote policy contract — ALL parameters, documented.
+#
+# This file tells crisp_gym's websocket inference client (RemotePolicy):
+#   (a) HOW to reach the model server,
+#   (b) WHAT observations the model wants (keys, shapes, history), and
+#   (c) WHAT the model's output MEANS and how to turn it into robot commands.
+#
+# It is the deploy-time twin of the record config: recording stamps
+# meta/record_config.json into the dataset, training stamps pose_repr.json
+# next to the checkpoint, and this file carries the same facts to the robot.
+# On connect the server sends its own metadata handshake; the client MUST
+# verify it against this file and refuse to run on mismatch — a silent
+# mismatch (wrong rotation layout, wrong gripper scale) moves the robot
+# wrongly instead of crashing.
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: "remote"                # policy registry name (crisp_gym make_policy)
+
+# ── connection ───────────────────────────────────────────────────────────────
+server:
+  host: "192.168.1.50"        # GPU machine running the policy server
+  port: 8765
+  # Wire protocol: msgpack-numpy over websocket (openpi-style).
+  # One request = one obs dict, one response = one action chunk.
+  protocol: "msgpack_ws_v1"
+  connect_timeout_s: 10.0
+  # Per-inference deadline. On timeout the client HOLDS the last commanded
+  # pose (never blocks the control loop, never extrapolates).
+  infer_timeout_s: 0.5
+  reconnect: true             # retry with backoff if the socket drops
+
+# ── observation spec: what the model wants ───────────────────────────────────
+# The client collects these each control tick and keeps a history buffer of
+# n_obs_steps frames (the model's temporal window; diffusion default = 2).
+# IMPORTANT: the client sends ABSOLUTE poses / raw physical units. The SERVER
+# owns the relative conversion and normalization — it must match training
+# (RelativePoseDataset.convert_item) exactly.
+observation:
+  n_obs_steps: 2
+  keys:
+    observation.state.cartesian:
+      source: robot.tcp_pose        # record_config source registry name
+      shape: [9]
+      dtype: float32
+      # pos3 + first two ROWS of the rotation matrix (UMI/pytorch3d rot6d).
+      layout: "pos3_rot6d_rows"
+      frame: "robot_base_absolute"  # crisp end_effector_pose, unmodified
+    observation.state.gripper:
+      source: gripper.width_normalized
+      shape: [1]
+      dtype: float32
+      # Same shared scale as recording: width_m / reference_width, clipped.
+      reference_width: 0.09
+      device_max_width: 0.140       # SET to your gripper (0.08 Franka Hand)
+    observation.images.primary:
+      source: camera.image
+      camera: primary
+      shape: [224, 224, 3]
+      dtype: uint8                  # sent as uint8 HWC RGB; server converts
+  # Send the task string with every request (language-conditioned models).
+  task_required: true
+
+# ── action spec: what the model output means ─────────────────────────────────
+action:
+  dim: 10
+  layout: ["x", "y", "z", "rot6d_0-5", "gripper"]
+
+  # THE key field. How to interpret the pose part:
+  #   relative : T_cmd = T_current_tcp @ T_rel  (UMI default — our pipeline)
+  #   abs      : send as-is (pose already in robot base frame)
+  #   delta    : chain increments step by step (errors compound; avoid)
+  pose_repr: "relative"
+
+  # Which TCP pose to compose relative actions against:
+  #   obs_time : the pose captured when the observation was taken (CORRECT —
+  #              the robot moves during the network round-trip; composing
+  #              against the stale-but-matching pose keeps the executed
+  #              trajectory consistent with what the policy intended)
+  #   now      : pose at action arrival (only for near-zero-latency setups)
+  compose_base: "obs_time"
+
+  # rot6d rows out of a network are not exactly orthonormal. true = client
+  # runs Gram-Schmidt before building the rotation matrix; set false only if
+  # the server already orthogonalizes.
+  orthogonalize_rot6d: true
+
+  # Chunking: server returns chunk_size steps per inference; the client
+  # executes n_action_steps of them, then sends a fresh observation.
+  # dt is the time spacing between chunk steps (1 / dataset fps) — the
+  # control loop schedules/interpolates targets accordingly.
+  chunk_size: 16
+  n_action_steps: 8
+  dt: 0.0667                        # = 1/15 s
+
+  gripper:
+    meaning: "normalized_width"     # NOT force
+    range: [0.0, 1.0]
+    reference_width: 0.09           # denormalize: width_m = value * 0.09
+    device_max_width: 0.140         # then command = width_m / device_max
+
+# ── normalization ────────────────────────────────────────────────────────────
+# server_side (strongly recommended): client exchanges raw physical units and
+# never needs dataset statistics; stat updates require no client change.
+normalization: "server_side"
+
+# ── session behavior ─────────────────────────────────────────────────────────
+# Send a reset message at every episode start: LeRobot policies are stateful
+# between select_action calls (obs history + action queue must be cleared).
+reset_on_episode_start: true
+
+# ── handshake verification ───────────────────────────────────────────────────
+# On connect the server sends its metadata (model id, obs/action spec derived
+# from the checkpoint's train_config.json + pose_repr.json + the dataset's
+# record_config.json). The client hard-fails if any of these disagree with
+# this file: action.dim, action.layout, action.pose_repr, chunk sizes, dt,
+# observation keys/shapes/dtypes, n_obs_steps, gripper reference_width,
+# normalization mode. Log-only differences: model_id, expected_latency.
+verify_handshake: true

@@ -1,0 +1,20 @@
+# Classic crisp_gym teleop contract: action = the delta-pose command sent to
+# the follower (NOT UMI-compatible — do not mix with next_tcp_pose datasets).
+name: "teleop_classic"
+rate_hz: 15.0
+
+observations:
+  - key: observation.state.cartesian
+    source: robot.tcp_pose
+    representation: euler
+  - key: observation.state.gripper
+    source: gripper.width_normalized   # raw calibrated [0,1], no unification
+  - key: observation.images.primary
+    source: camera.image
+    camera: primary
+    shape: [224, 224, 3]
+
+action:
+  definition: command
+  command_dim: 7                       # [dx,dy,dz,droll,dpitch,dyaw,gripper]
+  command_semantics: "delta_pose_euler_gripper"

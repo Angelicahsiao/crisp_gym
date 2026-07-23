@@ -16,3 +16,6 @@ index: 0
 
 max_delta: 1.0
 max_effort: 50.0
+
+# No Dynamixel-style torque/reboot services on the Robotiq.
+torque_interface: false

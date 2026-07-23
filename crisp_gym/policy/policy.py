@@ -76,7 +76,12 @@ def make_policy(name_or_config_name, *args, **kwargs) -> Policy:  # noqa: ANN001
             f"{'Make sure the policy is registered and the config file exists: ' + str(file_path) if file_path is not None else ''}",
         )
 
-    return policy_cls(*args, **config, **kwargs)
+    # Explicit kwargs OVERRIDE the YAML config (e.g. a CLI --num-inference-steps
+    # beats the value in the policy config file). Merging also avoids the
+    # "multiple values for keyword" error when a key is in both.
+    merged = dict(config)
+    merged.update(kwargs)
+    return policy_cls(*args, **merged)
 
 
 def list_policy_configs() -> list[str]:

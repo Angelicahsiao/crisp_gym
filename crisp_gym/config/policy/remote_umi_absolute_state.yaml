@@ -1,0 +1,90 @@
+# Remote-inference contract — UMI rot6d checkpoint, ABSOLUTE-state generation.
+#
+# For checkpoints trained with lerobot_relative_pose.py BEFORE the wrapper
+# converted the concatenated observation.state (identified by: NO
+# pose_repr.json next to the checkpoint, or one stamping
+# observation.state: "absolute"). The lerobot-0.4.4 policy consumed the
+# concatenated observation.state, which the old wrapper left untouched, so
+# the MODEL INPUT is the absolute TCP pose; only the ACTION is relative.
+#
+# Wire behavior is identical to the relative-state contract (the client
+# always sends ABSOLUTE poses / raw units): the generations differ ONLY in
+# the server-side model_input conversion, declared per key below so the
+# handshake can reject a server built for the other generation.
+# Local-deployment equivalent: relative_lerobot_policy with
+# state_input: absolute.
+name: "remote_policy"
+
+server:
+  host: "192.168.1.50"              # SET: GPU machine running the server
+  port: 8765
+  protocol: "msgpack_ws_v1"
+  connect_timeout_s: 10.0
+  infer_timeout_s: 0.5              # on timeout: hold pose, retry
+  reconnect: true
+
+observation:
+  n_obs_steps: 2                    # diffusion default temporal window
+  keys:
+    observation.state.cartesian:
+      source: robot.tcp_pose
+      shape: [9]
+      dtype: float32
+      layout: "pos3_rot6d_rows"     # pos + first two ROWS of R (UMI)
+      frame: "robot_base_absolute"  # as SENT by the client — always absolute
+      # What the SERVER feeds the model for this key (from pose_repr.json).
+      # Sub-key is normalizer passthrough in lerobot 0.4.4 (model reads the
+      # concatenated observation.state); converted at training => convert here.
+      model_input: "relative_to_last_obs_frame"
+    observation.state.gripper:
+      source: gripper.width_normalized
+      shape: [1]
+      dtype: float32
+      reference_width: 0.09
+      device_max_width: 0.140       # SET to your gripper (0.085 2F-85)
+      model_input: "as_sent"
+    # The tensor the 0.4.4 policy ACTUALLY consumes. `components` is the
+    # MACHINE-READABLE build recipe (concat the sent keys in order, applying
+    # each transform — see remote_umi_relative_state.yaml for the transform
+    # enum). OLD GENERATION: the training wrapper did NOT convert this key,
+    # so every transform is `none` — the model input is ABSOLUTE, exactly as
+    # recorded, and there is NO generated wrt-start block.
+    observation.state:
+      source: concat
+      shape: [10]                   # must equal the sum of component dims
+      dtype: float32
+      frame: "robot_base_absolute"
+      components:
+        - key: observation.state.cartesian
+          dims: 9
+          transform: none
+        - key: observation.state.gripper
+          dims: 1
+          transform: none
+    observation.images.primary:
+      source: camera.image
+      camera: primary
+      shape: [224, 224, 3]
+      dtype: uint8
+  task_required: false              # diffusion 0.4.4 is not language-conditioned
+
+action:
+  dim: 10
+  layout: ["x", "y", "z", "rot6d_0-5", "gripper"]
+  pose_repr: "relative"             # T_cmd = T_base_tcp @ T_rel (both generations)
+  compose_base: "obs_time"          # NEVER the pose at action arrival
+  orthogonalize_rot6d: true
+  # lerobot-0.4.4 diffusion predict_action_chunk returns n_action_steps steps
+  # (horizon=16 internally, 8 returned) — chunk_size == n_action_steps here.
+  chunk_size: 8
+  n_action_steps: 8
+  dt: 0.0667                        # = 1/15 s (recording rate_hz)
+  gripper:
+    meaning: "normalized_width"
+    range: [0.0, 1.0]
+    reference_width: 0.09
+    device_max_width: 0.140         # command = clip(a,0,1) * 0.09 / 0.140
+
+normalization: "server_side"        # relative stats live in the checkpoint
+reset_on_episode_start: true
+verify_handshake: true              # server must declare model_input per key
