@@ -533,6 +533,10 @@ def test_client_loop_end_to_end():
     pol._chunk = None
     pol._chunk_idx = 0
     pol._chunk_base = None
+    pol._tick_times = deque(maxlen=30)
+    pol._last_infer_ms = 0.0
+    pol._rate_log_every = 15
+    pol._tick_count = 0
     pol.parent_conn = _FakeConn(env)
 
     fn = pol.make_data_fn()

@@ -138,6 +138,7 @@ def main():
 
     idx_from = getattr(getattr(ds, "meta", None), "episode_data_index", None)
     pos_err, rot_err, grip_err, motion = [], [], [], []
+    per_step_pos, per_step_rot, per_step_grip = [], [], []
     n_done = 0
     for ep in args.episodes:
         try:
@@ -152,18 +153,27 @@ def main():
                 continue
             rec = item[lrp.POSE_ACTION_KEY]
             rec = rec.numpy() if hasattr(rec, "numpy") else np.asarray(rec)
-            rec0 = rec[0]
             try:
-                pred0 = _predict(idx)[0]
+                pred = _predict(idx)
             except Exception as e:
                 logger.warning(f"[openloop] idx {idx}: predict failed: {e}")
                 continue
-            Tp = lrp.pose9d_to_mat(pred0[:9]); Tr = lrp.pose9d_to_mat(rec0[:9])
-            pos_err.append(float(np.linalg.norm(Tp[:3, 3] - Tr[:3, 3])))
-            rot_err.append(_geodesic_deg(Tp[:3, :3], Tr[:3, :3]))
-            grip_err.append(abs(float(pred0[-1]) - float(rec0[-1])))
-            # Motion SCALE = span of the recorded chunk (NOT |action[0]|, which
-            # is ~0 since the first step sits at the current frame).
+            n_steps = min(len(rec), len(pred))
+            # Per-step errors across the WHOLE chunk. Both pred and rec are
+            # relative to the SAME base (current frame), so the position-error
+            # norm is base-invariant — it IS the absolute open-loop error the
+            # robot would have at step k if it executed the chunk without
+            # re-observing. Error at step k therefore = the OPEN-LOOP DRIFT
+            # after k+1 executed steps.
+            fp, fr, fg = [], [], []
+            for k in range(n_steps):
+                Tp = lrp.pose9d_to_mat(pred[k][:9]); Tr = lrp.pose9d_to_mat(rec[k][:9])
+                fp.append(float(np.linalg.norm(Tp[:3, 3] - Tr[:3, 3])))
+                fr.append(_geodesic_deg(Tp[:3, :3], Tr[:3, :3]))
+                fg.append(abs(float(pred[k][-1]) - float(rec[k][-1])))
+            per_step_pos.append(fp); per_step_rot.append(fr); per_step_grip.append(fg)
+            # step-0 (single-step) summary kept for the headline numbers.
+            pos_err.append(fp[0]); rot_err.append(fr[0]); grip_err.append(fg[0])
             motion.append(float(np.linalg.norm(rec[-1][:3] - rec[0][:3])))
             n_done += 1
 
@@ -172,21 +182,31 @@ def main():
         return
 
     pos = np.array(pos_err); rot = np.array(rot_err); grp = np.array(grip_err); mot = np.array(motion)
-    logger.info(f"\n[openloop] evaluated {len(pos)} frames")
+    logger.info(f"\n[openloop] evaluated {len(pos)} frames  (1 chunk inferred per frame)")
     logger.info(f"  recorded chunk motion span (m): mean {mot.mean():.4f}  median {np.median(mot):.4f}")
-    logger.info(f"  action position error    (m): mean {pos.mean():.4f}  median {np.median(pos):.4f}  p90 {np.percentile(pos,90):.4f}  max {pos.max():.4f}")
-    logger.info(f"  action rotation error  (deg): mean {rot.mean():.2f}   median {np.median(rot):.2f}   p90 {np.percentile(rot,90):.2f}")
-    logger.info(f"  action gripper error   [0,1]: mean {grp.mean():.4f}  median {np.median(grp):.4f}  max {grp.max():.4f}")
-    # Verdict on ABSOLUTE thresholds (not a ratio — action[0] motion is ~0).
+
+    # Ragged chunks -> pad to the max length for a per-step table.
+    H = max(len(f) for f in per_step_pos)
+    def _col(rows, k):
+        return np.array([r[k] for r in rows if len(r) > k])
+    logger.info("\n  per-step OPEN-LOOP error (mean over frames) — error at step k")
+    logger.info("  = the drift the robot would have after executing k+1 steps")
+    logger.info("  without re-observing:")
+    logger.info(f"    {'step':>4} | {'pos err (mm)':>12} | {'rot err (deg)':>13} | {'grip err':>8}")
+    for k in range(H):
+        pk = _col(per_step_pos, k); rk = _col(per_step_rot, k); gk = _col(per_step_grip, k)
+        logger.info(f"    {k:>4} | {pk.mean()*1000:>12.2f} | {rk.mean():>13.3f} | {gk.mean():>8.4f}")
+
+    logger.info(f"\n  step-0 (single-step) — pos {pos.mean()*1000:.1f}mm  rot {rot.mean():.2f}deg  grip {grp.mean():.4f}")
     good = pos.mean() < 0.005 and rot.mean() < 2.0
     logger.info(
         f"\n[openloop] verdict: {'POLICY GOOD' if good else 'POLICY WEAK'} "
-        f"(pos {pos.mean()*1000:.1f}mm, rot {rot.mean():.2f}deg vs chunk span "
-        f"{mot.mean()*1000:.0f}mm)\n"
-        "  GOOD  (pos < ~5mm, rot < ~2deg) -> policy reproduces the demos; a\n"
-        "        drifting rollout is a DEPLOY problem (images OOD, control rate\n"
-        "        << training fps, obs timing) — not undertraining.\n"
-        "  WEAK  -> policy did not learn the task; retrain / debug training."
+        f"(step-0 pos {pos.mean()*1000:.1f}mm, rot {rot.mean():.2f}deg)\n"
+        "  GOOD  (step-0 pos < ~5mm, rot < ~2deg) -> policy reproduces the demos.\n"
+        "  Read the per-step table: if error GROWS a lot by the last executed\n"
+        "  step (your deploy n_action_steps), that growth IS the open-loop drift\n"
+        "  per chunk — LOWER n_action_steps to re-observe before it accumulates.\n"
+        "  If even step-0 is large -> policy weak, retrain."
     )
 
 

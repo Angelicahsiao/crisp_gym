@@ -381,6 +381,17 @@ class RelativeLerobotPolicy(Policy):
         # (HANDOFF §1.1 DEPLOY INVARIANT; same as RemotePolicy._chunk_base).
         self._chunk_base: np.ndarray | None = None
 
+        # ── control-loop rate tracking ──────────────────────────────────────
+        # Real execution frequency of the policy (how fast the robot actually
+        # gets new commands). Compare to the training fps: a large shortfall
+        # means the n_obs_steps window spans more real time than in training
+        # (OOD obs -> drift). _last_infer_ms is the latency of the most recent
+        # chunk inference (usually the bottleneck).
+        self._tick_times: deque = deque(maxlen=30)   # wall-clock of recent ticks
+        self._last_infer_ms: float = 0.0
+        self._rate_log_every = 15                     # log the rate every N ticks
+        self._tick_count = 0
+
     # ── client-side geometry ──────────────────────────────────────────────────
 
     def _current_pose_mat(self) -> np.ndarray:
@@ -532,6 +543,7 @@ class RelativeLerobotPolicy(Policy):
         """Observation/action generator driving env.step (recording-loop hook)."""
 
         def _fn() -> tuple:
+            tick_start = time.monotonic()
             obs_raw: Observation = self.env.get_obs()
             frame = build_obs_frame(
                 obs_raw,
@@ -568,12 +580,12 @@ class RelativeLerobotPolicy(Policy):
                 self._chunk = np.asarray(result)
                 self._chunk_idx = 0
                 self._chunk_base = chunk_base
+                self._last_infer_ms = (time.monotonic() - t0) * 1e3
                 # Re-arm per-chunk logging so every new chunk logs its first
                 # _log_actions_n steps (not only the very first chunk).
                 self._action_log_left = self._log_actions_n
                 logger.debug(
-                    f"Chunk {self._chunk.shape} in "
-                    f"{(time.monotonic() - t0) * 1e3:.1f} ms"
+                    f"Chunk {self._chunk.shape} in {self._last_infer_ms:.1f} ms"
                 )
 
             action = self._chunk[self._chunk_idx]
@@ -584,6 +596,26 @@ class RelativeLerobotPolicy(Policy):
                 self.env.step(env_action, block=False)
             except Exception as e:
                 logger.exception(f"Error during environment step: {e}")
+
+            # ── real execution-rate log ─────────────────────────────────────
+            # Wall-clock frequency at which the robot actually receives new
+            # commands. Ticks on an inference chunk are slow (~ the model
+            # latency); ticks replaying a cached chunk step are fast. The mean
+            # over a rolling window is the effective control rate to compare
+            # against the training fps.
+            self._tick_times.append(tick_start)
+            self._tick_count += 1
+            if len(self._tick_times) >= 2 and self._tick_count % self._rate_log_every == 0:
+                span = self._tick_times[-1] - self._tick_times[0]
+                fps = (len(self._tick_times) - 1) / span if span > 0 else float("inf")
+                inferred = self._chunk_idx == 1  # this tick just ran inference
+                logger.info(
+                    "[rate] effective control ~%.2f FPS (mean over last %d ticks) "
+                    "| last inference %.0f ms | executing %d/%d of each chunk%s"
+                    % (fps, len(self._tick_times), self._last_infer_ms,
+                       self.n_action_steps, len(self._chunk) if self._chunk is not None else 0,
+                       "  <-- inference tick" if inferred else "")
+                )
 
             return obs_raw, env_action
 
