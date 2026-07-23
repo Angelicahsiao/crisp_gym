@@ -106,6 +106,23 @@ def main():
         default=False,
         help="Whether to evaluate the performance of the model after each episode.",
     )
+    parser.add_argument(
+        "--num-inference-steps",
+        type=int,
+        default=None,
+        help="Override the policy's diffusion denoising steps (lower = faster "
+        "control loop). Passed through to the policy; overrides the value in "
+        "the policy config YAML. Only honored by policies that accept it "
+        "(e.g. relative_lerobot_policy).",
+    )
+    parser.add_argument(
+        "--n-action-steps",
+        type=int,
+        default=None,
+        help="Override how many steps of each chunk to execute before "
+        "re-planning (lower = re-observe more often). Overrides the policy "
+        "config YAML.",
+    )
 
     args = parser.parse_args()
     logger = logging.getLogger(__name__)
@@ -206,10 +223,18 @@ def main():
 
         # %% Set up multiprocessing for policy inference
         logger.info("Setting up the policy.")
+        # CLI overrides win over the policy config YAML (only passed when set,
+        # so the YAML value is kept otherwise).
+        policy_overrides = {}
+        if args.num_inference_steps is not None:
+            policy_overrides["num_inference_steps"] = args.num_inference_steps
+        if args.n_action_steps is not None:
+            policy_overrides["n_action_steps"] = args.n_action_steps
         policy = make_policy(
             name_or_config_name=args.policy_config,
             pretrained_path=args.path,
             env=env,
+            **policy_overrides,
         )
 
         logger.info("Homing robot before starting with recording.")
