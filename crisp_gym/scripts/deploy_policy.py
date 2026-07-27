@@ -123,6 +123,15 @@ def main():
         "re-planning (lower = re-observe more often). Overrides the policy "
         "config YAML.",
     )
+    parser.add_argument(
+        "--scheduler",
+        type=str,
+        default=None,
+        choices=["ddim", "ddpm"],
+        help="Override the diffusion sampler (reuses the trained betas). Use "
+        "'ddim' with a low --num-inference-steps (e.g. 10) to run a DDPM-trained "
+        "checkpoint fast. Overrides the policy config YAML.",
+    )
 
     args = parser.parse_args()
     logger = logging.getLogger(__name__)
@@ -230,6 +239,8 @@ def main():
             policy_overrides["num_inference_steps"] = args.num_inference_steps
         if args.n_action_steps is not None:
             policy_overrides["n_action_steps"] = args.n_action_steps
+        if args.scheduler is not None:
+            policy_overrides["scheduler"] = args.scheduler
         policy = make_policy(
             name_or_config_name=args.policy_config,
             pretrained_path=args.path,

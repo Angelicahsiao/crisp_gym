@@ -27,9 +27,16 @@ reference_width: 0.09
 #
 # num_inference_steps: diffusion denoising steps. LOWER (e.g. 10) to speed up
 #   inference toward the training fps — the biggest lever on loop rate. null ->
-#   checkpoint default. Verify accuracy still holds first:
-#     python3 check_policy_openloop.py ... --num-inference-steps 10
+#   checkpoint default (a DDPM checkpoint with null uses num_train_timesteps,
+#   often 100). Verify accuracy first: check_policy_openloop.py --num-inference-steps 10
 num_inference_steps: null
+#
+# scheduler: diffusion sampler override, "ddim" or "ddpm" (reuses the trained
+#   betas). A DDPM-trained checkpoint (noise_scheduler_type: DDPM) can be
+#   sampled with DDIM at ~10 steps with little quality loss — the recommended
+#   fast path for a 100-step DDPM model:  scheduler: ddim + num_inference_steps: 10
+#   null -> keep the checkpoint's trained scheduler.
+scheduler: null
 #
 # n_action_steps: how many steps of each chunk to execute before re-planning
 #   (receding horizon; the rest of the chunk is discarded). LOWER (e.g. 2-4) to

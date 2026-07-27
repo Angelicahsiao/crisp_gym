@@ -268,8 +268,14 @@ class RelativeLerobotPolicy(Policy):
         num_inference_steps: Override the diffusion denoising steps. LOWER it
             (e.g. 10) to speed up inference toward the training fps — the
             single biggest lever on control-loop rate. None -> checkpoint
-            default. Verify accuracy still holds with check_policy_openloop.py
-            --num-inference-steps before trusting a low value.
+            default (for a DDPM checkpoint with num_inference_steps=None that
+            is num_train_timesteps, e.g. 100). Verify accuracy still holds with
+            check_policy_openloop.py --num-inference-steps before trusting a
+            low value.
+        scheduler: Override the diffusion sampler: "ddim" or "ddpm" (reuses the
+            SAME trained betas). A DDPM-trained model can be sampled with DDIM
+            at ~10 steps with little quality loss — the recommended way to run
+            a 100-step DDPM checkpoint fast. None -> keep the trained scheduler.
         state_input: What the checkpoint's observation.state input was at
             training. "auto" (default) reads pose_repr.json next to the
             checkpoint (missing => absolute, with a warning — all checkpoints
@@ -287,6 +293,7 @@ class RelativeLerobotPolicy(Policy):
         reference_width: float = DEFAULT_REFERENCE_WIDTH,
         n_action_steps: int | None = None,
         num_inference_steps: int | None = None,
+        scheduler: str | None = None,
         state_input: str = "auto",
         target_to_euler: bool = False,
         compose_mode: str = "coupled",
@@ -334,12 +341,10 @@ class RelativeLerobotPolicy(Policy):
         self._action_log_left = int(log_actions)
         self._requested_n_action_steps = n_action_steps
 
-        # num_inference_steps is applied worker-side as a policy-config override
-        # (setattr on the loaded policy.config, alongside any user overrides).
-        merged_overrides = dict(overrides or {})
-        if num_inference_steps is not None:
-            merged_overrides["num_inference_steps"] = int(num_inference_steps)
-
+        # num_inference_steps / scheduler are applied worker-side on the loaded
+        # DIFFUSION model (its step count + scheduler are cached at load time,
+        # so a policy.config setattr alone does NOT take effect) — passed
+        # explicitly, separate from the generic policy-config overrides.
         from multiprocessing import Pipe, Process
 
         self.parent_conn, child_conn = Pipe()
@@ -349,7 +354,9 @@ class RelativeLerobotPolicy(Policy):
                 "conn": child_conn,
                 "pretrained_path": pretrained_path,
                 "state_input": state_input,
-                "overrides": merged_overrides,
+                "overrides": dict(overrides or {}),
+                "num_inference_steps": num_inference_steps,
+                "scheduler": scheduler,
             },
             daemon=True,
         )
@@ -640,8 +647,51 @@ class RelativeLerobotPolicy(Policy):
 
 # ── worker (subprocess: torch + lerobot live only here) ───────────────────────
 
+def _apply_diffusion_speed(policy, num_inference_steps, scheduler, wlog):  # noqa: ANN001
+    """Apply inference-speed settings on a loaded DIFFUSION policy.
+
+    lerobot caches the denoising step count and the noise scheduler on
+    policy.diffusion at load time, so setting policy.config alone is a no-op.
+    Here we (1) optionally swap the sampler to DDIM/DDPM reusing the SAME
+    trained betas (DDPM-train + DDIM-infer is standard and valid), and
+    (2) set the cached num_inference_steps. No-op for non-diffusion policies.
+    """
+    diff = getattr(policy, "diffusion", None)
+    if diff is None:
+        if num_inference_steps is not None or scheduler is not None:
+            wlog.warning("[RelInference] num_inference_steps/scheduler ignored "
+                         "(policy is not a diffusion policy).")
+        return
+    if scheduler is not None and hasattr(diff, "noise_scheduler"):
+        want = str(scheduler).upper()
+        cur = diff.noise_scheduler
+        try:
+            if want == "DDIM":
+                from diffusers import DDIMScheduler
+                diff.noise_scheduler = DDIMScheduler.from_config(cur.config)
+            elif want == "DDPM":
+                from diffusers import DDPMScheduler
+                diff.noise_scheduler = DDPMScheduler.from_config(cur.config)
+            else:
+                raise ValueError(f"unknown scheduler {scheduler!r} (use ddim/ddpm)")
+            wlog.info(f"[RelInference] noise scheduler -> {want} "
+                      "(same trained betas; DDPM-train/DDIM-infer is valid)")
+        except Exception as e:
+            wlog.warning(f"[RelInference] scheduler swap failed: {e}")
+    if num_inference_steps is not None:
+        n = int(num_inference_steps)
+        if hasattr(diff, "num_inference_steps"):
+            diff.num_inference_steps = n           # the value actually used
+        try:
+            policy.config.num_inference_steps = n  # keep config in sync
+        except Exception:
+            pass
+        wlog.info(f"[RelInference] num_inference_steps -> {n}")
+
+
 def inference_worker(conn, pretrained_path: str, overrides: dict,
-                     state_input: str = "auto"):  # noqa: ANN001
+                     state_input: str = "auto",
+                     num_inference_steps=None, scheduler=None):  # noqa: ANN001
     """Load the checkpoint; per request, run the obs window through the policy
     queues and return one raw-unit action chunk (numpy (n, dim)).
 
@@ -683,6 +733,9 @@ def inference_worker(conn, pretrained_path: str, overrides: dict,
             wlog.warning(f"[RelInference] Override {k}: "
                          f"{getattr(policy.config, k, None)} -> {v}")
             setattr(policy.config, k, v)
+        # inference-speed knobs applied on the loaded diffusion model (cached
+        # scheduler / step count — a config setattr alone would not take effect)
+        _apply_diffusion_speed(policy, num_inference_steps, scheduler, wlog)
         policy.to(device).eval()
         policy.reset()
 
