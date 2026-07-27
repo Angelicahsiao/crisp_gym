@@ -75,6 +75,10 @@ ros-humble-ros2-controllers = "*"
 rosdep = "*"
 ros-humble-rmw-cyclonedds-cpp = "*"
 ros-humble-image-transport-plugins = "*"
+# cv_bridge: required by crisp_py.camera (from cv_bridge import CvBridge). It
+# ships inside ros-humble-desktop, but declare it explicitly so an env rebuild
+# can never drop it (ModuleNotFoundError: No module named 'cv_bridge').
+ros-humble-cv-bridge = "*"
 # scipy is DELIBERATELY NOT a conda dependency here. conda-forge's scipy is
 # built against numpy 2.x; forcing it into this env (which uses robostack's
 # numpy 1.26) yields the _spropack ImportError. crisp_py's working humble env
