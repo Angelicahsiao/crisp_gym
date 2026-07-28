@@ -1,6 +1,5 @@
 control_frequency: 30.0
-gripper_enabled: true
-gripper_continuous_control: false
+gripper_mode: "absolute_binary"
 
 cartesian_control_param_config: null
 joint_control_param_config: null

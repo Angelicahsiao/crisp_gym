@@ -1,0 +1,8 @@
+name: "remote_policy"
+uri: "ws://localhost:8000"
+n_action_steps: 8
+# Set true when the model was trained with UMI-style relative poses
+# (e.g. via scripts/lerobot_relative_pose.py). Actions are then composed
+# with the robot's current TCP pose before being sent to the controller.
+relative_actions: true
+infer_timeout: 5.0

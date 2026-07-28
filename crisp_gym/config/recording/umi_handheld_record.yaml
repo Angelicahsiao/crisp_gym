@@ -1,0 +1,25 @@
+# UMI handheld gripper (OptiTrack + gripper-width topic), UMI data contract.
+# Drive: none (passive recording). Env: UmiHandheldEnv (envs/umi_handheld.yaml,
+# which must use orientation_representation rotation_6d).
+name: "umi_handheld"
+rate_hz: 15.0
+
+observations:
+  - key: observation.state.cartesian
+    source: robot.tcp_pose
+    representation: rotation_6d
+  - key: observation.state.gripper
+    source: gripper.width_normalized
+    reference_width: 0.09          # handheld device_max_width comes from env config
+  - key: observation.images.primary
+    source: camera.image
+    camera: primary
+    shape: [224, 224, 3]
+
+action:
+  definition: next_tcp_pose
+  lookahead: 1
+  representation: rotation_6d
+  include_gripper: true
+  gripper_params:
+    reference_width: 0.09

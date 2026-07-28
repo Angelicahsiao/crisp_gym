@@ -1,0 +1,63 @@
+# dric Franka + Robotiq 2F-85 + dual RealSense — DEPLOYMENT env for a
+# relative-pose rot6d model (e.g. franka_open_electricbox_rot6d_relativepose).
+#
+# Copy of dric_dual_rscam_franka.yaml with the deployment-required settings
+# (do not "simplify" these away):
+#   orientation_representation: rotation_6d  -> obs cartesian is the 9D
+#       [pos3, rot6d-rows] absolute pose the relative pipeline expects
+#   use_relative_actions: false              -> the policy client composes
+#       T_cmd = T_base(obs time) @ T_rel itself and sends ABSOLUTE commands
+#   gripper_mode: absolute_continuous        -> the model outputs a continuous
+#       gripper value; binary thresholding would round it
+#
+# Camera names are kept IDENTICAL to the recording config (including the
+# historical "wirst_cam" spelling) — they define the observation.images.* keys
+# and must match the keys the checkpoint was trained on.
+#
+# Gripper units for models trained on MIGRATED legacy dric data: the old
+# recorder stored the device-normalized gripper value, so in
+# config/policy/relative_lerobot_policy.yaml set BOTH
+#   device_max_width: 0.085   # Robotiq 2F-85
+#   reference_width:  0.085   # == device_max_width -> unit conversion identity
+control_frequency: 15.0        # match the trained fps (--fps at deployment)
+gripper_mode: "absolute_continuous"
+
+orientation_representation: "rotation_6d"
+use_relative_actions: false
+
+cartesian_control_param_config: null
+joint_control_param_config: null
+
+robot_config:
+  robot_type: "franka"
+  home_config:
+  - 0.425725623070977
+  - -0.013800044320084788
+  - -0.33286129072276527
+  - -2.6913555955684414
+  - 0.10167396715537252
+  - 4.262024898082136
+  - -0.021739227284989265
+
+gripper_config:
+  min_value: 0.79
+  max_value: 0.0
+  command_topic: "/robotiq_2f85/robotiq_gripper_controller/gripper_cmd"
+  joint_state_topic: /robotiq_2f85/joint_states
+  use_gripper_command_action: True
+  max_delta: 1.0
+  max_effort: 5.0
+
+camera_configs:
+  - camera_name: "env_cam"
+    camera_frame: "env_link"
+    resolution: [256, 256]
+    camera_color_image_topic: "/env/env_cam/color/image_raw"
+    camera_color_info_topic: "/env/env_cam/color/camera_info"
+  - camera_name: "wirst_cam"           # historical spelling — matches the dataset key
+    camera_frame: "wirst_link"
+    camera_color_image_topic: "/wrist/wrist_cam/color/image_rect_raw"
+    camera_color_info_topic: "/wrist/wrist_cam/color/camera_info"
+    resolution: [256, 256]
+
+sensor_configs: []

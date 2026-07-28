@@ -7,6 +7,12 @@ control_frequency: 50.0
 robot_config:
   robot_type: "ur"
   has_effort_feedback: true
+  # NOTE (UMI recording): URConfig's default target_frame is "tool0" — the
+  # FLANGE, not the gripper fingertips. For UMI-compatible data the recorded
+  # TCP must be the fingertip point matching the handheld's tx_body_tcp.
+  # Either uncomment a fingertip frame published in your TF tree, e.g.:
+  # target_frame: "robotiq_2f140_tcp"
+  # or account for the flange->fingertip offset in the handheld tx_body_tcp.
 
 gripper_config:
   from_yaml: "grippers/gripper_robotiq_2f140.yaml"
@@ -24,3 +30,11 @@ gripper_threshold: 0.1
 
 cartesian_control_param_config: "control/ur_cartesian_impedance.yaml"
 joint_control_param_config: "control/ur_joint_control.yaml"
+
+# Per-robot named home poses used by the recording scripts (between-episode /
+# startup homing). FILL IN YOUR OWN UR7e joint values (6 joints, radians) —
+# without this block the robot's home_config from the crisp_py robot config is
+# used for every named pose. The legacy HomeConfig enum poses are FRANKA-only.
+# named_home_configs:
+#   close_to_table: [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]   # EXAMPLE — replace!
+#   open_pose:      [0.0, -1.20, 1.20, -1.57, -1.57, 0.0]   # EXAMPLE — replace!

@@ -1,0 +1,58 @@
+# UMI robot recording + EXTERNAL joint effort (gravity-free contact signal).
+#
+# Same policy-facing UMI contract as umi_robot_record.yaml (so datasets stay
+# mixable), plus the estimated external joint effort as an EXTRA (analysis)
+# column, recorded as a generic SENSOR (no Pinocchio on the crisp_gym side).
+#
+# The estimate tau_ext = tau_measured - g(q) is computed ROBOT-SIDE by
+# crisp_controllers_robot_demos `external_effort_node`, which publishes
+# std_msgs/Float32MultiArray on `external_joint_effort`. This is the JOINT-space
+# external effort (6 values for the UR) — complementary to the Cartesian TCP
+# wrench from the /force_torque_sensor_broadcaster force_torque sensor.
+#
+# Requirements:
+#   * The env config must declare a matching sensor, e.g.:
+#       sensor_configs:
+#         - sensor_type: "float32_array"
+#           name: "ext_effort"
+#           shape: [6]                 # 6 = UR, 7 = Franka
+#           data_topic: "/external_joint_effort"
+#   * Run the estimator node on the robot:
+#       ros2 launch crisp_controllers_robot_demos external_effort.launch.py \
+#           joint_names:="[...your arm joints...]"
+#
+# To make it a POLICY INPUT instead of an analysis extra, change the key to
+# `observation.state.external_effort` and set include_in_state: true — but then
+# datasets without this column (e.g. handheld) are no longer mixable.
+name: "umi_robot_ext_effort"
+rate_hz: 15.0
+
+observations:
+  # ── policy-facing (the UMI contract) ────────────────────────────────────────
+  - key: observation.state.cartesian
+    source: robot.tcp_pose
+    representation: rotation_6d
+  - key: observation.state.gripper
+    source: gripper.width_normalized
+    reference_width: 0.09
+    device_max_width: 0.140        # SET to your gripper (0.140 Robotiq 2F-140)
+  - key: observation.images.primary
+    source: camera.image
+    camera: primary
+    shape: [224, 224, 3]
+
+  # ── external joint effort (saved, NOT a policy input) ──────────────────────
+  - key: extra.external_effort
+    source: robot.sensor
+    name: ext_effort               # must match the env sensor_config name
+    shape: [6]                     # 6 = UR, 7 = Franka
+    include_in_state: false
+
+action:
+  definition: next_tcp_pose
+  lookahead: 1
+  representation: rotation_6d
+  include_gripper: true
+  gripper_params:
+    reference_width: 0.09
+    device_max_width: 0.140

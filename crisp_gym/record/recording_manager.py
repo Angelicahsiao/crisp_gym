@@ -21,12 +21,10 @@ try:
 except ImportError:
     from lerobot.constants import HF_LEROBOT_HOME
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from pynput import keyboard
 from rclpy.executors import SingleThreadedExecutor
 from rich import print
 from rich.panel import Panel
 from std_msgs.msg import String
-from typing_extensions import override
 
 from crisp_gym.config.path import find_config
 from crisp_gym.policy.policy import Action, Observation
@@ -61,7 +59,11 @@ class RecordingManager(ABC):
             )
         )
 
-        self.state: Literal[
+        # State is written by input threads (stdin reader / ROS callback) and
+        # read by the recording loop — guard it with a lock via the `state`
+        # property. The switch semantics/UX are unchanged.
+        self._state_lock = threading.Lock()
+        self._state: Literal[
             "is_waiting",
             "recording",
             "paused",
@@ -75,6 +77,10 @@ class RecordingManager(ABC):
         self.queue = mp.JoinableQueue(self.config.queue_size)
         self.episode_count_queue = mp.Queue(1)
         self.dataset_ready = mp.Event()
+        # Set by the writer process when a FRAME/SAVE/startup error occurs, so
+        # the recording loop fails loudly instead of silently producing a
+        # truncated/corrupt episode.
+        self.writer_error = mp.Event()
 
         # Start the writer process
         self.writer = mp.Process(
@@ -84,6 +90,17 @@ class RecordingManager(ABC):
             daemon=False,
         )
         self.writer.start()
+
+    @property
+    def state(self) -> str:
+        """Current recording state (thread-safe)."""
+        with self._state_lock:
+            return self._state
+
+    @state.setter
+    def state(self, value: str) -> None:
+        with self._state_lock:
+            self._state = value
 
     @property
     def dataset_directory(self) -> Path:
@@ -102,6 +119,11 @@ class RecordingManager(ABC):
 
         original_timeout = timeout
         while not self.dataset_ready.is_set():
+            if self.writer_error.is_set():
+                raise RuntimeError(
+                    "Dataset writer failed during startup — see the writer "
+                    "process traceback above."
+                )
             logger.debug("Waiting for dataset to be ready...")
             time.sleep(1.0)
             timeout -= 1.0
@@ -142,10 +164,13 @@ class RecordingManager(ABC):
             else:
                 dataset = LeRobotDataset(repo_id=self.config.repo_id)
             if self.config.num_episodes <= dataset.num_episodes:
-                logger.error(
-                    f"The dataset already has {dataset.num_episodes} recorded. Please select a larger number."
+                # Raise (not exit()): this runs in the writer subprocess, and a
+                # bare exit() would leave the parent blocked until the
+                # wait_until_ready timeout with a misleading TimeoutError.
+                raise ValueError(
+                    f"The dataset already has {dataset.num_episodes} episodes recorded; "
+                    f"--num-episodes ({self.config.num_episodes}) must be larger to resume."
                 )
-                exit()
             logger.info(
                 f"Resuming from episode {dataset.num_episodes} with {self.config.num_episodes} episodes to record."
             )
@@ -175,7 +200,11 @@ class RecordingManager(ABC):
     def _writer_proc(self):
         """Process to write data to the dataset."""
         logger.info("Starting dataset writer process.")
-        dataset = self._create_dataset()
+        try:
+            dataset = self._create_dataset()
+        except Exception:
+            self.writer_error.set()
+            raise
         self.dataset_ready.set()
         logger.debug(f"Dataset features: {list(self.config.features.keys())}")
 
@@ -224,7 +253,7 @@ class RecordingManager(ABC):
                             subprocess.Popen(
                                 [
                                     "paplay",
-                                    "/usr/share/sounds/freedesktop/stereo/complete.oga ",
+                                    "/usr/share/sounds/freedesktop/stereo/complete.oga",
                                 ],
                                 stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL,
@@ -272,12 +301,18 @@ class RecordingManager(ABC):
                     logger.info("Shutting down writer process.")
                     break
             except Exception as e:
-                logger.exception("Error occured: ", e)
+                logger.exception("Error occurred: %s", e)
+                # A failed add_frame/save_episode means the episode on disk is
+                # truncated/corrupt. Flag it so the recording loop raises
+                # instead of letting the operator believe the save succeeded.
+                if msg.get("type") in ("FRAME", "SAVE_EPISODE"):
+                    self.writer_error.set()
             finally:
-                pass
+                # One task_done per get() keeps the JoinableQueue accounting
+                # correct (previously a single task_done after the loop).
+                self.queue.task_done()
 
-        self.queue.task_done()
-        logger.info("Writter process finished.")
+        logger.info("Writer process finished.")
 
     def record_episode(
         self,
@@ -315,8 +350,15 @@ class RecordingManager(ABC):
                 logger.debug("Data function returned None, skipping frame.")
                 # If the data function returns None, skip this frame
                 sleep_time = 1 / self.config.fps - (time.time() - frame_start)
-                time.sleep(sleep_time)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
                 continue
+
+            if self.writer_error.is_set():
+                raise RuntimeError(
+                    "Dataset writer failed (see writer traceback above) — the "
+                    "current episode is not being persisted. Aborting recording."
+                )
 
             self.queue.put({"type": "FRAME", "data": (obs, action, task)})
 
@@ -386,7 +428,17 @@ class RecordingManager(ABC):
         logger.info("Shutting down the record process...")
         self.queue.put({"type": "SHUTDOWN"})
 
-        self.writer.join()
+        # Bounded join: a wedged writer (e.g. blocking push_to_hub or a hung
+        # add_frame) must not hang shutdown forever.
+        self.writer.join(timeout=self.config.writer_timeout)
+        if self.writer.is_alive():
+            logger.error(
+                "Dataset writer did not shut down within "
+                f"{self.config.writer_timeout}s — terminating it. The last "
+                "episode may not be fully written."
+            )
+            self.writer.terminate()
+            self.writer.join(timeout=5.0)
 
     def _set_to_wait(self) -> None:
         """Set to wait if possible."""
@@ -534,9 +586,6 @@ class ROSRecordingManager(RecordingManager):
 #         self.listener.start()
 #         return super().__enter__()
 
-#     def __exit__(self, exc_type, exc_value, traceback) -> None:  # noqa: ANN001, D105
-#         self.listener.stop()
-#         super().__exit__(exc_type, exc_value, traceback)
 class KeyboardRecordingManager(RecordingManager):
     """Stdin-based recording manager for controlling episode recording."""
 
@@ -557,14 +606,27 @@ class KeyboardRecordingManager(RecordingManager):
         )
 
     def _input_loop(self) -> None:
-        """Background thread reading stdin."""
+        """Background thread reading stdin (key + ENTER; stdlib only, no pynput).
+
+        Uses select() with a short timeout so the thread actually exits when
+        stop()/__exit__ clears _running (a bare readline() blocks forever), and
+        detects EOF (non-TTY / closed stdin) instead of busy-looping on it.
+        """
+        import select
+
         while self._running:
             try:
-                user_input = sys.stdin.readline().strip().lower()
-                if not user_input:
-                    continue
-                key = user_input[0]
-                self._handle_key(key)
+                readable, _, _ = select.select([sys.stdin], [], [], 0.2)
+                if not readable:
+                    continue  # timeout: re-check _running
+                line = sys.stdin.readline()
+                if line == "":
+                    # EOF — stdin closed / not a TTY; no input will ever come.
+                    logger.warning("stdin closed — keyboard control disabled.")
+                    break
+                key = line.strip().lower()[:1]
+                if key:
+                    self._handle_key(key)
             except Exception:
                 break
 

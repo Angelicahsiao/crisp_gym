@@ -1,0 +1,41 @@
+# Robot-arm recording, UMI data contract, with the TWO cameras of
+# ur7e_robotiq_dual_cam.yaml (env_cam + wrist_cam).
+#
+# IMPORTANT: the `camera:` field of each image entry MUST equal a camera_name
+# declared in the env config (env camera_name -> observation.images.<that name>).
+# Here env_cam/wrist_cam match ur7e_robotiq_dual_cam.yaml. If your env uses
+# different camera names, rename these to match, or you get:
+#   KeyError: "Camera '<name>' not found in env.cameras"
+#
+# Mixability note: this dual-cam schema is NOT directly mixable with the
+# single-camera handheld data (observation.images.primary) — the image keys
+# differ. Use postprocess_align_datasets.py to strip to the shared cameras
+# before mixing, or record the handheld with the same camera key(s).
+name: "umi_robot_dual_cam"
+rate_hz: 15.0
+
+observations:
+  - key: observation.state.cartesian
+    source: robot.tcp_pose
+    representation: rotation_6d
+  - key: observation.state.gripper
+    source: gripper.width_normalized
+    reference_width: 0.09
+    device_max_width: 0.140        # SET to your gripper (0.140 Robotiq 2F-140)
+  - key: observation.images.env_cam
+    source: camera.image
+    camera: env_cam                # must match env config camera_name
+    shape: [224, 224, 3]
+  - key: observation.images.wrist_cam
+    source: camera.image
+    camera: wrist_cam              # must match env config camera_name
+    shape: [224, 224, 3]
+
+action:
+  definition: next_tcp_pose
+  lookahead: 1
+  representation: rotation_6d
+  include_gripper: true
+  gripper_params:
+    reference_width: 0.09
+    device_max_width: 0.140

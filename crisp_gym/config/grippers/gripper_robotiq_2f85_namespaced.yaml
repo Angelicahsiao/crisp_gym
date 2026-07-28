@@ -1,0 +1,16 @@
+# Robotiq 2F-85 running under the /robotiq_2f85 namespace (dric setups).
+# RENAMED from gripper_robotiq_2f85.yaml: crisp_py bundles a file with that
+# name (un-namespaced topics) and crisp_py's config path is searched FIRST,
+# so this variant was silently shadowed. Use this name to get the
+# namespaced topics; plain 'grippers/gripper_robotiq_2f85.yaml' resolves to
+# the crisp_py version.
+  min_value: 0.8
+  max_value: 0.0
+  command_topic: "/robotiq_2f85/robotiq_gripper_controller/gripper_cmd"
+  joint_state_topic: /robotiq_2f85/joint_states
+  use_gripper_command_action: True
+  max_delta: 1.0
+  max_effort: 5.0
+
+  # No Dynamixel-style torque/reboot services on the Robotiq.
+  torque_interface: false

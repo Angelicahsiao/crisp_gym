@@ -11,3 +11,180 @@
 This repository contains Gymnasium environments to train and deploy high-level learning-based policies from [LeRobot](https://github.com/huggingface/lerobot) using [CRISP_PY](https://github.com/utiasDSL/crisp_py) and the [CRISP controllers](https://github.com/utiasDSL/crisp_controllers).
 
 Check the [docs](https://utiasdsl.github.io/crisp_controllers/getting_started/#4-using-the-gym) to get started.
+
+For the UMI-style data pipeline (handheld/robot recording, dataset alignment, relative-pose training, deployment), see **[USAGE.md](USAGE.md)**; remote model serving is specified in [REMOTE_INFERENCE.md](REMOTE_INFERENCE.md); development conventions live in [HANDOFF.md](HANDOFF.md).
+
+## Workspace layout
+
+Clone `crisp_gym` and its sibling repositories into a common workspace folder
+(e.g. `~/workspace`) — several paths assume the repos sit **next to each
+other**:
+
+```
+workspace/
+├── crisp_controllers_demos/   # robot bring-up (Docker); mounts ../crisp_py into its containers
+├── crisp_gym/                 # this repository
+├── crisp_py/                  # robot/gripper Python client
+└── lerobot/                   # created by crisp_gym/scripts/setup_lerobot.sh (../lerobot)
+```
+
+```bash
+mkdir -p ~/workspace && cd ~/workspace
+git clone https://github.com/utiasDSL/crisp_controllers_demos.git
+git clone https://github.com/utiasDSL/crisp_gym.git
+git clone https://github.com/utiasDSL/crisp_py.git
+```
+
+Concretely, the sibling layout matters because:
+
+- `pixi.toml` installs LeRobot editable from `../lerobot` (cloned by
+  `scripts/setup_lerobot.sh` — see Installation below),
+- `pixi.toml` installs `crisp_py` editable from `../crisp_py` (the local
+  checkout satisfies the `crisp_python` requirement instead of the lagging
+  PyPI wheel),
+- `crisp_controllers_demos/docker-compose.yaml` bind-mounts `../crisp_py`
+  into the robot containers.
+
+## Installation
+
+The environments run inside a [pixi](https://pixi.sh) workspace. The
+`humble-lerobot` environment (ROS 2 Humble + LeRobot) needs a **local LeRobot
+clone next to this repo** — it is installed editable from `../lerobot`, so a
+sibling of `crisp_gym` (e.g. `/workspace/lerobot` alongside `/workspace/crisp_gym`).
+
+**Set up LeRobot first, then install the environment:**
+
+```bash
+cd /workspace/crisp_gym              # the crisp_gym repo root
+bash scripts/setup_lerobot.sh        # clones LeRobot v0.4.4 to ../lerobot and
+                                     # patches its pyproject for ROS 2 Humble
+rm -f pixi.lock
+pixi install -e humble-lerobot
+```
+
+`scripts/setup_lerobot.sh` does two things you must not skip:
+
+1. **Clones** LeRobot to `../lerobot` (override the version with
+   `LEROBOT_REV=v0.5.1 bash scripts/setup_lerobot.sh`). If you already cloned it
+   manually, the script detects the existing directory, skips the clone, and
+   still applies the patches below — so run it anyway.
+2. **Patches** LeRobot's `pyproject.toml` for the Humble stack, most importantly
+   **removing the `rerun-sdk` dependency**. `rerun-sdk>=0.24` requires
+   `numpy>=2`, which conflicts with the `numpy==1.26.4` that ROS 2 Humble
+   (robostack) pins — without this patch `pixi install -e humble-lerobot` fails
+   with:
+
+   > Because rerun-sdk>=0.24.0,<=0.26.2 depends on numpy>=2 and numpy==1.26.4,
+   > we can conclude that rerun-sdk … cannot be used … lerobot==0.4.4 cannot be used.
+
+   `crisp_gym` does not use `rerun`; only LeRobot's standalone
+   `visualize_dataset.py` does, which is unaffected by recording/training/inference.
+
+> If you cloned LeRobot manually and hit the `rerun-sdk` / `numpy` conflict above,
+> just run `bash scripts/setup_lerobot.sh` (it will patch your existing clone),
+> then `rm -f pixi.lock && pixi install -e humble-lerobot`.
+
+## Data pipeline: record → train → deploy
+
+```mermaid
+flowchart TD
+    subgraph RECORD["1 — Record (robot PC, ROS 2 Humble)"]
+        H["Handheld UMI gripper<br/>scripts/record_umi_handheld.py"]
+        R["Robot teleop (FACTR / leader-follower)<br/>scripts/record_lerobot_format_leader_follower.py<br/>--record-config umi_robot_record.yaml"]
+        OLD["LEGACY dataset<br/>(old recorder: Euler pose obs +<br/>delta-command actions)"]
+        MIG["ONE-TIME MIGRATION<br/>scripts/migrate_euler_delta_to_rot6d.py<br/>--input old --output old_rot6d<br/>(videos byte-identical; Euler(6)→rot6d(9);<br/>action rebuilt as next_tcp_pose)"]
+        DS[("LeRobot dataset — ABSOLUTE poses<br/>obs: [x,y,z, rot6d(6)] + gripper + images<br/>action: absolute TCP pose t+1 + gripper<br/>+ meta/record_config.json")]
+        H --> DS
+        R --> DS
+        OLD --> MIG --> DS
+    end
+
+    CHK["VERIFY before training<br/>scripts/check_relative_pose.py<br/>(identity, round-trip, rot6d sanity)"]
+    DS --> CHK
+
+    subgraph TRAIN["2 — Train (GPU PC, lerobot 0.4.4)"]
+        TR["scripts/lerobot_relative_pose.py<br/>+ any lerobot-train args"]
+        W["RelativePoseDataset (in __getitem__):<br/>abs → RELATIVE wrt last obs frame;<br/>state = [rel_pose9, gripper1, rot_wrt_start6] (16-D);<br/>relative stats recomputed"]
+        CKPT[("checkpoint<br/>+ pose_repr.json<br/>(generation stamp)")]
+        TR --> W --> CKPT
+    end
+    CHK --> TR
+
+    subgraph DEPLOY["3 — Deploy (robot PC)"]
+        GEN{"pose_repr.json?<br/>(state_input: auto)"}
+        G1["missing / absolute → gen-1:<br/>ABSOLUTE 10-D state"]
+        G3["state_includes_wrt_start → gen-3:<br/>RELATIVE 16-D state (wrt-start appended,<br/>noise off, episode start = first obs)"]
+        LOC["LOCAL verification<br/>scripts/deploy_policy.py<br/>--policy-config relative_lerobot_policy<br/>--env-config *_deploy_umi (rot6d,<br/>use_relative_actions: false)"]
+        REM["REMOTE (canonical)<br/>RemotePolicy ⇆ websocket server<br/>contracts: config/policy/remote_umi_*.yaml"]
+        ACT["every action chunk composed<br/>T_cmd = T_tcp(obs time) ∘ T_rel"]
+        CKPT --> GEN
+        GEN --> G1 --> LOC
+        GEN --> G3 --> LOC
+        G1 -.-> REM
+        G3 -.-> REM
+        LOC --> ACT
+        REM --> ACT
+    end
+```
+
+Notes:
+
+- **Never store relative poses on disk** — datasets hold ABSOLUTE poses; the
+  relative conversion happens inside the training wrapper and (mirrored) at
+  inference. Details/invariants: [HANDOFF.md](HANDOFF.md) §1.
+- **Migrated legacy data caveat (gripper units):** the old recorder stored the
+  device-normalized gripper value, not the UMI reference-width scale. Don't
+  mix migrated and UMI-recorded datasets in one training, and when deploying a
+  model trained on migrated data set `reference_width: == device_max_width`
+  in `config/policy/relative_lerobot_policy.yaml` so the unit conversion is
+  identity.
+- Full step-by-step commands: [USAGE.md](USAGE.md).
+
+## Deploying a relative-pose (rot6d) model
+
+Models trained with `scripts/lerobot_relative_pose.py` output UMI-style
+RELATIVE poses that must be composed with the TCP pose captured at
+observation time. Two deployment paths:
+
+**Local (verification)** — robot machine's lerobot matches the training
+version (0.4.4). The `relative_lerobot_policy` runs inference in a worker
+process and handles the composition, gripper unit conversion, and obs
+history:
+
+```bash
+python -m crisp_gym.scripts.deploy_policy \
+    --env-config ur7e_robotiq_deploy_umi \
+    --policy-config relative_lerobot_policy \
+    --path outputs/train/<run>/checkpoints/last/pretrained_model \
+    --repo-id my_org/deploy_eval --fps 15
+```
+
+Before running: set `device_max_width` in
+`config/policy/relative_lerobot_policy.yaml` to YOUR gripper (0.140 for a
+Robotiq 2F-140), and point the deploy env config's `primary` camera at the
+topics you recorded with. The deploy env must keep
+`orientation_representation: rotation_6d` and `use_relative_actions: false`
+(see `config/envs/ur7e_robotiq_deploy_umi.yaml` for why).
+
+At startup the worker logs the checkpoint's input features and, on the first
+inference, the exact `observation.state` fed to the policy with an
+absolute/relative heuristic — use it to sanity-check what a checkpoint was
+trained on.
+
+**Remote (canonical)** — inference on the GPU machine over websocket, robot
+machine stays torch-free. Contract and wire protocol: [REMOTE_INFERENCE.md](REMOTE_INFERENCE.md).
+
+**Checkpoint generations.** Training stamps `pose_repr.json` next to the
+checkpoints recording the pose conventions and (critically) what the
+policy's `observation.state` input was. Three generations exist:
+ABSOLUTE 10-D (checkpoints trained before the wrapper converted the
+concatenated state — includes any checkpoint without the stamp),
+RELATIVE 10-D (converted state, no wrt-start), and RELATIVE 16-D
+(current wrapper — UMI parity: `[rel_pose9, gripper1, rot_wrt_start6]`,
+with the episode-start relative rotation appended). Deployment
+auto-detects this from the stamp (`state_input: auto`); don't mix them up
+manually. Remote-inference contract templates per generation:
+`config/policy/remote_umi_absolute_state.yaml` (gen 1) and
+`config/policy/remote_umi_relative_state.yaml` (gen 3).
+
+Check the [docs](https://utiasdsl.github.io/crisp_controllers/getting_started/#4-using-the-gym) to get started.

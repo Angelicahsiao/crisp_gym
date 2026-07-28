@@ -1,6 +1,5 @@
 control_frequency: 30.0
-gripper_enabled: false
-gripper_continuous_control: true
+gripper_mode: "none"
 gripper_threshold: 0.1
 
 cartesian_control_param_config: null
