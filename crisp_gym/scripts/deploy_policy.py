@@ -132,6 +132,23 @@ def main():
         "'ddim' with a low --num-inference-steps (e.g. 10) to run a DDPM-trained "
         "checkpoint fast. Overrides the policy config YAML.",
     )
+    # These override the policy YAML from the command line, so a `git pull`
+    # resetting the tracked config can't wipe them. Default None = use YAML.
+    parser.add_argument(
+        "--target-to-euler",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Convert the observation.state target sub-key from 9-D rot6d to "
+        "6-D Euler (needed for datasets migrated from the Euler recorder). "
+        "--target-to-euler / --no-target-to-euler; unset = policy config value.",
+    )
+    parser.add_argument(
+        "--invert-gripper",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Command 1-gripper instead of gripper (fixes the obs/command "
+        "convention mismatch that oscillates the gripper). Unset = config value.",
+    )
 
     args = parser.parse_args()
     logger = logging.getLogger(__name__)
@@ -241,6 +258,10 @@ def main():
             policy_overrides["n_action_steps"] = args.n_action_steps
         if args.scheduler is not None:
             policy_overrides["scheduler"] = args.scheduler
+        if args.target_to_euler is not None:
+            policy_overrides["target_to_euler"] = args.target_to_euler
+        if args.invert_gripper is not None:
+            policy_overrides["invert_gripper"] = args.invert_gripper
         policy = make_policy(
             name_or_config_name=args.policy_config,
             pretrained_path=args.path,

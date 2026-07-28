@@ -508,6 +508,37 @@ class RelativeLerobotPolicy(Policy):
 
         return np.concatenate([pos, rot_arr, [gripper]]).astype(np.float32)
 
+    def _maybe_autofix_target_euler(self, obs_raw: dict) -> None:
+        """Enable target_to_euler if it would make the state dim match.
+
+        Migrated-Euler datasets keep observation.state.target as 6-D Euler; a
+        rot6d deploy env emits it as 9-D, leaving the built state exactly 3
+        dims too large. If reducing the 9-D target to 6-D Euler makes the total
+        match the checkpoint, flip the flag automatically (and log it) so a
+        wiped config value doesn't block deployment.
+        """
+        expected = self.meta.get("state_dim")
+        if not expected:
+            return
+        try:
+            frame = build_obs_frame(
+                obs_raw, self.reference_width, self.device_max_width,
+                image_keys=self.meta.get("image_keys"), target_to_euler=False,
+            )
+        except Exception:
+            return
+        wrt = 6 if self.meta.get("state_input") == "relative_wrt_start" else 0
+        built = int(frame["observation.state"].shape[-1])
+        tgt = frame.get("observation.state.target")
+        has_target9 = tgt is not None and int(np.asarray(tgt).shape[-1]) == 9
+        if built + wrt != int(expected) and has_target9 and (built - 3) + wrt == int(expected):
+            logger.warning(
+                "[auto] observation.state is 3 dims too large and a 9-D target "
+                "is present -> enabling target_to_euler (migrated-Euler layout). "
+                "Set target_to_euler explicitly to silence this."
+            )
+            self.target_to_euler = True
+
     def _verify_state_dim(self, frame: dict) -> None:
         """Fail BEFORE inference if the built observation.state cannot match
         the checkpoint's normalizer — a mismatch inside lerobot's normalize
@@ -552,6 +583,12 @@ class RelativeLerobotPolicy(Policy):
         def _fn() -> tuple:
             tick_start = time.monotonic()
             obs_raw: Observation = self.env.get_obs()
+            # On the first tick, auto-enable target_to_euler if the state is
+            # exactly 3 dims too big AND there is a 9-D target sub-key — the
+            # signature of a migrated-Euler dataset (target stored 6-D Euler).
+            # Saves re-setting the config after every git pull.
+            if not self._state_dim_checked and not self.target_to_euler:
+                self._maybe_autofix_target_euler(obs_raw)
             frame = build_obs_frame(
                 obs_raw,
                 self.reference_width,
