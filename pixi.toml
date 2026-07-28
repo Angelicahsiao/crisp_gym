@@ -25,8 +25,8 @@ ninja = "*"
 typing_inspect = ">=0.9.0,<0.10"
 libstdcxx-ng = ">=12.2.0"
 typing-extensions = ">=4.14.0,<5"
-# numpy/packaging are pinned in the py312 feature only (numpy 2). On py311
-# numpy comes from robostack (1.26); see the py311/py312 features below.
+# numpy comes from robostack on BOTH py311 and py312 (ros-humble-cv-bridge
+# requires numpy <2); only `packaging` is pinned in the py312 feature.
 # pinocchio is NOT here on purpose: it exists only on conda-forge (not
 # robostack), so requiring it forced the shared scientific stack to resolve
 # from conda-forge — which pulled conda-forge's numpy-2-built scipy and broke
@@ -49,7 +49,8 @@ humble-lerobot = { features = ["humble", "lerobot", "dev", "py311"] }
 lerobot = { features = ["lerobot", "py311"] }
 jazzy = { features = ["jazzy", "py311"] }
 #jazzy-lerobot = { features = ["jazzy", "lerobot", "dev", "py311"] }
-# --- Python 3.12 (parallel; numpy 2, lerobot v0.5.1) ---
+# --- Python 3.12 (parallel; still numpy 1.26 from robostack, lerobot v0.4.4 —
+#     cv-bridge blocks numpy 2 in any humble env) ---
 humble-py312 = { features = ["humble", "py312"] }
 humble-lerobot-py312 = { features = ["humble", "lerobot", "dev", "py312"] }
 
@@ -58,7 +59,11 @@ python = "3.11.*"
 
 [feature.py312.dependencies]
 python = "3.12.*"
-numpy = ">=2.0,<2.3"
+# numpy is intentionally NOT pinned to 2.x: robostack-humble's
+# ros-humble-cv-bridge is built against numpy <2, so every humble env must use
+# robostack numpy (1.26) even on Python 3.12. Pinning numpy>=2 makes the
+# humble-py312 solve fail on cv-bridge. (numpy 2 is only reachable in a
+# non-humble env.)
 packaging = "<26.0"
 
 [feature.dev.pypi-dependencies]
