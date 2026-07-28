@@ -182,6 +182,26 @@ def main():
         ),
     )
 
+    # These override the policy YAML from the command line, so a `git pull`
+    # resetting the tracked config can't wipe them. Default None = use YAML.
+    parser.add_argument(
+        "--target-to-euler",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Convert the observation.state target sub-key from 9-D rot6d to "
+        "6-D Euler (needed for datasets migrated from the Euler recorder). "
+        "--target-to-euler / --no-target-to-euler; unset = policy config value.",
+    )
+    parser.add_argument(
+        "--invert-gripper",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Invert the ACTION gripper value (command 1-value). Only for legacy "
+        "migrated datasets whose action gripper was stored inverted — the obs "
+        "convention is unified (0=closed/1=open) everywhere since the gripper "
+        "refactor, so UMI-recorded models need this OFF. Unset = config value.",
+    )
+
     args = parser.parse_args()
     logger = logging.getLogger(__name__)
     setup_logging(level=args.log_level)
@@ -316,6 +336,10 @@ def main():
             policy_overrides["n_action_steps"] = args.n_action_steps
         if args.scheduler is not None:
             policy_overrides["scheduler"] = args.scheduler
+        if args.target_to_euler is not None:
+            policy_overrides["target_to_euler"] = args.target_to_euler
+        if args.invert_gripper is not None:
+            policy_overrides["invert_gripper"] = args.invert_gripper
         if args.async_inference:  # only override when explicitly requested
             policy_overrides["async_inference"] = True
         # One process, one env, one crisp_py Robot -> ONE publisher on the
