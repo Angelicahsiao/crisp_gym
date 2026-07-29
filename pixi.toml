@@ -15,8 +15,7 @@ scripts = [
 ]
 
 [dependencies]
-# python is pinned per-environment via the py311 / py312 features below,
-# so the humble stack can be built on either interpreter in parallel.
+python = "3.12.*"
 compilers = "*"
 cmake = "*"
 pkg-config = "*"
@@ -25,8 +24,8 @@ ninja = "*"
 typing_inspect = ">=0.9.0,<0.10"
 libstdcxx-ng = ">=12.2.0"
 typing-extensions = ">=4.14.0,<5"
-# numpy comes from robostack on BOTH py311 and py312 (ros-humble-cv-bridge
-# requires numpy <2); only `packaging` is pinned in the py312 feature.
+numpy = ">=2.0,<2.3"
+packaging = "<26.0"
 # pinocchio is NOT here on purpose: it exists only on conda-forge (not
 # robostack), so requiring it forced the shared scientific stack to resolve
 # from conda-forge — which pulled conda-forge's numpy-2-built scipy and broke
@@ -42,29 +41,12 @@ typing-extensions = ">=4.14.0,<5"
 libgl-devel = "*"
 
 [environments]
-# --- Python 3.11 (previous default; numpy 1.26 from robostack, lerobot v0.4.4) ---
-dev = { features = ["dev", "py311"] }
-humble = { features = ["humble", "py311"] }
-humble-lerobot = { features = ["humble", "lerobot", "dev", "py311"] }
-lerobot = { features = ["lerobot", "py311"] }
-jazzy = { features = ["jazzy", "py311"] }
-#jazzy-lerobot = { features = ["jazzy", "lerobot", "dev", "py311"] }
-# --- Python 3.12 (parallel; still numpy 1.26 from robostack, lerobot v0.4.4 —
-#     cv-bridge blocks numpy 2 in any humble env) ---
-humble-py312 = { features = ["humble", "py312"] }
-humble-lerobot-py312 = { features = ["humble", "lerobot", "dev", "py312"] }
-
-[feature.py311.dependencies]
-python = "3.11.*"
-
-[feature.py312.dependencies]
-python = "3.12.*"
-# numpy is intentionally NOT pinned to 2.x: robostack-humble's
-# ros-humble-cv-bridge is built against numpy <2, so every humble env must use
-# robostack numpy (1.26) even on Python 3.12. Pinning numpy>=2 makes the
-# humble-py312 solve fail on cv-bridge. (numpy 2 is only reachable in a
-# non-humble env.)
-packaging = "<26.0"
+dev = { features = ["dev"] }
+humble = { features = ["humble"] }
+humble-lerobot = { features = ["humble", "lerobot", "dev"] }
+lerobot = { features = ["lerobot"] }
+jazzy = { features = ["jazzy"] }
+#jazzy-lerobot = { features = ["jazzy", "lerobot", "dev"] }
 
 [feature.dev.pypi-dependencies]
 pre-commit = "*"
@@ -76,13 +58,14 @@ pudb = ">=2025.1.3, <2026"
 pynput = "*"
 
 [feature.lerobot.pypi-dependencies]
-# === local clone (default v0.4.4, ROS2 Humble + Python 3.11 compatible) ===
-# Run `bash scripts/setup_lerobot.sh` first to clone lerobot.
-# To use v0.5.1 instead: LEROBOT_REV=v0.5.1 bash scripts/setup_lerobot.sh
-#   (requires Python 3.12 or numpy/python patches that the script applies)
+# === local clone (v0.6.0 — native for this Python 3.12 + numpy 2 env) ===
+# Run `LEROBOT_REV=v0.6.0 bash scripts/setup_lerobot.sh` to clone it.
+# v0.6.0 requires Python >=3.12 and numpy >=2.0, and its
+# opencv-python-headless bound (<4.14) accepts the conda-provided opencv 4.13,
+# so it needs no patches here. For a numpy-1.26 env, use v0.4.4 instead.
 lerobot = { path = "../lerobot", editable = true }
-# === v0.5.1 from PyPI (requires Python 3.12) ===
-# lerobot = "==0.5.1"
+# === v0.6.0 from PyPI (alternative to the local clone) ===
+# lerobot = "==0.6.0"
 
 [feature.humble]
 channels = ["https://prefix.dev/robostack-humble"]
@@ -95,10 +78,10 @@ ros-humble-ros2-controllers = "*"
 rosdep = "*"
 ros-humble-rmw-cyclonedds-cpp = "*"
 ros-humble-image-transport-plugins = "*"
-# cv_bridge: required by crisp_py.camera (from cv_bridge import CvBridge). It
-# ships inside ros-humble-desktop, but declare it explicitly so an env rebuild
-# can never drop it (ModuleNotFoundError: No module named 'cv_bridge').
-ros-humble-cv-bridge = "*"
+# NOTE: ros-humble-cv-bridge is intentionally NOT declared explicitly. Pinning
+# it with "*" lets the solver pick an old build that requires numpy <2, which
+# breaks the numpy-2 solve. cv_bridge still ships inside ros-humble-desktop,
+# which resolves a numpy-2-compatible build transitively.
 # scipy is DELIBERATELY NOT a conda dependency here. conda-forge's scipy is
 # built against numpy 2.x; forcing it into this env (which uses robostack's
 # numpy 1.26) yields the _spropack ImportError. crisp_py's working humble env
