@@ -571,6 +571,26 @@ class RelativeLerobotPolicy(Policy):
                     "[gripper-obs] fed_to_model=%.4f  (raw gripper.value=%.4f, "
                     "env obs = 1 - value)" % (g_obs, g_raw)
                 )
+                # Absolute TCP pose the model is being fed this tick — the
+                # observation.state the policy consumes (rot6d decoded to euler
+                # for readability). This is the RAW absolute obs in the record
+                # frame, BEFORE the server-side relative conversion.
+                from scipy.spatial.transform import Rotation
+                from crisp_gym.util.rot6d import rot6d_to_mat
+
+                cart = np.asarray(frame["observation.state.cartesian"], dtype=np.float64)
+                obs_euler = Rotation.from_matrix(rot6d_to_mat(cart[3:9])).as_euler("xyz")
+                state_vec = np.asarray(frame["observation.state"], dtype=np.float64)
+                sub_keys = [k for k in frame if k.startswith("observation.state.")]
+                logger.info(
+                    "[obs-state] cartesian abs pos=%s rot_euler=%s gripper=%.4f  "
+                    "(observation.state dim=%d, sub-keys=%s)"
+                    % (np.round(cart[:3], 4).tolist(),
+                       np.round(obs_euler, 4).tolist(),
+                       g_obs,
+                       int(state_vec.shape[0]),
+                       sub_keys)
+                )
 
             if self._chunk is None or self._chunk_idx >= min(
                 self.n_action_steps, len(self._chunk)
