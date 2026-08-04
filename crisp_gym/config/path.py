@@ -48,8 +48,17 @@ if CRISP_CONFIG_PATH_STR is not None:
     CRISP_CONFIG_PATH = CRISP_CONFIG_PATHS[0]
 
 
+_shadowing_warned = set()
+
+
 def find_config(filename: str) -> Path | None:
     """Find a config file in the CRISP config paths.
+
+    Warns (once per filename) when the same config name exists in more than one
+    search path: only the first is loaded and the others are silently ignored.
+    crisp_py's config dir is searched BEFORE crisp_gym's, so a duplicated
+    control/*.yaml in crisp_py shadows crisp_gym's copy — that shadowing has
+    hidden real divergences between the two before.
 
     Args:
         filename: Name of the config file to find
@@ -57,11 +66,21 @@ def find_config(filename: str) -> Path | None:
     Returns:
         Path to the first matching config file, or None if not found
     """
-    for config_path in CRISP_CONFIG_PATHS:
-        file_path = config_path / filename
-        if file_path.exists():
-            return file_path
-    return None
+    matches = [
+        config_path / filename
+        for config_path in CRISP_CONFIG_PATHS
+        if (config_path / filename).exists()
+    ]
+    if not matches:
+        return None
+    if len(matches) > 1 and filename not in _shadowing_warned:
+        _shadowing_warned.add(filename)
+        warnings.warn(
+            f"Config '{filename}' exists in {len(matches)} config paths; "
+            f"loading '{matches[0]}' and ignoring "
+            f"{', '.join(str(p) for p in matches[1:])}."
+        )
+    return matches[0]
 
 
 def list_configs_in_folder(folder: str) -> List[Path]:
