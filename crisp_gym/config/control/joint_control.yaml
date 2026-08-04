@@ -9,11 +9,13 @@ nullspace.stiffness: 5.0
 nullspace.damping: 1.0
 nullspace.max_tau: 5.0
 nullspace.regularization: 1.0e-06
-# nullspace.weights.<joint>.value intentionally omitted: projector_type is
-# `none` above (nullspace disabled for joint control), so per-joint weights are
-# inert here. They were also not declared on every crisp_controllers build /
-# joint-naming (e.g. namespaced right_fr3_joint*), and loading an undeclared
-# param aborts the whole config load (ValueError: parameter does not exist).
+nullspace.weights.fr3_joint1.value: 15.0
+nullspace.weights.fr3_joint2.value: 15.0
+nullspace.weights.fr3_joint3.value: 8.0
+nullspace.weights.fr3_joint4.value: 8.0
+nullspace.weights.fr3_joint5.value: 8.0
+nullspace.weights.fr3_joint6.value: 5.0
+nullspace.weights.fr3_joint7.value: 5.0
 
 stop_commands: false
 
