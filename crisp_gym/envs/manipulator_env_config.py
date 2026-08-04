@@ -329,8 +329,8 @@ class FrankaEnvConfig(ManipulatorEnvConfig, ABC):
         or CRISP_CONFIG_PATH / "control" / "default_cartesian_impedance.yaml"
     )
     joint_control_param_config: Path | None = field(
-        default_factory=lambda: find_config("control/joint_control.yaml")
-        or CRISP_CONFIG_PATH / "control" / "joint_control.yaml"
+        default_factory=lambda: find_config("control/fr3_joint_control.yaml")
+        or CRISP_CONFIG_PATH / "control" / "fr3_joint_control.yaml"
     )
 
 

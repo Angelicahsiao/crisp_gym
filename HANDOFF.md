@@ -261,3 +261,97 @@ norm ~1.0 and dot ~0.0 (they are rows of a real rotation matrix).
 - The user typically records on a ROS2 Humble/Python 3.11 machine and trains on
   a separate GPU PC with lerobot 0.4.4 — keep the training/inference files free
   of crisp/ROS imports.
+
+---
+
+## 6. Controller config resolution & JIC nullspace gains
+
+### 6.1 Config shadowing (`find_config`)
+
+`CRISP_CONFIG_PATHS` defaults to `[crisp_py/config, crisp_gym/config]` and
+`find_config` returns the FIRST match, so a filename present in both packages
+resolves to **crisp_py's** copy and crisp_gym's is silently ignored. Note
+crisp_py has TWO config trees and only one is packaged:
+
+| tree | packaged? | note |
+|---|---|---|
+| `crisp_py/config/` (repo root) | NO — `pyproject.toml` `exclude = ["config", ...]` | dev/reference only; edits here have NO runtime effect |
+| `crisp_py/crisp_py/config/` | YES — `include = ["crisp_py*"]` | this is what `files("crisp_py")` resolves to |
+
+`find_config` now warns once per filename when a name exists in >1 path,
+naming the winner and the ignored copies. Resolution is unchanged (first match).
+
+Setting `CRISP_CONFIG_PATH` **reverses the whole list** (`config/path.py`),
+including the two built-in defaults — so the crisp_py/crisp_gym precedence
+flips depending on whether an unrelated env var is set. Do not rely on it.
+
+**FIXED (this branch):** `control/joint_control.yaml` existed in both packages
+with DIFFERENT joint names — crisp_py's packaged copy uses `right_fr3_joint*`
+(upstream dual-arm rig), crisp_gym's uses `fr3_joint*`. crisp_py won, so env
+init pushed `nullspace.weights.right_fr3_joint*` at a controller that only
+declares `fr3_joint*`, and `set_parameters` raised
+`ValueError: One of the passed elements ... does not exist`. crisp_gym's copy
+is now `control/fr3_joint_control.yaml` (matching the existing
+`ur_joint_control.yaml` convention) so the name cannot collide.
+
+**STILL SHADOWED — crisp_py's packaged copy wins:**
+- `control/default_cartesian_impedance.yaml` — crisp_gym's copy sets
+  `nullspace.projector_type: none`, `nullspace.damping: 0.0`,
+  `nullspace.max_tau: 0.0`; crisp_py's lacks all three, so the controller
+  defaults apply instead (`kinematic`, `-1.0` → `2√K`, `5.0`). Loaded by
+  `factr_franka_robotiq.yaml`. Applying crisp_gym's values would zero the
+  nullspace torque in Cartesian mode — verify on hardware before changing.
+- `cameras/wrist_camera.yaml` — crisp_py 640×480 / `camera/wrist_camera/...` /
+  frame `wrist_link`; crisp_gym 256×256 / `camera/camera/...` / `camera_link`.
+- `control/gravity_compensation_on_plane.yaml` — `task.d_*` +1.0 vs −1.0 (sign).
+- `control/joint_velocity_control.yaml` — same `right_fr3_*` vs `fr3_*`
+  mismatch as joint_control had; currently unreferenced, so dormant, but it
+  will fail the same way if anything starts loading it.
+
+### 6.2 How JIC actually works (verified against `learnsyslab/crisp_controllers`)
+
+There is no separate joint-impedance controller — it is `cartesian_controller`
+with all task gains set to 0 and `nullspace.projector_type: none`
+(`nullspace_projection = Identity`), so `tau_nullspace = tau_secondary` and the
+"nullspace" PD IS the entire joint control law.
+
+`nullspace.weights` is a `__map_joints` map keyed by the CONTROLLER's own
+`joints` list (default 1.0). The controller reads it as
+`weights[i] = ...weights.joints_map.at(params_.joints.at(i)).value` — a key
+under any other joint name is never consulted. Weights are a diagonal scaling
+on stiffness AND damping, not a weighted pseudo-inverse:
+
+    nullspace_stiffness.diagonal() = nullspace.stiffness * weights
+    nullspace_damping.diagonal()   = nullspace.damping   * weights   (if damping > 0)
+                                   = 2 * sqrt(stiffness_diag)        (if damping <= 0)
+    tau_secondary  = K(q_ref - q) + D(dq_ref - dq)
+    tau_nullspace  = clamp(projector * tau_secondary, ±nullspace.max_tau)
+
+With `fr3_joint_control.yaml` (`stiffness 5.0`, `damping 1.0`, `max_tau 5.0`):
+
+| joint | w | K = 5·w | D = 1·w | τ saturates at | D / 2√K |
+|---|---|---|---|---|---|
+| fr3_joint1/2 | 15 | 75 | 15 | 0.067 rad (3.8°) | 0.87 |
+| fr3_joint3/4/5 | 8 | 40 | 8 | 0.125 rad (7.2°) | 0.63 |
+| fr3_joint6/7 | 5 | 25 | 5 | 0.200 rad (11.5°) | 0.50 |
+
+Two consequences worth knowing before retuning:
+
+- **`max_tau: 5.0` clips the weights' effect to a narrow error band.** Past
+  ~3.8° of error on joint1 every joint delivers the same 5 N·m regardless of
+  weight; the 15/8/5 taper only shapes small-error behavior. `max_delta_tau:
+  0.5` additionally rate-limits.
+- **Because `damping: 1.0 > 0`, damping is scaled by weight, not by `2√K`.**
+  Measured against the controller's own critical-damping fallback, the distal
+  joints run at roughly half the reference damping (joint7: D=5 vs 2√25=10), so
+  they are the oscillatory ones. Setting `nullspace.damping: -1.0` switches all
+  seven to the `2√K` rule. NOT DONE — these are tuned teleop values and the
+  change alters feel; test on hardware first. (True ζ depends on real joint
+  inertia; `2√K` is the controller's unit-inertia heuristic.)
+
+### 6.3 `parameters_client.set_parameters` existence guard
+
+The guard works: `get_parameters` maps `PARAMETER_NOT_SET` → `None` via
+`parameter_value_to_python`, so `if None in current_parameters` correctly
+catches undeclared names and raises before anything is applied. That is what
+surfaced the `right_fr3_*` mismatch above rather than failing silently.

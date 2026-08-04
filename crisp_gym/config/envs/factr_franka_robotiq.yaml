@@ -46,4 +46,4 @@ sensor_configs: []
 # Franka defaults (same files FrankaEnvConfig would apply). The generic YAML
 # env class does not inject these, so set them explicitly for joint teleop.
 cartesian_control_param_config: "control/default_cartesian_impedance.yaml"
-joint_control_param_config: "control/joint_control.yaml"
+joint_control_param_config: "control/fr3_joint_control.yaml"
