@@ -11,8 +11,8 @@ Prerequisites:
   1. UR7e bringup running:
        docker compose up launch_ur_gripper
   2. FACTR teleop node running on the same ROS network, publishing:
-       /factr_teleop/{FACTR_NAME}/joint_states   (sensor_msgs/JointState, 6 joints)
-       /factr_teleop/{FACTR_NAME}/cmd_gripper_pos (std_msgs/Float32, 0..1)
+       /factr_teleop/{FACTR_NAME}/cmd_arm_pos     (sensor_msgs/JointState, 6 joints)
+       /factr_teleop/{FACTR_NAME}/cmd_gripper_pos (sensor_msgs/JointState, position[0] 0..1)
 
 Usage:
   python3 examples/09_factr_ur7e_teleop.py
