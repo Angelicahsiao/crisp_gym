@@ -36,7 +36,9 @@ Prerequisites:
      and subscribing to:
        /factr_teleop/{FACTR_NAME}/follow_mode     (std_msgs/Bool)
 
-Follow mode (press ENTER to toggle, 'q' + ENTER to quit):
+Follow mode (press ENTER to toggle, 'q' + ENTER to quit). The script STARTS
+SUSPENDED (follow mode ON) so you can align the two arms before the FR3 is ever
+commanded — press ENTER once they match to engage teleoperation:
   ON  — the FR3 STOPS following the leader. The loop skips env.step(), so
         robot.target_joint stays latched at its last value and keeps being
         published: the arm holds where it is. crisp_gym publishes
@@ -130,12 +132,19 @@ def _keyboard_listener() -> None:
 
 threading.Thread(target=_keyboard_listener, daemon=True).start()
 
-follow_mode = False
+# Start SUSPENDED: the FR3 holds and the leader tracks it, so the operator can
+# align the two arms before the FR3 is ever commanded. Engaging then runs the
+# startup offset check at a moment the operator chose, instead of at process
+# start with whatever offset happened to exist. Also symmetric with the exit
+# state below, so back-to-back runs do not flip the leader's mode needlessly.
+follow_mode = True
 factr.set_follow_mode(follow_mode)
 
 logger.info(
-    "Environment ready. Starting teleoperation.\n"
-    "  ENTER — toggle follow mode (ON = FR3 holds still, leader tracks it)\n"
+    "Environment ready — starting SUSPENDED (follow mode ON): the FR3 is "
+    "holding and is NOT following the leader.\n"
+    "  ENTER — toggle follow mode; press it once the arms are aligned to "
+    "engage teleoperation\n"
     "  q + ENTER, or Ctrl+C — stop"
 )
 
