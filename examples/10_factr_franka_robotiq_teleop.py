@@ -31,7 +31,7 @@ Prerequisites:
      accepting GripperCommand goals on
      /robotiq_2f85/robotiq_gripper_controller/gripper_cmd).
   2. FACTR teleop node running on the same ROS network, publishing:
-       /factr_teleop/{FACTR_NAME}/cmd_ur_pos      (sensor_msgs/JointState, 7 joints)
+       /factr_teleop/{FACTR_NAME}/cmd_arm_pos     (sensor_msgs/JointState, 7 joints)
        /factr_teleop/{FACTR_NAME}/cmd_gripper_pos (sensor_msgs/JointState, position[0] 0..1)
 
 Usage:

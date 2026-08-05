@@ -97,7 +97,7 @@ FACTR drives the follower in joint space; the dataset still stores measured
 TCP poses (the FACTR stream itself is never recorded).
 
 **Prerequisites**: UR bringup with Robotiq attached; FACTR node publishing
-`/factr_teleop/{name}/cmd_ur_pos` and `/factr_teleop/{name}/cmd_gripper_pos`.
+`/factr_teleop/{name}/cmd_arm_pos` and `/factr_teleop/{name}/cmd_gripper_pos`.
 
 **Run**
 ```bash

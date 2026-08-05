@@ -19,7 +19,9 @@ class FACTRStreamedJoints:
     """Subscribe to FACTR leader arm joint and gripper topics.
 
     FACTR publishes (both as sensor_msgs/JointState):
-      /factr_teleop/{name}/cmd_ur_pos      — 6-DOF arm joint positions (position[0:6])
+      /factr_teleop/{name}/cmd_arm_pos     — arm joint positions, one per follower
+                                             joint (position[0:N]; N=6 on the UR7e,
+                                             7 on the FR3)
       /factr_teleop/{name}/cmd_gripper_pos — gripper trigger position (position[0])
 
     This class additionally PUBLISHES:
@@ -49,7 +51,7 @@ class FACTRStreamedJoints:
         self._prefix = f"{namespace}_" if namespace else ""
         self.node = rclpy.create_node("factr_stream", namespace=namespace)
 
-        self._joint_topic = f"/factr_teleop/{name}/cmd_ur_pos"
+        self._joint_topic = f"/factr_teleop/{name}/cmd_arm_pos"
         self._gripper_topic = f"/factr_teleop/{name}/cmd_gripper_pos"
         self._home_topic = f"/factr_teleop/{name}/go_home"
         self._home_pose_topic = f"/factr_teleop/{name}/home_pose"
