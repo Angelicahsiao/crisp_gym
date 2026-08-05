@@ -228,28 +228,47 @@ def make_streamer_drive_fn(
     return _drive
 
 
-def make_factr_drive_fn(factr) -> Callable:
+def make_factr_drive_fn(factr, env: ManipulatorBaseEnv | None = None) -> Callable:
     """Drive-fn adapter for a FACTR leader arm (joint-space teleop).
 
-    Computes delta-joint commands from the FACTR stream's absolute joint
-    positions (same logic as examples/09_factr_ur7e_teleop.py) WITHOUT
-    stepping the env. Returns None on the warm-up tick. The command layout is
-    [dtheta_1..dtheta_N, gripper] with the gripper trigger already inverted
-    and clamped to [0, 1] by FACTRStreamedJoints.
+    Builds joint commands from the FACTR stream WITHOUT stepping the env, in
+    whichever convention the env expects — this MUST match
+    `env.config.use_relative_actions`, because the env interprets the vector
+    accordingly (`ManipulatorJointEnv.step`):
+
+      relative (default): [dtheta_1..dtheta_N, gripper] — per-step deltas of
+          the leader's absolute positions. Returns None on the warm-up tick,
+          which has no previous sample to diff against.
+      absolute: [theta_1..theta_N, gripper] — the leader's joint positions
+          passed straight through as the controller's q_ref.
+
+    Feeding deltas to an absolute-mode env (or the reverse) silently commands
+    the wrong thing — deltas read as absolute targets would drive the arm
+    toward zero joint angles — so the convention is taken from the env rather
+    than assumed. `env=None` keeps the historical delta behaviour for callers
+    that have no env handle.
+
+    The gripper trigger is already inverted and clamped to [0, 1] by
+    FACTRStreamedJoints in both cases.
 
     Args:
         factr: A crisp_gym.teleop.teleop_factr_stream.FACTRStreamedJoints.
+        env: The env the commands will be stepped into, used to read
+            `use_relative_actions`. None means relative.
     """
+    relative = True if env is None else env.config.use_relative_actions
     state = {"prev": None}
 
     def _drive():
         current = factr.last_joint_pos
+        gripper = factr.last_gripper if factr.last_gripper is not None else 0.0
+        if not relative:
+            return np.append(current, gripper).astype(np.float32)
         if state["prev"] is None:
             state["prev"] = current
             return None
         delta = current - state["prev"]
         state["prev"] = current
-        gripper = factr.last_gripper if factr.last_gripper is not None else 0.0
         return np.append(delta, gripper).astype(np.float32)
 
     return _drive

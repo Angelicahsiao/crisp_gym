@@ -349,7 +349,58 @@ Two consequences worth knowing before retuning:
   change alters feel; test on hardware first. (True ζ depends on real joint
   inertia; `2√K` is the controller's unit-inertia heuristic.)
 
-### 6.3 `parameters_client.set_parameters` existence guard
+### 6.3 FACTR Franka teleop commands ABSOLUTE joints (not deltas)
+
+`ManipulatorJointEnv.step` now honours `config.use_relative_actions`, mirroring
+what `ManipulatorCartesianEnv.step` already did — previously the joint env
+ignored the flag and ALWAYS accumulated deltas onto `robot.target_joint`.
+Default is still `True`, so examples 01/02/03, `09_factr_ur7e_teleop.py` (left
+on deltas deliberately, pending FR3 validation) and the leader/follower record
+script are unchanged.
+
+`config/envs/factr_franka_robotiq.yaml` sets `use_relative_actions: false`.
+Motivation — two failure modes of the delta scheme:
+- **Startup offset frozen in**: `robot._target_joint` is seeded from the
+  follower's measured position exactly ONCE (`crisp_py robot.py`, when it is
+  still None) and thereafter only ever has leader deltas added. Any
+  leader/follower mismatch at t=0 persisted for the whole episode and was never
+  re-synced.
+- **Wind-up**: a blocked follower did not stop the target integrating, so it
+  ran away from the arm and lunged on release. The controller cannot help here
+  — `limit_error`/`task.error_clip` are Cartesian-only and `max_tau` bounds
+  torque, not target divergence.
+
+Commanding the leader's absolute pose removes both, but makes the leader
+authoritative. Two guards, both in `ManipulatorJointEnv`:
+- `max_startup_joint_offset` (rad, default 0.15) — on the FIRST step after
+  reset in absolute mode, raises if any joint is further than this from the
+  measured pose, naming the offending joints. Only the first step is checked;
+  afterwards a large difference is a real command, not a startup mismatch.
+  `None` disables. Re-armed by `ManipulatorJointEnv.reset`.
+- `max_joint_speed` (rad/s, default None = off; 0.5 in the FACTR config) —
+  clamps the per-step target change to `max_joint_speed / control_frequency`.
+  Applies in BOTH modes. Bounds a leader dropout/reconnect delivering one huge
+  jump, and ramps rather than lunges toward a mismatch. Deriving the bound from
+  the configured frequency fails safe: a slower loop tightens it, never loosens.
+
+**INVARIANT — the drive_fn convention must match the env.** Feeding deltas to
+an absolute-mode env commands near-zero joint angles (a delta of ~0.001 rad read
+as an absolute target); the reverse creeps. `make_factr_drive_fn(factr, env)`
+therefore reads `env.config.use_relative_actions` and emits the matching
+convention; `env=None` keeps the historical delta behaviour. The call site in
+`scripts/record_lerobot_format_leader_follower.py` passes `env`. Do not
+reintroduce a drive_fn that assumes a convention.
+
+Side effect, in the right direction: under `action.definition: command` the
+recorded FACTR action is now ABSOLUTE joint positions, consistent with §1.2
+("never store relative poses in the dataset") instead of contradicting it.
+
+ASSUMPTION: the FACTR leader is a joint-for-joint replica of the FR3 (same
+joint order, zeros, directions). If a fixed calibration offset exists, it must
+be added to the leader positions before stepping — there is currently no config
+field for one. NOT YET VALIDATED ON HARDWARE.
+
+### 6.4 `parameters_client.set_parameters` existence guard
 
 The guard works: `get_parameters` maps `PARAMETER_NOT_SET` → `None` via
 `parameter_value_to_python`, so `if None in current_parameters` correctly

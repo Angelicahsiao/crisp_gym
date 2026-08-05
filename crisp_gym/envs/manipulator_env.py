@@ -846,6 +846,9 @@ class ManipulatorJointEnv(ManipulatorBaseEnv):
 
         self.num_joints = self.config.robot_config.num_joints()
 
+        # Guards the absolute-mode startup check in _check_startup_joint_offset.
+        self._awaiting_first_joint_command = True
+
         # We add the target to the observation space to allow the agent to learn the target joint positions.
         if ObservationKeys.TARGET_OBS in self.config.observations_to_include_to_state:
             self.observation_space: gym.spaces.Dict = gym.spaces.Dict(
@@ -882,18 +885,106 @@ class ManipulatorJointEnv(ManipulatorBaseEnv):
         )
 
     @override
+    def reset(
+        self, *, seed: int | None = None, options: dict[str, Any] | None = None
+    ) -> Tuple[dict, dict]:
+        """Reset the environment and re-arm the absolute-mode startup check."""
+        self._awaiting_first_joint_command = True
+        return super().reset(seed=seed, options=options)
+
+    @override
     def _get_obs(self) -> dict:
         obs = super()._get_obs()
         if ObservationKeys.TARGET_OBS in self.config.observations_to_include_to_state:
             obs["observation.state.target"] = self.robot.target_joint
         return obs
 
+    def _check_startup_joint_offset(self, target_joint: np.ndarray) -> None:
+        """Refuse the first absolute command if it is far from where the arm is.
+
+        In absolute mode the commanded target IS the leader's pose, so the very
+        first step after a reset drives the follower to wherever the leader
+        happens to be. If the two are not aligned that is an unexpected — and
+        on a torque-controlled arm, potentially unsafe — motion, so fail loudly
+        instead. Only the first step after reset is checked: afterwards the
+        follower is tracking the leader and a large difference is a genuine
+        command, not a startup mismatch.
+
+        Args:
+            target_joint: The absolute joint target about to be commanded.
+
+        Raises:
+            RuntimeError: If any joint is further than
+                `config.max_startup_joint_offset` from the measured position.
+        """
+        if not self._awaiting_first_joint_command:
+            return
+        self._awaiting_first_joint_command = False
+
+        tolerance = self.config.max_startup_joint_offset
+        if tolerance is None:
+            return
+
+        measured = self.robot.joint_values
+        offset = np.abs(target_joint - measured)
+        if not np.any(offset > tolerance):
+            return
+
+        offending = np.flatnonzero(offset > tolerance)
+        details = ", ".join(
+            f"joint{i + 1}: commanded {target_joint[i]:+.3f} vs measured "
+            f"{measured[i]:+.3f} (off by {offset[i]:.3f} rad)"
+            for i in offending
+        )
+        raise RuntimeError(
+            f"Absolute joint command is {offset.max():.3f} rad from the current "
+            f"arm pose on first step (limit {tolerance} rad) — {details}. The "
+            "leader and follower are not aligned; align them (or move the "
+            "follower to the leader's pose) before starting. Set "
+            "max_startup_joint_offset to None in the env config to disable "
+            "this check."
+        )
+
+    def _limit_joint_speed(
+        self, target_joint: np.ndarray, previous_target: np.ndarray
+    ) -> np.ndarray:
+        """Clamp how far the commanded target may move in a single step.
+
+        Bounds the per-step change to `max_joint_speed / control_frequency`.
+        This protects against a leader dropout/reconnect delivering one huge
+        jump in a single cycle, and in absolute mode turns a startup mismatch
+        into a ramp rather than a lunge. Deriving the bound from the configured
+        control frequency fails safe: running the loop slower than configured
+        makes the limit tighter, never looser.
+
+        Args:
+            target_joint: The desired joint target for this step.
+            previous_target: The target commanded on the previous step.
+
+        Returns:
+            The target, clamped to the per-step limit.
+        """
+        max_speed = self.config.max_joint_speed
+        if max_speed is None:
+            return target_joint
+        max_step = max_speed / self.config.control_frequency
+        return previous_target + np.clip(target_joint - previous_target, -max_step, max_step)
+
     @override
     def step(self, action: np.ndarray, block: bool = True) -> Tuple[dict, float, bool, bool, dict]:
         """Step the environment with a Joint action.
 
+        The action is interpreted according to `config.use_relative_actions`
+        (mirroring ManipulatorCartesianEnv): when True it is a per-step DELTA
+        accumulated onto the previous target; when False it is the ABSOLUTE
+        joint target. Either way the result is published as the controller's
+        q_ref — the flag changes how the target is computed here, never any
+        controller parameter.
+
         Args:
-            action (np.ndarray): Joint delta action [dtheta_1, dtheta_2, ..., dtheta_n, gripper_action].
+            action (np.ndarray): Joint action, [dtheta_1, ..., dtheta_n, gripper_action]
+                when use_relative_actions is True, otherwise
+                [theta_1, ..., theta_n, gripper_action] as absolute targets.
             block (bool): If True, block to maintain the control rate.
 
         Returns:
@@ -908,7 +999,15 @@ class ManipulatorJointEnv(ManipulatorBaseEnv):
         assert action.shape == self.action_space.shape, (
             f"Action shape {action.shape} does not match expected shape {self.action_space.shape}"
         )
-        target_joint = self.robot.target_joint + action[: self.num_joints]
+        previous_target = self.robot.target_joint
+
+        if self.config.use_relative_actions:
+            target_joint = previous_target + action[: self.num_joints]
+        else:
+            target_joint = np.asarray(action[: self.num_joints], dtype=float)
+            self._check_startup_joint_offset(target_joint)
+
+        target_joint = self._limit_joint_speed(target_joint, previous_target)
 
         self.robot.set_target_joint(target_joint)
 

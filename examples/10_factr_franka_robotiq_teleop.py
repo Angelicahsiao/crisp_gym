@@ -1,15 +1,29 @@
 """FACTR leader arm → Franka FR3 + Robotiq 2F-85 joint teleoperation.
 
-Franka analogue of 09_factr_ur7e_teleop.py. The only substantive difference is
-the arm: the FR3 has 7 joints (the UR7e has 6), so the FACTR leader must publish
-7 joint positions and the action vector is [dtheta_1..dtheta_7, gripper].
+Franka analogue of 09_factr_ur7e_teleop.py, with two differences: the FR3 has 7
+joints (the UR7e has 6), and this script commands ABSOLUTE joint positions
+while 09 still integrates per-step deltas.
 
 Control flow:
-  FACTR arm publishes absolute joint positions → this script computes deltas
-  → ManipulatorJointEnv (JIC) tracks them on the FR3.
+  FACTR arm publishes absolute joint positions → passed straight through as the
+  controller's q_ref → ManipulatorJointEnv (JIC) tracks them on the FR3.
   FACTR gripper trigger (0=open, 1=closed) → Robotiq 2F-85 (absolute_continuous).
   FR3 joint effort is on /joint_states — FACTR subscribes to that directly for
   force feedback (no crisp_gym change needed).
+
+Why absolute instead of deltas (config/envs/factr_franka_robotiq.yaml sets
+`use_relative_actions: false`): the delta scheme seeded the commanded target
+from the follower exactly once and then only ever added leader deltas, so any
+leader/follower offset at startup was frozen in for the whole episode, and a
+blocked follower let the target integrate away unbounded and then lunge when
+released. Commanding the leader's absolute pose removes both — but it makes the
+leader authoritative, so the arms MUST be aligned before the first step. The
+env raises if they are not (`max_startup_joint_offset`), and `max_joint_speed`
+clamps the per-step target change.
+
+This requires the FACTR leader to be a joint-for-joint replica of the FR3 (same
+joint order, zeros and directions). If yours has a fixed calibration offset,
+add it to the leader positions before stepping.
 
 Prerequisites:
   1. Franka + Robotiq bringup running (arm on JIC, Robotiq 2F-85 controller on
@@ -80,7 +94,6 @@ obs, _ = env.reset()
 logger.info("Environment ready. Starting teleoperation — Ctrl+C to stop.")
 
 # ── teleoperation loop ────────────────────────────────────────────────────────
-prev_joint_pos = factr.last_joint_pos
 dt = 1.0 / args.freq
 
 try:
@@ -90,24 +103,22 @@ try:
         current_joint_pos = factr.last_joint_pos
         current_gripper = factr.last_gripper
 
-        # Delta joints: how much the FACTR arm moved since last cycle.
-        delta_joints = current_joint_pos - prev_joint_pos
-        prev_joint_pos = current_joint_pos
-
-        # Action: [dtheta_1..dtheta_7, gripper_normalized]
+        # Action: [theta_1..theta_7, gripper_normalized] — the leader's ABSOLUTE
+        # joint positions, passed straight through as the controller's q_ref
+        # (the env config sets use_relative_actions: false).
         # gripper is absolute [0=open, 1=closed], mode=absolute_continuous.
-        action = np.append(delta_joints, current_gripper).astype(np.float32)
+        action = np.append(current_joint_pos, current_gripper).astype(np.float32)
 
         obs, _, terminated, truncated, _ = env.step(action, block=False)
 
         if terminated or truncated:
             logger.warning("Environment terminated/truncated. Resetting...")
             obs, _ = env.reset()
-            prev_joint_pos = factr.last_joint_pos
 
         logger.debug(
             f"joints: {np.round(current_joint_pos, 3)}  "
-            f"delta: {np.round(delta_joints, 4)}  "
+            f"tracking error: "
+            f"{np.round(current_joint_pos - env.robot.joint_values, 4)}  "
             f"gripper: {current_gripper:.3f}"
         )
 

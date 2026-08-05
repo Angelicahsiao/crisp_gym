@@ -376,7 +376,7 @@ def main():
                     # Config-driven recorder: teleop only drives, the record
                     # config decides what is stored (e.g. UMI next_tcp_pose).
                     if isinstance(leader, FACTRStreamedJoints):
-                        drive_fn = make_factr_drive_fn(leader)
+                        drive_fn = make_factr_drive_fn(leader, env)
                     elif isinstance(leader, TeleopRobot):
                         drive_fn = make_teleop_drive_fn(env, leader)
                     elif isinstance(leader, TeleopStreamedPose) and isinstance(

@@ -87,6 +87,20 @@ class ManipulatorEnvConfig(ABC):
 
     use_relative_actions: bool = True
 
+    # Max commanded joint speed (rad/s) for ManipulatorJointEnv. The per-step
+    # target change is clamped to max_joint_speed / control_frequency, which
+    # bounds both leader-transport glitches (a dropout/reconnect delivering one
+    # huge delta) and, in absolute mode, how fast the arm converges on a
+    # mismatched startup pose. None disables the limit.
+    max_joint_speed: float | None = None
+
+    # Absolute-mode startup guard for ManipulatorJointEnv (rad). On the first
+    # step after reset, if any commanded joint differs from the measured joint
+    # by more than this, raise instead of driving the arm to a pose the
+    # operator may not expect. None disables the check. Ignored when
+    # use_relative_actions is True (deltas cannot jump on the first step).
+    max_startup_joint_offset: float | None = 0.15
+
     # Safety limits
     min_x: None | float = None
     min_y: None | float = None
@@ -230,6 +244,8 @@ class ManipulatorEnvConfig(ABC):
                 self.orientation_representation, "value", str(self.orientation_representation)
             ),
             "use_relative_actions": self.use_relative_actions,
+            "max_joint_speed": self.max_joint_speed,
+            "max_startup_joint_offset": self.max_startup_joint_offset,
         }
 
     @classmethod
