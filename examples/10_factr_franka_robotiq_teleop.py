@@ -33,6 +33,19 @@ Prerequisites:
   2. FACTR teleop node running on the same ROS network, publishing:
        /factr_teleop/{FACTR_NAME}/cmd_arm_pos     (sensor_msgs/JointState, 7 joints)
        /factr_teleop/{FACTR_NAME}/cmd_gripper_pos (sensor_msgs/JointState, position[0] 0..1)
+     and subscribing to:
+       /factr_teleop/{FACTR_NAME}/follow_mode     (std_msgs/Bool)
+
+Follow mode (press ENTER to toggle, 'q' + ENTER to quit):
+  ON  — the FR3 STOPS following the leader. The loop skips env.step(), so
+        robot.target_joint stays latched at its last value and keeps being
+        published: the arm holds where it is. crisp_gym publishes
+        follow_mode=true so the FACTR node can track the arm instead, letting
+        you reposition the leader without moving the robot.
+  OFF — teleoperation resumes. Because the leader may have moved independently
+        while suspended, the env's startup offset check is re-armed, so a
+        misalignment raises on the next step instead of the arm driving across
+        the gap.
 
 Usage:
   python3 examples/10_factr_franka_robotiq_teleop.py
@@ -41,6 +54,8 @@ Usage:
 
 import argparse
 import logging
+import sys
+import threading
 import time
 
 import numpy as np
@@ -91,14 +106,68 @@ if joint_pos.shape[0] != n_arm_joints:
     )
 
 obs, _ = env.reset()
-logger.info("Environment ready. Starting teleoperation — Ctrl+C to stop.")
+
+# ── follow-mode keyboard toggle ───────────────────────────────────────────────
+# follow_mode ON  → the FR3 STOPS following the leader (its target is left
+#                   latched, so the arm holds) and the FACTR node is asked to
+#                   track the arm instead. Use it to reposition the leader.
+# follow_mode OFF → normal teleoperation resumes.
+#
+# The listener thread only raises a request; the main loop applies it. Keeping
+# every ROS/env call on one thread avoids racing the control loop.
+_toggle_requested = threading.Event()
+_quit_requested = threading.Event()
+
+
+def _keyboard_listener() -> None:
+    """Read stdin lines: 'q' quits, anything else toggles follow mode."""
+    for line in sys.stdin:
+        if line.strip().lower() == "q":
+            _quit_requested.set()
+            return
+        _toggle_requested.set()
+
+
+threading.Thread(target=_keyboard_listener, daemon=True).start()
+
+follow_mode = False
+factr.set_follow_mode(follow_mode)
+
+logger.info(
+    "Environment ready. Starting teleoperation.\n"
+    "  ENTER — toggle follow mode (ON = FR3 holds still, leader tracks it)\n"
+    "  q + ENTER, or Ctrl+C — stop"
+)
 
 # ── teleoperation loop ────────────────────────────────────────────────────────
 dt = 1.0 / args.freq
 
 try:
-    while True:
+    while not _quit_requested.is_set():
         t_start = time.monotonic()
+
+        if _toggle_requested.is_set():
+            _toggle_requested.clear()
+            follow_mode = not follow_mode
+            factr.set_follow_mode(follow_mode)
+            if not follow_mode:
+                # Commanding resumes after a gap in which the leader moved
+                # independently: re-check alignment on the next step rather
+                # than driving the arm across whatever offset opened up.
+                env.require_startup_check()
+            logger.info(
+                "Follow mode %s — FR3 %s",
+                "ON" if follow_mode else "OFF",
+                "holding, not following the leader" if follow_mode else "following the leader",
+            )
+
+        if follow_mode:
+            # Do not step: robot.target_joint stays latched at its last value
+            # and keeps being published, so the arm holds where it is.
+            elapsed = time.monotonic() - t_start
+            if dt - elapsed > 0:
+                time.sleep(dt - elapsed)
+            continue
 
         current_joint_pos = factr.last_joint_pos
         current_gripper = factr.last_gripper
@@ -130,5 +199,8 @@ try:
 except KeyboardInterrupt:
     logger.info("Teleoperation stopped.")
 finally:
+    # Leave the leader in follow mode: the arm is no longer being commanded, so
+    # this is the safe resting state (same convention as the recording script).
+    factr.set_follow_mode(True)
     env.close()
     logger.info("Environment closed.")

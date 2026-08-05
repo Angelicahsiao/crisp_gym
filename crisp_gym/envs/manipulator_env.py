@@ -889,8 +889,20 @@ class ManipulatorJointEnv(ManipulatorBaseEnv):
         self, *, seed: int | None = None, options: dict[str, Any] | None = None
     ) -> Tuple[dict, dict]:
         """Reset the environment and re-arm the absolute-mode startup check."""
-        self._awaiting_first_joint_command = True
+        self.require_startup_check()
         return super().reset(seed=seed, options=options)
+
+    def require_startup_check(self) -> None:
+        """Re-arm the absolute-mode startup offset check for the next step.
+
+        Call this whenever commanding is about to RESUME after a gap in which
+        the leader may have moved independently of the follower — leaving a
+        teleop clutch/follow mode, for example. The next absolute command is
+        then validated against the measured pose exactly as the first command
+        after a reset would be, so a misalignment raises instead of driving the
+        arm across the gap. No effect in relative mode.
+        """
+        self._awaiting_first_joint_command = True
 
     @override
     def _get_obs(self) -> dict:
