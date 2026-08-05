@@ -343,6 +343,11 @@ def main():
                 if leader.gripper is not None:
                     leader.gripper.disable_torque()
 
+            elif isinstance(leader, FACTRStreamedJoints):
+                # Leave follow mode: the follower has finished homing, so the
+                # leader commands again for the episode about to be recorded.
+                leader.set_follow_mode(False)
+
         def on_end():
             """Hook function to be called when stopping the recording."""
             env.robot.reset_targets()
@@ -358,10 +363,11 @@ def main():
                 # leader.robot.home(blocking=False, home_config=random_home)
                 leader.robot.home(blocking=False)
             elif isinstance(leader, FACTRStreamedJoints):
-                # Ask the FACTR leader node (external) to home too, passing the
-                # follower's (noise-randomized) home pose so both arms end up
-                # at the SAME configuration each episode.
-                leader.send_home(home_config=random_home)
+                # Put the FACTR leader in follow mode so it TRACKS the follower
+                # to the (noise-randomized) home pose — both arms end up in the
+                # SAME configuration each episode without crisp_gym having to
+                # send the pose. on_start turns it off again.
+                leader.set_follow_mode(True)
             env.gripper.open()
 
         with recording_manager:
@@ -413,8 +419,8 @@ def main():
             logger.info("Homing leader.")
             leader.robot.home()
         elif isinstance(leader, FACTRStreamedJoints):
-            logger.info("Requesting FACTR leader home.")
-            leader.send_home(home_config=list(env.robot.config.home_config))
+            logger.info("Putting FACTR leader in follow mode for final homing.")
+            leader.set_follow_mode(True)
         logger.info("Homing follower.")
         env.home()
 

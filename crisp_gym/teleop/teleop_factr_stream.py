@@ -25,18 +25,20 @@ class FACTRStreamedJoints:
       /factr_teleop/{name}/cmd_gripper_pos — gripper trigger position (position[0])
 
     This class additionally PUBLISHES:
-      /factr_teleop/{name}/go_home    (std_msgs/Bool, data=True)
-          — request that the FACTR leader arm moves to its home pose (sent by
-            send_home(), e.g. between recorded episodes). The FACTR node must
-            subscribe and execute the homing motion itself — this is only the
-            trigger.
-      /factr_teleop/{name}/home_pose  (sensor_msgs/JointState, position[0:6])
-          — the TARGET home joint configuration, published just before the
-            go_home trigger when send_home(home_config=...) is given one.
-            Because the follower's home pose is randomized per episode
-            (--home-config-noise), the leader cannot assume a fixed home; the
-            FACTR node should store the latest home_pose and move there on the
-            go_home trigger (fall back to its own default if none received).
+      /factr_teleop/{name}/follow_mode (std_msgs/Bool)
+          — whether the FACTR leader should FOLLOW the follower arm rather than
+            command it (sent by set_follow_mode()).
+
+            data=True  — entered between recorded episodes, while the follower
+                homes to its (per-episode randomized, see --home-config-noise)
+                pose. The leader tracks the follower there, so both arms end up
+                in the same configuration without crisp_gym having to tell the
+                leader which pose that is.
+            data=False — teleoperation resumes; the leader commands again.
+
+            The FACTR node must subscribe and implement the mode switch itself
+            — this is only the request. Nothing is published unless
+            set_follow_mode() is called, and no state is latched here.
 
     The gripper trigger is expected in [0, 1] where 0 = open, 1 = fully squeezed.
     It is inverted to match the Robotiq convention (set_target: 0 = closed, 1 = open),
@@ -53,8 +55,7 @@ class FACTRStreamedJoints:
 
         self._joint_topic = f"/factr_teleop/{name}/cmd_arm_pos"
         self._gripper_topic = f"/factr_teleop/{name}/cmd_gripper_pos"
-        self._home_topic = f"/factr_teleop/{name}/go_home"
-        self._home_pose_topic = f"/factr_teleop/{name}/home_pose"
+        self._follow_mode_topic = f"/factr_teleop/{name}/follow_mode"
 
         self._last_joint_pos: np.ndarray | None = None
         self._last_gripper: float | None = None
@@ -75,15 +76,9 @@ class FACTRStreamedJoints:
             callback_group=ReentrantCallbackGroup(),
             qos_profile=qos_profile_sensor_data,
         )
-        self._home_publisher = self.node.create_publisher(
+        self._follow_mode_publisher = self.node.create_publisher(
             Bool,
-            self._home_topic,
-            qos_profile_system_default,
-            callback_group=ReentrantCallbackGroup(),
-        )
-        self._home_pose_publisher = self.node.create_publisher(
-            JointState,
-            self._home_pose_topic,
+            self._follow_mode_topic,
             qos_profile_system_default,
             callback_group=ReentrantCallbackGroup(),
         )
@@ -129,44 +124,41 @@ class FACTRStreamedJoints:
             )
         return self._last_gripper
 
-    def send_home(self, home_config: "list[float] | None" = None) -> None:
-        """Ask the FACTR leader node to move the leader arm to its home pose.
+    def set_follow_mode(self, enabled: bool) -> None:
+        """Ask the FACTR leader node to enter or leave follow mode.
 
-        Publishes:
-          1. the target joint configuration on /factr_teleop/{name}/home_pose
-             (sensor_msgs/JointState, position field) — only when home_config
-             is given. With --home-config-noise the follower's home differs
-             every episode; this tells the leader the EXACT pose to match.
-          2. std_msgs/Bool(data=True) on /factr_teleop/{name}/go_home — the
-             trigger to execute the motion.
+        Publishes std_msgs/Bool(data=enabled) on
+        /factr_teleop/{name}/follow_mode. Equivalent to:
 
-        Fire-and-forget: the FACTR node owns the actual homing motion. If it
-        does not subscribe, the messages are ignored (a warning is logged).
+            ros2 topic pub --once /factr_teleop/right/follow_mode \\
+                std_msgs/msg/Bool "{data: true}"
+
+        In follow mode the leader TRACKS the follower instead of commanding it.
+        Recording turns it on between episodes, while the follower homes to a
+        per-episode randomized pose, so both arms converge without crisp_gym
+        having to send the pose itself; it is turned off again when the next
+        episode starts.
+
+        Fire-and-forget: the FACTR node owns the actual mode switch. If it does
+        not subscribe, the message goes nowhere (a warning is logged).
 
         Args:
-            home_config: Joint values (radians) the leader should home to —
-                typically the follower's randomized home for this episode.
-                None publishes only the trigger (leader uses its own default).
+            enabled: True to follow the follower, False to resume commanding it.
         """
-        if self._home_publisher.get_subscription_count() == 0:
+        if self._follow_mode_publisher.get_subscription_count() == 0:
             logger.warning(
-                f"send_home: no subscriber on {self._home_topic} — the FACTR "
-                "node does not listen for home requests; the leader arm will "
-                "NOT move. Add a subscriber in the FACTR node to enable this."
-            )
-        if home_config is not None:
-            pose_msg = JointState()
-            pose_msg.header.stamp = self.node.get_clock().now().to_msg()
-            pose_msg.position = [float(v) for v in home_config]
-            self._home_pose_publisher.publish(pose_msg)
-            logger.info(
-                f"Published FACTR leader home pose ({len(pose_msg.position)} "
-                f"joints) via {self._home_pose_topic}."
+                f"set_follow_mode: no subscriber on {self._follow_mode_topic} "
+                "— the FACTR node does not listen for follow-mode requests; "
+                "the leader arm will NOT change mode. Add a subscriber in the "
+                "FACTR node to enable this."
             )
         msg = Bool()
-        msg.data = True
-        self._home_publisher.publish(msg)
-        logger.info(f"Requested FACTR leader home via {self._home_topic}.")
+        msg.data = bool(enabled)
+        self._follow_mode_publisher.publish(msg)
+        logger.info(
+            f"Requested FACTR leader follow_mode={msg.data} via "
+            f"{self._follow_mode_topic}."
+        )
 
     def is_ready(self) -> bool:
         return self._last_joint_pos is not None and self._last_gripper is not None
