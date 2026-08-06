@@ -244,6 +244,21 @@ def main():
                     "e.g. config/recording/umi_robot_record.yaml."
                 )
             leader = FACTRStreamedJoints(name=args.factr_name)
+            # Follow mode ON before anything else, so the leader spends the
+            # whole startup (dataset setup, then homing) converging on the
+            # follower. By the time the first episode begins the two arms
+            # match, so the absolute-mode startup offset check has nothing to
+            # complain about. This must precede wait_until_ready(): a FACTR
+            # node that only publishes commands while NOT following would
+            # otherwise never publish, and the readiness wait would time out.
+            if not leader.wait_for_follow_mode_subscriber():
+                logger.warning(
+                    "No subscriber on the FACTR follow_mode topic after 5s — "
+                    "the leader will not be put into follow mode, so it will "
+                    "not converge on the follower and may be far from it when "
+                    "the first episode starts."
+                )
+            leader.set_follow_mode(True)
             leader.wait_until_ready()
             logger.info("Using FACTR leader arm. FACTR stream is ready.")
         elif args.use_streamed_teleop:

@@ -124,6 +124,28 @@ class FACTRStreamedJoints:
             )
         return self._last_gripper
 
+    def wait_for_follow_mode_subscriber(self, timeout: float = 5.0) -> bool:
+        """Block until the FACTR node has subscribed to the follow_mode topic.
+
+        The publisher is VOLATILE, so anything sent before the FACTR node has
+        discovered it is dropped silently. Call this before a set_follow_mode()
+        whose message MUST arrive — notably the one sent at startup, before
+        wait_until_ready(), which is what puts the leader into follow mode in
+        the first place.
+
+        Args:
+            timeout: Seconds to wait for a subscriber to appear.
+
+        Returns:
+            True if a subscriber appeared, False if the timeout elapsed.
+        """
+        start = time.time()
+        while time.time() - start < timeout:
+            if self._follow_mode_publisher.get_subscription_count() > 0:
+                return True
+            time.sleep(0.05)
+        return False
+
     def set_follow_mode(self, enabled: bool) -> None:
         """Ask the FACTR leader node to enter or leave follow mode.
 
