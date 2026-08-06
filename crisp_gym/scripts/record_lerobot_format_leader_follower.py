@@ -311,6 +311,11 @@ def main():
         if isinstance(leader, TeleopRobot):
             leader.prepare_for_teleop()
             logger.debug("[DEBUG] leader.prepare_for_teleop() done")
+        elif isinstance(leader, FACTRStreamedJoints):
+            # Follow mode covers EVERY homing motion, this initial one included,
+            # so the leader tracks the arm to the start pose. on_start turns it
+            # off at the moment the first episode begins recording.
+            leader.set_follow_mode(True)
 
         env.wait_until_ready()
         logger.debug("[DEBUG] env.wait_until_ready() done")
@@ -356,18 +361,24 @@ def main():
             # the robot's own home_config (a mismatched trajectory is silently
             # rejected by the controller -> the robot never homed on UR).
             random_home = home_for_env(env, "open_pose", noise=args.home_config_noise)
-            env.robot.home(blocking=False, home_config=random_home)
-            if isinstance(leader, TeleopRobot):
-                leader.robot.reset_targets()
-                # Activate incase leader should go to the same position as the follower
-                # leader.robot.home(blocking=False, home_config=random_home)
-                leader.robot.home(blocking=False)
-            elif isinstance(leader, FACTRStreamedJoints):
-                # Put the FACTR leader in follow mode so it TRACKS the follower
-                # to the (noise-randomized) home pose — both arms end up in the
-                # SAME configuration each episode without crisp_gym having to
-                # send the pose. on_start turns it off again.
+            if isinstance(leader, FACTRStreamedJoints):
+                # Follow mode ON *before* the arm starts moving, so the leader
+                # tracks the whole homing motion instead of joining it part-way,
+                # and both arms end up in the SAME (noise-randomized) pose
+                # without crisp_gym having to send it.
                 leader.set_follow_mode(True)
+                # Blocking: this hook must not return while the arm is still
+                # travelling. The next episode — and the follow_mode=False that
+                # comes with it in on_start — may only begin once the robot has
+                # actually reached the home pose.
+                env.robot.home(blocking=True, home_config=random_home)
+            else:
+                env.robot.home(blocking=False, home_config=random_home)
+                if isinstance(leader, TeleopRobot):
+                    leader.robot.reset_targets()
+                    # Activate incase leader should go to the same position as the follower
+                    # leader.robot.home(blocking=False, home_config=random_home)
+                    leader.robot.home(blocking=False)
             env.gripper.open()
 
         with recording_manager:
