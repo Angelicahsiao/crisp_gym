@@ -10,9 +10,13 @@
 #   gripper_mode: absolute_continuous        -> the model outputs a continuous
 #       gripper value; binary thresholding would round it
 #
-# Camera names are kept IDENTICAL to the recording config (including the
-# historical "wirst_cam" spelling) — they define the observation.images.* keys
-# and must match the keys the checkpoint was trained on.
+# Camera names must match the recording config: they define the
+# observation.images.* keys and must match the keys the checkpoint was trained
+# on. The historical "wirst_cam"/"wirst_link" misspelling has been corrected to
+# "wrist_cam"/"wrist_link" (the ROS topics below always used the correct
+# spelling). A checkpoint trained on observation.images.wirst_cam will NOT find
+# its input under the corrected key — retrain, remap the key at load time, or
+# pin this file back to the old spelling for that checkpoint.
 #
 # Gripper units for models trained on MIGRATED legacy dric data: the old
 # recorder stored the device-normalized gripper value, so in
@@ -26,7 +30,7 @@ orientation_representation: "rotation_6d"
 use_relative_actions: false
 
 cartesian_control_param_config: null
-joint_control_param_config: null
+joint_control_param_config: "control/fr3_joint_control.yaml"
 
 robot_config:
   robot_type: "franka"
@@ -54,8 +58,8 @@ camera_configs:
     resolution: [256, 256]
     camera_color_image_topic: "/env/env_cam/color/image_raw"
     camera_color_info_topic: "/env/env_cam/color/camera_info"
-  - camera_name: "wirst_cam"           # historical spelling — matches the dataset key
-    camera_frame: "wirst_link"
+  - camera_name: "wrist_cam"
+    camera_frame: "wrist_link"
     camera_color_image_topic: "/wrist/wrist_cam/color/image_rect_raw"
     camera_color_info_topic: "/wrist/wrist_cam/color/camera_info"
     resolution: [256, 256]
