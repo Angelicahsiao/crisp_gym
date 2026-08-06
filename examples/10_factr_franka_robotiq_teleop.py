@@ -85,6 +85,17 @@ logger = logging.getLogger(__name__)
 # ── FACTR stream ──────────────────────────────────────────────────────────────
 logger.info("Connecting to FACTR stream...")
 factr = FACTRStreamedJoints(name=args.factr_name)
+# The FACTR node stops publishing while it follows, and boots into follow mode,
+# so ask it to leave before waiting for the stream — otherwise the wait below
+# times out on a stream that never starts. The script re-enters follow mode
+# once the env is up (see the suspended start further down).
+if not factr.wait_for_follow_mode_subscriber():
+    logger.warning(
+        "No subscriber on the FACTR follow_mode topic after 5s — cannot ask "
+        "the leader to leave follow mode. If it boots following, it will not "
+        "publish and the readiness wait below will time out."
+    )
+factr.set_follow_mode(False)
 factr.wait_until_ready()
 
 joint_pos = factr.last_joint_pos
@@ -160,6 +171,14 @@ try:
             follow_mode = not follow_mode
             factr.set_follow_mode(follow_mode)
             if not follow_mode:
+                # FACTR was silent while following, so the cached pose predates
+                # the leader's tracking motion — commanding it would send the
+                # arm back there. Wait for the stream to actually resume.
+                if not factr.wait_for_new_data():
+                    logger.warning(
+                        "FACTR did not resume publishing within 5s — the next "
+                        "command may use a stale leader pose."
+                    )
                 # Commanding resumes after a gap in which the leader moved
                 # independently: re-check alignment on the next step rather
                 # than driving the arm across whatever offset opened up.

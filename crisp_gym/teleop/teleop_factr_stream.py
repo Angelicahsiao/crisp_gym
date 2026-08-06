@@ -60,6 +60,12 @@ class FACTRStreamedJoints:
         self._last_joint_pos: np.ndarray | None = None
         self._last_gripper: float | None = None
 
+        # Message counters, so callers can tell a FRESH sample from the stale
+        # one cached before follow mode silenced the stream. See
+        # wait_for_new_data().
+        self._joint_msg_count = 0
+        self._gripper_msg_count = 0
+
         logger.info(f"Subscribing to: {self._joint_topic}, {self._gripper_topic}")
 
         self.node.create_subscription(
@@ -96,6 +102,7 @@ class FACTRStreamedJoints:
 
     def _callback_joints(self, msg: JointState):
         self._last_joint_pos = np.array(msg.position, dtype=np.float64)
+        self._joint_msg_count += 1
 
     def _callback_gripper(self, msg: JointState):
         # FACTR trigger (position[0]): 0 = released, 1 = squeezed (can overshoot
@@ -105,6 +112,7 @@ class FACTRStreamedJoints:
         if not msg.position:
             return
         self._last_gripper = float(np.clip(1.0 - msg.position[0], 0.0, 1.0))
+        self._gripper_msg_count += 1
 
     @property
     def last_joint_pos(self) -> np.ndarray:
@@ -123,6 +131,34 @@ class FACTRStreamedJoints:
                 f"Check: ros2 topic echo {self._gripper_topic}"
             )
         return self._last_gripper
+
+    def wait_for_new_data(self, timeout: float = 5.0) -> bool:
+        """Block until a joint AND gripper message arrive that postdate this call.
+
+        The FACTR node stops publishing while it is following, so
+        last_joint_pos / last_gripper keep returning whatever was cached before
+        follow mode began. Commanding that stale pose is dangerous in absolute
+        mode: it is the leader's position from BEFORE it moved to track the
+        follower, so the arm would be sent back there. Call this after leaving
+        follow mode, before the first command, so the values are known-fresh.
+
+        Args:
+            timeout: Seconds to wait for a new sample on both topics.
+
+        Returns:
+            True if both topics produced a new message, False on timeout.
+        """
+        joints_at_call = self._joint_msg_count
+        gripper_at_call = self._gripper_msg_count
+        start = time.time()
+        while time.time() - start < timeout:
+            if (
+                self._joint_msg_count > joints_at_call
+                and self._gripper_msg_count > gripper_at_call
+            ):
+                return True
+            time.sleep(0.01)
+        return False
 
     def wait_for_follow_mode_subscriber(self, timeout: float = 5.0) -> bool:
         """Block until the FACTR node has subscribed to the follow_mode topic.

@@ -244,21 +244,20 @@ def main():
                     "e.g. config/recording/umi_robot_record.yaml."
                 )
             leader = FACTRStreamedJoints(name=args.factr_name)
-            # Follow mode ON before anything else, so the leader spends the
-            # whole startup (dataset setup, then homing) converging on the
-            # follower. By the time the first episode begins the two arms
-            # match, so the absolute-mode startup offset check has nothing to
-            # complain about. This must precede wait_until_ready(): a FACTR
-            # node that only publishes commands while NOT following would
-            # otherwise never publish, and the readiness wait would time out.
+            # The FACTR node STOPS publishing cmd_arm_pos/cmd_gripper_pos while
+            # it is following, and it boots into follow mode. So ask it to leave
+            # follow mode FIRST, otherwise wait_until_ready() below waits for a
+            # stream that will never start. Follow mode is turned back on a few
+            # lines later, once the readiness check is satisfied, so the leader
+            # still converges on the follower during homing.
             if not leader.wait_for_follow_mode_subscriber():
                 logger.warning(
                     "No subscriber on the FACTR follow_mode topic after 5s — "
-                    "the leader will not be put into follow mode, so it will "
-                    "not converge on the follower and may be far from it when "
-                    "the first episode starts."
+                    "cannot ask the leader to leave follow mode. If it boots "
+                    "following, it will not publish and the readiness wait "
+                    "below will time out."
                 )
-            leader.set_follow_mode(True)
+            leader.set_follow_mode(False)
             leader.wait_until_ready()
             logger.info("Using FACTR leader arm. FACTR stream is ready.")
         elif args.use_streamed_teleop:
@@ -367,6 +366,17 @@ def main():
                 # Leave follow mode: the follower has finished homing, so the
                 # leader commands again for the episode about to be recorded.
                 leader.set_follow_mode(False)
+                # FACTR was silent while following, so last_joint_pos still
+                # holds the pose from BEFORE the leader moved to track the
+                # follower. Commanding that would send the arm back there, so
+                # wait for the stream to actually resume before recording.
+                if not leader.wait_for_new_data():
+                    logger.warning(
+                        "FACTR did not resume publishing within 5s of leaving "
+                        "follow mode — the first commands of this episode may "
+                        "use a stale leader pose. Check that the FACTR node "
+                        "acted on follow_mode=false."
+                    )
 
         def on_end():
             """Hook function to be called when stopping the recording."""
