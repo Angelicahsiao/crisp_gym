@@ -32,6 +32,25 @@ use_relative_actions: false
 cartesian_control_param_config: null
 joint_control_param_config: "control/fr3_joint_control.yaml"
 
+# Named home poses, resolved by home_for_env() BEFORE the legacy Franka
+# HomeConfig enum — without these the enum wins and this rig's tuned pose is
+# ignored (the enum's OPEN_POSE differs on joint4 by ~0.08 rad).
+#
+# The recorder homes twice at startup (close_to_table, then open_pose) and once
+# after every episode (open_pose). Both names point at the SAME pose here via a
+# YAML anchor, so the second startup move is a no-op: the arm travels once and
+# the two can never drift apart when edited.
+named_home_configs:
+  open_pose: &home_pose
+    - 0.4246407298371954
+    - -0.01130037897899503
+    - -0.3321400257658427
+    - -2.6908276789742325
+    - 0.09774443531853239
+    - 4.257101518895322
+    - -0.013673332419279224
+  close_to_table: *home_pose
+
 robot_config:
   robot_type: "franka"
   home_config:
