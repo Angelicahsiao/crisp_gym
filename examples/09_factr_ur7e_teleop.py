@@ -3,7 +3,7 @@
 Control flow:
   FACTR arm publishes absolute joint positions → this script computes deltas
   → ManipulatorJointEnv (JIC) tracks them on the UR7e.
-  FACTR gripper trigger (0=open, 1=closed) → Robotiq 2F-140 (absolute_continuous).
+  FACTR gripper trigger (0=closed, 1=open) → Robotiq 2F-140 (absolute_continuous).
   UR7e joint effort is on /joint_states — FACTR subscribes to that directly for
   force feedback (no crisp_gym change needed).
 
@@ -77,7 +77,7 @@ try:
         prev_joint_pos = current_joint_pos
 
         # Action: [dtheta_1..dtheta_6, gripper_normalized]
-        # gripper is absolute [0=open, 1=closed], mode=absolute_continuous.
+        # gripper is absolute [0=closed, 1=open], mode=absolute_continuous.
         action = np.append(delta_joints, current_gripper).astype(np.float32)
 
         obs, _, terminated, truncated, _ = env.step(action, block=False)

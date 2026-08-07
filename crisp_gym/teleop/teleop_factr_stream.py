@@ -40,9 +40,11 @@ class FACTRStreamedJoints:
             — this is only the request. Nothing is published unless
             set_follow_mode() is called, and no state is latched here.
 
-    The gripper trigger is expected in [0, 1] where 0 = open, 1 = fully squeezed.
-    It is inverted to match the Robotiq convention (set_target: 0 = closed, 1 = open),
-    so squeezing the leader closes the follower.
+    The gripper trigger is expected in [0, 1] ALREADY in the follower's
+    convention (Gripper.set_target: 0 = closed, 1 = open) and is passed through
+    unchanged — only clamped, since the trigger can overshoot to roughly
+    [-1, 2]. The FACTR node owns the mapping from its physical trigger to this
+    range; if squeezing the leader OPENS the follower, invert it there, not here.
     """
 
     def __init__(self, name: str = "right", namespace: str = ""):
@@ -105,13 +107,13 @@ class FACTRStreamedJoints:
         self._joint_msg_count += 1
 
     def _callback_gripper(self, msg: JointState):
-        # FACTR trigger (position[0]): 0 = released, 1 = squeezed (can overshoot
-        # to ~[-1, 2]). Invert so squeezing the leader closes the follower, then
-        # clamp into the [0, 1] range Gripper.set_target expects (0 = closed,
-        # 1 = open).
+        # FACTR trigger (position[0]) is already in the follower's convention
+        # (Gripper.set_target: 0 = closed, 1 = open), so it is passed through
+        # unchanged — only clamped, because the trigger can overshoot its
+        # nominal range to roughly [-1, 2].
         if not msg.position:
             return
-        self._last_gripper = float(np.clip(1.0 - msg.position[0], 0.0, 1.0))
+        self._last_gripper = float(np.clip(msg.position[0], 0.0, 1.0))
         self._gripper_msg_count += 1
 
     @property

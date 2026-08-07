@@ -7,7 +7,7 @@ while 09 still integrates per-step deltas.
 Control flow:
   FACTR arm publishes absolute joint positions → passed straight through as the
   controller's q_ref → ManipulatorJointEnv (JIC) tracks them on the FR3.
-  FACTR gripper trigger (0=open, 1=closed) → Robotiq 2F-85 (absolute_continuous).
+  FACTR gripper trigger (0=closed, 1=open) → Robotiq 2F-85 (absolute_continuous).
   FR3 joint effort is on /joint_states — FACTR subscribes to that directly for
   force feedback (no crisp_gym change needed).
 
@@ -203,7 +203,7 @@ try:
         # Action: [theta_1..theta_7, gripper_normalized] — the leader's ABSOLUTE
         # joint positions, passed straight through as the controller's q_ref
         # (the env config sets use_relative_actions: false).
-        # gripper is absolute [0=open, 1=closed], mode=absolute_continuous.
+        # gripper is absolute [0=closed, 1=open], mode=absolute_continuous.
         action = np.append(current_joint_pos, current_gripper).astype(np.float32)
 
         obs, _, terminated, truncated, _ = env.step(action, block=False)

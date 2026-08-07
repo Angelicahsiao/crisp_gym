@@ -248,8 +248,8 @@ def make_factr_drive_fn(factr, env: ManipulatorBaseEnv | None = None) -> Callabl
     than assumed. `env=None` keeps the historical delta behaviour for callers
     that have no env handle.
 
-    The gripper trigger is already inverted and clamped to [0, 1] by
-    FACTRStreamedJoints in both cases.
+    The gripper trigger is already clamped to [0, 1] by FACTRStreamedJoints
+    in both cases, in the follower's convention (0 = closed, 1 = open).
 
     Args:
         factr: A crisp_gym.teleop.teleop_factr_stream.FACTRStreamedJoints.
