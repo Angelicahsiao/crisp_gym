@@ -1,4 +1,7 @@
-"""Relative-pose dataset wrapper and training launcher for LeRobot 0.4.4.
+"""Relative-pose dataset wrapper and training launcher for LeRobot.
+
+Supports lerobot 0.4.x and >=0.5 (verified against 0.4.4 and 0.6.1) — see
+main() for the version-dependent dataset-factory patch.
 
 Implements UMI's relative pose representation at dataloader level: every pose
 (observation history and action horizon) is re-expressed relative to the
@@ -15,7 +18,7 @@ The dataset on disk stays in absolute poses. With diffusion policy's default
 n_obs_steps=2, the wrapper produces:
 
     observation.state               (2, 16): [rel_pose9, gripper1, wrt_start6]
-                                    — the CONCATENATED key lerobot-0.4.4
+                                    — the CONCATENATED key lerobot
                                     policies actually consume (OBS_STATE):
                                     pose dims converted like the sub-key below,
                                     then the wrt-start rot6d appended (UMI's
@@ -35,7 +38,7 @@ Normalization stats are recomputed on the relative values (LeRobot normalizes
 with dataset-wide stats which were computed on absolute poses and would
 otherwise be wrong).
 
-Usage on the training PC (lerobot==0.4.4 installed):
+Usage on the training PC (lerobot 0.4.x or >=0.5 installed):
 
     python lerobot_relative_pose.py \\
         --dataset.repo_id=my_org/umi_demo \\
@@ -329,6 +332,25 @@ def recompute_relative_stats(wrapped: RelativePoseDataset, num_samples: int = 20
 
 # ── Provenance stamping ───────────────────────────────────────────────────────
 
+def _installed_lerobot_version() -> str:
+    """Version of the lerobot actually importable in this interpreter.
+
+    Returns "unknown" rather than raising: this is provenance metadata and must
+    never be the reason a training run dies.
+    """
+    try:
+        from importlib.metadata import version
+
+        return version("lerobot")
+    except Exception:  # not installed via metadata (editable/source checkout)
+        try:
+            import lerobot
+
+            return getattr(lerobot, "__version__", "unknown")
+        except Exception:
+            return "unknown"
+
+
 def stamp_pose_repr(cfg, dataset) -> None:
     """Write pose_repr.json next to the checkpoints (HANDOFF §4.2).
 
@@ -423,7 +445,13 @@ def stamp_pose_repr(cfg, dataset) -> None:
             "n_obs_steps": getattr(pol, "n_obs_steps", None),
             "horizon": getattr(pol, "horizon", None),
             "n_action_steps": getattr(pol, "n_action_steps", None),
-            "lerobot_version_target": "0.4.4",
+            # The lerobot that actually produced this checkpoint, detected at
+            # run time. Was hardcoded "0.4.4" when that was the only supported
+            # version; the wrapper now runs on 0.4.x and >=0.5 alike, so a
+            # fixed string would misreport provenance. Nothing consumes this
+            # field (the deploy path reads observation.* only) — it is for
+            # humans reading pose_repr.json next to a checkpoint.
+            "lerobot_version_target": _installed_lerobot_version(),
         }
         out_dir = Path(cfg.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -436,20 +464,60 @@ def stamp_pose_repr(cfg, dataset) -> None:
 # ── Training launcher ─────────────────────────────────────────────────────────
 
 def main():
-    """Run lerobot-train with the relative-pose dataset wrapper injected."""
+    """Run lerobot-train with the relative-pose dataset wrapper injected.
+
+    The dataset factory is monkeypatched in lerobot_train's module namespace;
+    train() resolves it as a global at call time, so rebinding the attribute is
+    enough. The symbol differs by lerobot version:
+
+      0.6.x: make_train_eval_datasets(cfg) -> (dataset, eval_dataset)
+      0.4.x: make_dataset(cfg)             -> dataset
+
+    Both are supported so the script runs against either. Neither present means
+    lerobot moved the factory again — fail with a pointer rather than training
+    on ABSOLUTE poses, which would look normal and be silently wrong.
+    """
     import lerobot.scripts.lerobot_train as lerobot_train
 
-    original_make_dataset = lerobot_train.make_dataset
-
-    def make_dataset_with_relative(cfg):
-        dataset = original_make_dataset(cfg)
+    def _wrap(dataset, cfg):
         wrapped = RelativePoseDataset(dataset)
         logger.info("Wrapped dataset with RelativePoseDataset (UMI-style relative poses).")
         recompute_relative_stats(wrapped)
         stamp_pose_repr(cfg, wrapped)
         return wrapped
 
-    lerobot_train.make_dataset = make_dataset_with_relative
+    if hasattr(lerobot_train, "make_train_eval_datasets"):  # lerobot >= 0.5
+        original_pair = lerobot_train.make_train_eval_datasets
+
+        def make_train_eval_with_relative(cfg):
+            dataset, eval_dataset = original_pair(cfg)
+            wrapped = _wrap(dataset, cfg)
+            if eval_dataset is not None:
+                # Wrap the eval split too: leaving it absolute would evaluate a
+                # relative-trained policy against absolute targets, which
+                # produces plausible-looking but meaningless metrics — no error.
+                # Stats/stamp stay train-only, as they always were.
+                eval_dataset = RelativePoseDataset(eval_dataset)
+                logger.info("Wrapped eval dataset with RelativePoseDataset.")
+            return wrapped, eval_dataset
+
+        lerobot_train.make_train_eval_datasets = make_train_eval_with_relative
+        logger.info("Patched lerobot_train.make_train_eval_datasets (lerobot >= 0.5 layout).")
+    elif hasattr(lerobot_train, "make_dataset"):  # lerobot 0.4.x
+        original_single = lerobot_train.make_dataset
+
+        def make_dataset_with_relative(cfg):
+            return _wrap(original_single(cfg), cfg)
+
+        lerobot_train.make_dataset = make_dataset_with_relative
+        logger.info("Patched lerobot_train.make_dataset (lerobot 0.4.x layout).")
+    else:
+        raise RuntimeError(
+            "lerobot.scripts.lerobot_train exposes neither 'make_train_eval_datasets' "
+            "(>=0.5) nor 'make_dataset' (0.4.x) — the relative-pose wrapper cannot be "
+            "injected. Without it training would silently run on ABSOLUTE poses. "
+            "Find the dataset factory lerobot_train now calls and patch that name."
+        )
 
     logging.basicConfig(level=logging.INFO)
     lerobot_train.main()
