@@ -96,7 +96,15 @@ ros-humble-ros2-control = "*"
 ros-humble-ros2-controllers = "*"
 rosdep = "*"
 ros-humble-rmw-cyclonedds-cpp = "*"
-ros-humble-image-transport-plugins = "*"
+# image-transport-plugins is numpy-1 ONLY: every build robostack offers
+# (2.5.0-2.5.5, and its ros-humble-theora-image-transport dep) requires
+# numpy <2.0a0, so declaring it makes the numpy-2 solve above unsatisfiable:
+#   ros-humble-image-transport-plugins * cannot be installed ...
+#     would require numpy >=1.26.4,<2.0a0, for which no candidates were found
+# It provides the COMPRESSED image transports; the env configs subscribe to
+# raw topics (…/color/image_rect_raw), so dropping it costs nothing there.
+# Re-enable only in a numpy-1 environment.
+#ros-humble-image-transport-plugins = "*"
 # cv_bridge: required by crisp_py.camera (from cv_bridge import CvBridge).
 # Deliberately NOT declared explicitly. An unconstrained "*" lets the solver
 # pick an old cv-bridge build that requires numpy < 2, which makes the numpy-2
