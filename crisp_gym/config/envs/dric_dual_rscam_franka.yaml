@@ -45,4 +45,16 @@ camera_configs:
     # max_image_delay: 1.0
 
 
-sensor_configs: []
+# EXTERNAL joint torque from franka_ros2's franka_robot_state_broadcaster:
+# tau_ext with gravity and arm dynamics already removed by the robot firmware,
+# so it is ~0 in free motion and non-zero only on real contact. Recorded via
+# the generic sensor path (crisp_py joint_state_effort spec reads the JointState
+# `effort` field) — distinct from robot.joint_efforts, which is the TOTAL
+# measured torque on the robot's own /joint_states and is dominated by gravity.
+# A missing/renamed topic here surfaces as a KeyError naming the available
+# sensors, rather than the silent zeros the Robot path falls back to.
+sensor_configs:
+  - sensor_type: "joint_state_effort"
+    name: "ext_torque"
+    shape: [7]
+    data_topic: "/franka_robot_state_broadcaster/external_joint_torques"

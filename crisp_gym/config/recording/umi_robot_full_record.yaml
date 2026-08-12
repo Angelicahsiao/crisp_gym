@@ -55,7 +55,12 @@ observations:
     shape: [7]
     include_in_state: false
   - key: extra.joint_efforts                    # needs has_effort_feedback: true
-    source: robot.joint_efforts
+    source: robot.joint_efforts                 # TOTAL torque (gravity included)
+    shape: [7]
+    include_in_state: false
+  - key: extra.ext_torque                       # tau_ext: gravity/dynamics removed
+    source: robot.sensor                        # -> env sensor_configs "ext_torque"
+    name: ext_torque
     shape: [7]
     include_in_state: false
   - key: extra.target_cartesian                 # commanded pose (tracking error analysis)
