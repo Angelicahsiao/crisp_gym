@@ -6,6 +6,13 @@ joint_control_param_config: null
 
 robot_config:
   robot_type: "franka"
+  # Effort comes from the `effort` field of the sensor_msgs/JointState messages
+  # the FR3 driver already publishes on the robot's joint_state topic. crisp_py
+  # ingests it in Robot._callback_current_joint only when this flag is true AND
+  # len(msg.effort) == len(msg.position); otherwise current_joint_effort returns
+  # zeros with a throttled warning. Required for the record config's
+  # extra.joint_efforts column to hold real values.
+  has_effort_feedback: true
   home_config:
   - 0.425725623070977
   - -0.013800044320084788

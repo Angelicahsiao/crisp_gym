@@ -1,8 +1,12 @@
 # Robot-arm recording, UMI data contract + ALL available robot states.
 #
-# The policy-facing schema (include_in_state: true entries + action) is
-# IDENTICAL to umi_robot_record.yaml / umi_handheld_record.yaml, so the
-# contract check treats these datasets as mixable. The extra states
+# The low-dim policy-facing schema (include_in_state: true entries + action)
+# matches umi_robot_record.yaml / umi_handheld_record.yaml, BUT this variant
+# records TWO cameras (env_cam + wrist_cam) instead of a single
+# observation.images.primary. The image keys therefore differ from the
+# single-camera datasets and they are NOT directly mixable: strip to the shared
+# cameras with scripts/postprocess_align_datasets.py first, or record the other
+# sources with the same camera keys. The extra states
 # (include_in_state: false) are saved for analysis/debugging only and are
 # stripped by scripts/postprocess_align_datasets.py before mixing with
 # datasets that lack them (e.g. handheld data has no joints).
@@ -23,9 +27,16 @@ observations:
     source: gripper.width_normalized
     reference_width: 0.09
     device_max_width: 0.085        # Robotiq 2F-85 stroke
-  - key: observation.images.primary
+  # TWO cameras, matching dric_dual_rscam_franka.yaml's camera_name entries.
+  # `camera:` MUST equal a camera_name in the env config or _src_camera raises
+  # KeyError on the first frame.
+  - key: observation.images.env_cam
     source: camera.image
-    camera: primary
+    camera: env_cam
+    shape: [224, 224, 3]
+  - key: observation.images.wrist_cam
+    source: camera.image
+    camera: wrist_cam
     shape: [224, 224, 3]
 
   # ── extra states (saved, NOT policy inputs) ────────────────────────────────
