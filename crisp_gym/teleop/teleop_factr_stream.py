@@ -37,8 +37,17 @@ class FACTRStreamedJoints:
             data=False — teleoperation resumes; the leader commands again.
 
             The FACTR node must subscribe and implement the mode switch itself
-            — this is only the request. Nothing is published unless
-            set_follow_mode() is called, and no state is latched here.
+            — this is only the request. Nothing is published until
+            set_follow_mode() is first called; after that the CURRENT state is
+            republished at follow_mode_republish_hz (default 2 Hz).
+
+            That repetition matters: the topic is RELIABLE but VOLATILE, so a
+            FACTR node matching after a transition — started late, restarted
+            mid-session, or still completing cross-machine discovery — would
+            otherwise never see it and sit in the wrong mode until the next
+            episode boundary. With the republish it converges within one
+            period. Subscribers must therefore be idempotent: expect the same
+            value repeatedly and act only on CHANGES.
 
     The gripper trigger is expected in [0, 1] ALREADY in the follower's
     convention (Gripper.set_target: 0 = closed, 1 = open) and is passed through
@@ -47,7 +56,12 @@ class FACTRStreamedJoints:
     range; if squeezing the leader OPENS the follower, invert it there, not here.
     """
 
-    def __init__(self, name: str = "right", namespace: str = ""):
+    def __init__(
+        self,
+        name: str = "right",
+        namespace: str = "",
+        follow_mode_republish_hz: float = 2.0,
+    ):
         if not rclpy.ok():
             rclpy.init()
 
@@ -91,7 +105,37 @@ class FACTRStreamedJoints:
             callback_group=ReentrantCallbackGroup(),
         )
 
+        # Last state set_follow_mode() asked for, republished periodically.
+        # None until something is requested, so the timer never asserts a
+        # default the operator did not choose.
+        self._follow_mode_state: bool | None = None
+        self._follow_mode_timer = None
+        if follow_mode_republish_hz and follow_mode_republish_hz > 0.0:
+            # The follow_mode publisher is RELIABLE but VOLATILE, so a FACTR
+            # node that matches AFTER a transition — started late, restarted
+            # mid-session, or still completing cross-machine discovery — never
+            # sees it, and the leader silently sits in the wrong mode. A
+            # transition is published once; nothing retries it.
+            #
+            # Repeating the current state makes the topic self-healing: a node
+            # that misses a transition picks it up within one period instead of
+            # waiting for the next episode boundary. One Bool at a few Hz is
+            # negligible traffic.
+            self._follow_mode_timer = self.node.create_timer(
+                1.0 / follow_mode_republish_hz,
+                self._republish_follow_mode,
+                callback_group=ReentrantCallbackGroup(),
+            )
+
         threading.Thread(target=self._spin_node, daemon=True).start()
+
+    def _republish_follow_mode(self) -> None:
+        """Re-send the last requested follow mode. Silent: set_follow_mode logs."""
+        if self._follow_mode_state is None:
+            return
+        msg = Bool()
+        msg.data = self._follow_mode_state
+        self._follow_mode_publisher.publish(msg)
 
     def _spin_node(self):
         executor = rclpy.executors.MultiThreadedExecutor(num_threads=2)
@@ -214,6 +258,9 @@ class FACTRStreamedJoints:
             )
         msg = Bool()
         msg.data = bool(enabled)
+        # Latch BEFORE publishing so the republish timer cannot race in with
+        # the previous state between the two statements.
+        self._follow_mode_state = msg.data
         self._follow_mode_publisher.publish(msg)
         logger.info(
             f"Requested FACTR leader follow_mode={msg.data} via "
