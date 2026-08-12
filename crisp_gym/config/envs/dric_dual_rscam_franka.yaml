@@ -30,8 +30,8 @@ camera_configs:
     resolution: [256, 256]
     camera_color_image_topic: "/env/env_cam/color/image_raw"
     camera_color_info_topic: "/env/env_cam/color/camera_info"
-  - camera_name: "wirst_cam"
-    camera_frame: "wirst_link"
+  - camera_name: "wrist_cam"
+    camera_frame: "wrist_link"
     camera_color_image_topic: "/wrist/wrist_cam/color/image_rect_raw"
     camera_color_info_topic: "/wrist/wrist_cam/color/camera_info"
     resolution: [256, 256]
