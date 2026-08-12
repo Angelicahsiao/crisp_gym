@@ -53,8 +53,16 @@ camera_configs:
 # measured torque on the robot's own /joint_states and is dominated by gravity.
 # A missing/renamed topic here surfaces as a KeyError naming the available
 # sensors, rather than the silent zeros the Robot path falls back to.
+#
+# The broadcaster publishes NINE values — the 7 arm joints followed by the two
+# Robotiq knuckle joints:
+#   [fr3_joint1..7, robotiq_85_left_knuckle_joint, robotiq_85_right_knuckle_joint]
+# `indices` keeps the arm only, so `shape: [7]` describes the recorded value.
+# Without it the sensor would emit 9 values against a 7-wide dataset feature and
+# fail at dataset-write time, since nothing checks a sensor value against shape.
 sensor_configs:
   - sensor_type: "joint_state_effort"
     name: "ext_torque"
     shape: [7]
+    indices: [0, 1, 2, 3, 4, 5, 6]
     data_topic: "/franka_robot_state_broadcaster/external_joint_torques"
