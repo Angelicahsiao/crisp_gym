@@ -60,7 +60,14 @@ lerobot = { features = ["lerobot"] }
 pre-commit = "*"
 ruff = "*"
 debugpy = ">=1.8.14,<2"
-pudb = ">=2025.1.3, <2026"
+# pudb pulls urwid-readline, which publishes NO wheel — every solve has to
+# build it from source and take a per-distribution lock under the pixi cache.
+# Both `dev` and `humble-lerobot` include this feature and pixi solves
+# environments concurrently, so the two builds contended for that lock and
+# every `pixi install` died on a 300s lock timeout, whichever env lost the
+# race. Nothing at runtime uses pudb (debugpy above covers debugging), so it
+# is commented out rather than worked around with UV_LOCK_TIMEOUT.
+# pudb = ">=2025.1.3, <2026"
 
 [feature.lerobot.dependencies]
 pynput = "*"
@@ -125,17 +132,17 @@ ros-humble-rmw-cyclonedds-cpp = "*"
 # numpy 2 (the old _spropack ImportError came from a numpy-2-built scipy meeting
 # robostack's numpy 1.26, a combination that no longer exists here).
 
-[feature.jazzy]
-channels = ["https://prefix.dev/robostack-jazzy"]
+# [feature.jazzy]
+# channels = ["https://prefix.dev/robostack-jazzy"]
 
-[feature.jazzy.dependencies]
-ros-jazzy-desktop = "*"
-ros-jazzy-ros2-control = "*"
-ros-jazzy-ros2-controllers = "*"
-colcon-common-extensions = "*"
-rosdep = "*"
-ros-jazzy-rmw-cyclonedds-cpp = "*"
-ros-jazzy-rmw-zenoh-cpp = "*"
+# [feature.jazzy.dependencies]
+# ros-jazzy-desktop = "*"
+# ros-jazzy-ros2-control = "*"
+# ros-jazzy-ros2-controllers = "*"
+# colcon-common-extensions = "*"
+# rosdep = "*"
+# ros-jazzy-rmw-cyclonedds-cpp = "*"
+# ros-jazzy-rmw-zenoh-cpp = "*"
 
 [pypi-dependencies]
 crisp_gym = { path = ".", editable = true }
