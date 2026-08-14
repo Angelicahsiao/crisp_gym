@@ -26,7 +26,7 @@ from crisp_gym.teleop.teleop_robot import TeleopRobot, make_leader
 from crisp_gym.teleop.teleop_robot_config import list_leader_configs
 from crisp_gym.teleop.teleop_sensor_stream import TeleopStreamedPose
 from crisp_gym.util import prompt
-from crisp_gym.util.lerobot_features import get_features
+from crisp_gym.util.lerobot_features import env_action_names, get_features
 from crisp_gym.util.setup_logger import setup_logging
 
 
@@ -277,8 +277,17 @@ def main():
                     f"--fps {args.fps} != record config rate_hz "
                     f"{record_config.rate_hz}. Align them (part of the data contract)."
                 )
+            # For `definition: command` the action column IS whatever the
+            # drive fn hands to env.step(), so name it from the env's own
+            # action space instead of a command_dim in the record config that
+            # has to be kept in sync by hand.
             features = record_config.to_features(
-                joint_count=env.config.robot_config.num_joints()
+                joint_count=env.config.robot_config.num_joints(),
+                command_names=(
+                    env_action_names(env)
+                    if record_config.action.definition == "command"
+                    else None
+                ),
             )
         else:
             keys_to_ignore = []

@@ -359,7 +359,22 @@ class RecordConfig:
 
     # ── features (LeRobot schema) ──
     def to_features(self, joint_count: int | None = None,
-                    use_video: bool = True) -> Dict[str, Dict]:
+                    use_video: bool = True,
+                    command_names: List[str] | None = None) -> Dict[str, Dict]:
+        """Build the LeRobot feature schema for this contract.
+
+        Args:
+            joint_count: The robot's DOF, for definitions sized by it.
+            use_video: Encode images as video rather than stills.
+            command_names: For `definition: command` ONLY — the names of the
+                vector env.step() accepts, from
+                util.lerobot_features.env_action_names(env). When given, the
+                action feature is built from these rather than from the
+                config's command_dim, so the column always describes the
+                command actually sent. A declared command_dim is then only
+                cross-checked, and a disagreement raises rather than being
+                silently overridden.
+        """
         features: Dict[str, Dict] = {}
         state_len, state_names = 0, []
         for o in self.observations:
@@ -387,10 +402,25 @@ class RecordConfig:
         features["observation.state"] = {
             "dtype": "float32", "shape": (state_len,), "names": state_names,
         }
+        if self.action.definition == "command" and command_names is not None:
+            declared = self.action.command_dim
+            if declared is not None and declared != len(command_names):
+                raise ValueError(
+                    f"action.command_dim is {declared} but the env's action "
+                    f"vector has {len(command_names)} dimensions "
+                    f"({command_names}). Drop command_dim from the record "
+                    "config — it is derived from the env — or fix the env."
+                )
+            action_dim, action_names = len(command_names), list(command_names)
+        else:
+            action_dim, action_names = (
+                self.action.dim(joint_count),
+                self.action.names(joint_count),
+            )
         features["action"] = {
             "dtype": "float32",
-            "shape": (self.action.dim(joint_count),),
-            "names": self.action.names(joint_count),
+            "shape": (action_dim,),
+            "names": action_names,
         }
         return features
 

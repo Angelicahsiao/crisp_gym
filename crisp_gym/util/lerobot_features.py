@@ -31,6 +31,51 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _ctrl_dim_names(env) -> dict:
+    """Per-control-type names of the vector env.step() accepts."""
+    return {
+        ControlType.JOINT: [f"joint_{idx}" for idx in range(env.config.robot_config.num_joints())]
+        + ["gripper"],
+        ControlType.CARTESIAN: ["x", "y", "z"] + _rotation_dim_names(env) + ["gripper"],
+    }
+
+
+def env_action_names(env) -> list[str]:
+    """Names for the action vector this env's step() accepts.
+
+    The authority on a `command` action's layout. env.step() asserts the
+    incoming vector against env.action_space, so anything it accepts has
+    exactly this width — which makes these names describe the command that was
+    really sent, rather than a `command_dim`/`command_names` pair in a record
+    config that has to be maintained by hand and can silently disagree.
+
+    Args:
+        env: A ManipulatorBaseEnv (joint or Cartesian).
+
+    Returns:
+        list[str]: One name per action dimension, gripper last.
+
+    Raises:
+        ValueError: If the env's control type has no known layout, or the names
+            disagree with env.action_space — the two are derived separately, so
+            a mismatch means one of them is wrong.
+    """
+    ctrl_dims = _ctrl_dim_names(env)
+    if env.ctrl_type not in ctrl_dims:
+        raise ValueError(
+            f"Control type {env.ctrl_type} not supported. Supported: {list(ctrl_dims)}"
+        )
+    names = ctrl_dims[env.ctrl_type]
+    space_shape = getattr(getattr(env, "action_space", None), "shape", None)
+    if space_shape is not None and space_shape != (len(names),):
+        raise ValueError(
+            f"action name list {names} has {len(names)} entries but "
+            f"env.action_space.shape is {space_shape}. One of them is wrong; "
+            "the recorded action column would not describe the command sent."
+        )
+    return names
+
+
 def _rotation_dim_names(env) -> list[str]:
     """Rotation dimension names based on the env's orientation representation.
 
@@ -73,11 +118,7 @@ def get_features(
             f"Feature generation for LeRobot has been implemented for v2.x/v3.x of LeRobotDataset. Got {CODEBASE_VERSION}. Expect unexpected behaviour."
         )
 
-    ctrl_dims: dict[ControlType, list[str]] = {
-        ControlType.JOINT: [f"joint_{idx}" for idx in range(env.config.robot_config.num_joints())]
-        + ["gripper"],
-        ControlType.CARTESIAN: ["x", "y", "z"] + _rotation_dim_names(env) + ["gripper"],
-    }
+    ctrl_dims = _ctrl_dim_names(env)
 
     if env.ctrl_type not in ctrl_dims:
         raise ValueError(
