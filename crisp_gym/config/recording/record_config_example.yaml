@@ -83,9 +83,10 @@ observations:
 #                        gripper if include_gripper. Identical for handheld
 #                        and robot recording -> datasets are mixable.
 #   command              classic crisp_gym. action[t] = the command vector the
-#                        drive_fn sent to the robot this tick (delta pose,
-#                        joint delta, ... — document via command_semantics).
-#                        Requires: command_dim; drive_fn must be provided.
+#                        drive_fn sent to the robot this tick. Its width and
+#                        names are derived from the env's action_space at
+#                        record time, so nothing is declared here. Requires a
+#                        drive_fn.
 #   next_joint_positions action[t] = measured joint positions at t+lookahead
 #                        (+ gripper if include_gripper).
 #
@@ -96,9 +97,13 @@ observations:
 # gripper_params:     same params as the gripper.width_normalized source —
 #                     keep IDENTICAL to the observation entry so obs and action
 #                     gripper values share one scale.
-# command_dim:        (command only) length of the command vector.
-# command_semantics:  (command only) free-text tag stamped into metadata,
-#                     e.g. "delta_pose_euler_gripper", "joint_delta_gripper".
+# command_dim /       (command only) DEPRECATED. Both are still accepted for
+# command_semantics:  callers that build features without an env handle, but
+#                     the recording scripts derive the action width and names
+#                     from env.action_space instead — the vector env.step()
+#                     actually receives. A command_dim that disagrees with the
+#                     env now RAISES rather than mislabelling the column, so
+#                     prefer leaving both out.
 action:
   definition: next_tcp_pose
   lookahead: 1

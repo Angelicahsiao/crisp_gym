@@ -31,11 +31,31 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _joint_dim_names(env) -> list[str]:
+    """Per-joint names, using the robot's REAL joint names when available.
+
+    RobotConfig.joint_names carries the controller's own names (fr3_joint1..7,
+    shoulder_pan_joint, ...) and num_joints() is len(joint_names), so the two
+    cannot disagree. Naming the dataset columns after them makes an episode
+    self-describing — "fr3_joint4" says which physical joint a number belongs
+    to, where "joint_3" leaves the reader to guess the convention and its
+    base index.
+
+    Falls back to positional names if a robot config predates joint_names or
+    reports a length inconsistent with num_joints().
+    """
+    robot_config = env.config.robot_config
+    count = robot_config.num_joints()
+    names = getattr(robot_config, "joint_names", None)
+    if names and len(names) == count:
+        return [str(n) for n in names]
+    return [f"joint_{idx}" for idx in range(count)]
+
+
 def _ctrl_dim_names(env) -> dict:
     """Per-control-type names of the vector env.step() accepts."""
     return {
-        ControlType.JOINT: [f"joint_{idx}" for idx in range(env.config.robot_config.num_joints())]
-        + ["gripper"],
+        ControlType.JOINT: _joint_dim_names(env) + ["gripper"],
         ControlType.CARTESIAN: ["x", "y", "z"] + _rotation_dim_names(env) + ["gripper"],
     }
 
