@@ -321,7 +321,23 @@ def main():
             with open(
                 recording_manager.dataset_directory / "meta" / "record_config.json", "w"
             ) as f:
-                json.dump(record_config.to_metadata(), f, indent=4)
+                # For `definition: command` the stamped contract carries the
+                # resolved column names AND the env's action convention:
+                # identical columns mean per-step deltas under one env and
+                # absolute values under another, and nothing else in the
+                # contract tells them apart.
+                json.dump(
+                    record_config.to_metadata(
+                        action_names=(
+                            env_action_names(env)
+                            if record_config.action.definition == "command"
+                            else None
+                        ),
+                        use_relative_actions=env.config.use_relative_actions,
+                    ),
+                    f,
+                    indent=4,
+                )
             logger.info("Record contract saved to meta/record_config.json")
 
         logger.info(

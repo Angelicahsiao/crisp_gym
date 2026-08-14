@@ -425,7 +425,45 @@ class RecordConfig:
         return features
 
     # ── contract stamping / compatibility ──
-    def to_metadata(self) -> dict:
+    def to_metadata(
+        self,
+        action_names: List[str] | None = None,
+        use_relative_actions: bool | None = None,
+    ) -> dict:
+        """Stamp the resolved contract for meta/record_config.json.
+
+        Args:
+            action_names: Resolved action column names, from
+                util.lerobot_features.env_action_names(env).
+            use_relative_actions: The env's action convention.
+
+        Both are recorded for `definition: command` ONLY, and both are
+        deliberately scoped that way.
+
+        For `command` the action column IS the drive fn's vector, so the
+        convention decides what the numbers mean: identical
+        [x, y, z, roll, pitch, yaw, gripper] columns are per-step DELTAS under
+        one env and ABSOLUTE poses under another. Nothing else in this contract
+        distinguishes them, so without this two such datasets compare as
+        mixable and train together silently.
+
+        For next_tcp_pose / next_joint_positions the action is a MEASURED value
+        and the convention never reaches the data, so stamping it there would
+        only make datasets recorded either side of this change compare as
+        incompatible over a field that cannot matter.
+        """
+        action: Dict[str, Any] = {
+            "definition": self.action.definition,
+            "lookahead": self.action.lookahead,
+            "representation": self.action.representation,
+            "include_gripper": self.action.include_gripper,
+            "command_semantics": self.action.command_semantics,
+        }
+        if self.action.definition == "command":
+            if action_names is not None:
+                action["names"] = list(action_names)
+            if use_relative_actions is not None:
+                action["use_relative_actions"] = bool(use_relative_actions)
         return {
             "record_config_name": self.name,
             "rate_hz": self.rate_hz,
@@ -438,13 +476,7 @@ class RecordConfig:
                 }
                 for o in self.observations
             ],
-            "action": {
-                "definition": self.action.definition,
-                "lookahead": self.action.lookahead,
-                "representation": self.action.representation,
-                "include_gripper": self.action.include_gripper,
-                "command_semantics": self.action.command_semantics,
-            },
+            "action": action,
         }
 
     # Fields that must match for two datasets to be trained together.
