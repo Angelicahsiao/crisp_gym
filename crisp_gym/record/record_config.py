@@ -142,8 +142,32 @@ def _src_sensor(env, name: str = "", **_) -> np.ndarray:
 
 @register_source("robot.target_pose")
 def _src_target_pose(env, representation: str = "rotation_6d", **_) -> np.ndarray:
-    """Commanded (target) TCP pose — useful to analyze controller tracking."""
+    """Commanded (target) TCP pose — useful to analyze controller tracking.
+
+    MEANINGFUL ONLY UNDER CARTESIAN CONTROL. crisp_py's Robot._target_pose is
+    written by set_target()/move_to(); set_target_joint() never touches it. On a
+    joint-driven env (FACTR + JIC) it is therefore seeded from the measured pose
+    after each home() and then stays CONSTANT for the whole episode — a column
+    that looks like data but is not. Record robot.target_joint there instead.
+    """
     return _pose_to_array(env.robot.target_pose, representation)
+
+
+@register_source("robot.target_joint")
+def _src_target_joint(env, **_) -> np.ndarray:
+    """Commanded (target) joint configuration — joint-space tracking analysis.
+
+    The exact vector env.step() handed to Robot.set_target_joint, i.e. AFTER the
+    env's clamps (_limit_joint_speed, the startup-offset check), so it is the
+    effective command rather than the raw teleop request. Pair it with
+    robot.joint_positions to see what the JIC actually tracked.
+
+    The joint-space mirror of robot.target_pose, with the mirrored caveat: under
+    Cartesian control nothing calls set_target_joint, so this stays at whatever
+    the joint state seeded it with. Record whichever one matches how the arm is
+    driven; the other is a constant.
+    """
+    return np.asarray(env.robot.target_joint, dtype=np.float32)
 
 
 @register_source("gripper.raw_value")

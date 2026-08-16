@@ -63,9 +63,25 @@ observations:
     name: ext_torque
     shape: [7]
     include_in_state: false
-  - key: extra.target_cartesian                 # commanded pose (tracking error analysis)
+  # Commanded targets, for tracking-error analysis against the measured
+  # columns above. EXACTLY ONE OF THE TWO IS LIVE PER DATASET, decided by how
+  # the arm was driven — crisp_py keeps _target_pose and _target_joint in
+  # separate fields and each control path writes only its own:
+  #   Cartesian teleop (streamed pose -> CIC): set_target() writes the pose;
+  #     target_joints is whatever the joint state seeded it with.
+  #   Joint teleop (FACTR -> JIC): set_target_joint() writes the joints;
+  #     target_cartesian is re-seeded from the measured pose after each home()
+  #     and then CONSTANT for the episode.
+  # Both are recorded unconditionally so one config serves both rigs. The dead
+  # one costs 7-9 floats per frame and is obvious on inspection (it does not
+  # move); do NOT read it as a command. See record_config.py's source docstrings.
+  - key: extra.target_cartesian                 # live under Cartesian control
     source: robot.target_pose
     representation: rotation_6d
+    include_in_state: false
+  - key: extra.target_joints                    # live under joint control
+    source: robot.target_joint                  # post-clamp, as sent to the JIC
+    shape: [7]
     include_in_state: false
   - key: extra.gripper_raw                      # uncalibrated device value
     source: gripper.raw_value

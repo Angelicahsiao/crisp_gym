@@ -26,8 +26,13 @@ rate_hz: 15.0
 #   source:           provider name (registry in record_config.py):
 #                       robot.tcp_pose            measured TCP pose
 #                       robot.joint_positions     measured joint positions
+#                       robot.target_pose         COMMANDED TCP pose
+#                       robot.target_joint        COMMANDED joint configuration
 #                       gripper.width_normalized  gripper opening in [0,1]
 #                       camera.image              one camera frame
+#                     (the full registry also has robot.joint_velocities,
+#                     robot.joint_efforts, robot.sensor, gripper.raw_value —
+#                     see the @register_source docstrings for their params)
 #                     (extend with @register_source("your.name") — new sources
 #                     need no changes to the recording loop)
 #   include_in_state: whether this column is concatenated into the combined
@@ -42,6 +47,14 @@ rate_hz: 15.0
 #     representation: euler(6) | angle_axis(6) | quaternion(7) | rotation_6d(9)
 #                     rotation_6d = first two ROWS of R, UMI/pytorch3d
 #                     convention — recommended for learning. Default: rotation_6d
+#   robot.target_pose / robot.target_joint:
+#     No params (target_pose takes the same `representation` as tcp_pose;
+#     target_joint needs an explicit `shape: [N]`). These record the COMMAND,
+#     not a measurement, so pair them with tcp_pose / joint_positions to get
+#     the controller's tracking error. CAVEAT: each is written by only one
+#     control path — set_target() for the pose, set_target_joint() for the
+#     joints — so under the OTHER control mode the column is a constant, not a
+#     command. Record the one matching how the arm is driven.
 #   gripper.width_normalized:
 #     reference_width:  SHARED physical width (meters) that maps to 1.0 across
 #                       ALL devices recording for the same policy. null/omitted

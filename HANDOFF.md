@@ -147,6 +147,7 @@ Repos involved (same owner, branch conventions apply to all):
 | `tests/test_lerobot_record.py` | Stubs crisp_py/ROS at import; its `_OrientationRepresentation` stub MUST mirror the real enum (already includes ROTATION_6D). |
 | `tests/test_pose_math.py` | HANDOFF §3 invariants as real tests (rot6d round-trip, identity, matrix round-trip, world-frame invariance, gripper pass-through, RemotePolicy obs-time chunk base). Runs without torch (stubbed). |
 | `tests/test_migration_euler_delta.py` | Migration round-trip on synthetic v2.x/v3.0 datasets (rotations, state rebuild, lookahead episode boundaries, stats incl. quantiles, byte-identical videos, guards). |
+| `tests/test_target_joint_source.py` | `robot.target_joint` source (float32 cast, explicit-shape requirement) + `umi_robot_full_record.yaml` carrying BOTH commanded targets with neither leaking into `observation.state`. Numpy-only. |
 
 LeRobot version target: **0.4.4** (module path `lerobot.datasets.lerobot_dataset`;
 train entry `lerobot.scripts.lerobot_train`; diffusion defaults n_obs_steps=2,
@@ -208,6 +209,14 @@ norm ~1.0 and dot ~0.0 (they are rows of a real rotation matrix).
    to `meta/record_config.json` when recording and gate dataset mixing with
    `RecordConfig.contracts_compatible`. UMI robot recording = `umi_robot_record.yaml`
    + any drive_fn (drive_fn computes commands only, never steps the env).
+   COMMANDED-TARGET SOURCES: `robot.target_pose` and `robot.target_joint` are
+   NOT interchangeable and neither is universally valid — crisp_py writes
+   `_target_pose` only from `set_target()`/`move_to()` and `_target_joint` only
+   from `set_target_joint()`, so under the mismatched control mode the column is
+   a constant (for the pose: the measured pose re-seeded after each `home()`)
+   that reads as plausible data. `umi_robot_full_record.yaml` records both so
+   one config serves the Cartesian (streamed -> CIC) and joint (FACTR -> JIC)
+   rigs; when analyzing a dataset, pick the one matching how it was driven.
    Integration DONE: record_umi_handheld.py uses RecordConfig by default;
    record_lerobot_format_leader_follower.py gains --record-config (legacy
    behavior when omitted); both stamp meta/record_config.json. Legacy fns:
