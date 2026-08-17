@@ -1,0 +1,157 @@
+# Streamed pose teleop (phone/VIVE) -> dric Franka FR3 + Robotiq 2F-85 + dual RealSense.
+#
+# Cartesian-space RECORDING env for the UMI rot6d contract. Third member of the
+# dric_dual_rscam_franka family, one per job — they differ only where a single
+# file cannot be right for two jobs at once:
+#
+#   dric_dual_rscam_franka.yaml            LEGACY streamed teleop: Euler
+#       (the default orientation_representation), absolute_binary gripper. Kept
+#       for reproducing the old datasets; do not record new UMI data with it.
+#   dric_dual_rscam_franka_umi.yaml        THIS FILE — streamed teleop, rot6d.
+#   factr_dric_dual_rscam_franka.yaml      FACTR leader, JOINT space, absolute.
+#   dric_dual_rscam_franka_deploy_umi.yaml DEPLOYMENT of a trained relative-pose
+#       model. Identical to this file EXCEPT use_relative_actions: false, and
+#       that difference is load-bearing — see the note on the flag below.
+#
+# Use with:
+#   python crisp_gym/scripts/record_lerobot_format_leader_follower.py \
+#       --use-streamed-teleop \
+#       --follower-config dric_dual_rscam_franka_umi \
+#       --record-config crisp_gym/config/recording/umi_robot_full_record.yaml \
+#       --repo-id <org>/<name> --fps 15
+#
+# The dataset schema is IDENTICAL to the FACTR-driven one: the UMI contract
+# stores next_tcp_pose from robot.end_effector_pose and the MEASURED gripper
+# width, neither of which depends on how the arm was driven. The two rigs' data
+# is directly mixable. Only extra.target_cartesian / extra.target_joints differ
+# in which one carries a live command (see the record config).
+#
+# Everything not called out below (cameras, gripper, home poses, effort
+# feedback) is a copy of dric_dual_rscam_franka_deploy_umi.yaml — keep them in
+# sync, since a recording/deployment mismatch in camera keys or gripper scaling
+# silently degrades the policy rather than raising. The one addition is the
+# ext_torque sensor: recording needs it for the record config's extra column,
+# deployment does not, so the deploy file leaves sensor_configs empty.
+
+# Match the recorded fps: the record config's rate_hz is 15.0 and --fps 15 is
+# passed at recording time. Deployment uses the same 15.0.
+control_frequency: 15.0
+
+# The recorded (measured) gripper width must stay continuous. absolute_binary
+# thresholds the command, so the width column comes out bimodal — poor training
+# data for the continuous-gripper policy this data is for. This is the setting
+# dric_dual_rscam_franka.yaml gets wrong for UMI recording.
+gripper_mode: "absolute_continuous"
+
+# 9D [pos3, rot6d-rows] pose in the action vector and the obs the relative
+# pipeline expects. Must match the deploy env, or the checkpoint sees a
+# different state layout than it was trained on.
+orientation_representation: "rotation_6d"
+
+# TRUE HERE, AND FALSE IN THE DEPLOY CONFIG — not an oversight, the two paths
+# feed the env genuinely different vectors:
+#
+#   Recording (this file): make_streamer_drive_fn (record_functions.py:211-228)
+#       emits `pose - prev_pose`, a per-step DELTA. The env's relative branch
+#       (ManipulatorCartesianEnv.step) accumulates it onto robot.target_pose.
+#       With false, that delta would be read as an absolute target and the arm
+#       would drive toward the origin.
+#   Deployment: RelativeLerobotPolicy composes T_cmd = T_base(obs time) @ T_rel
+#       itself and outputs an ABSOLUTE pose. It hard-raises on a truthy flag
+#       (relative_lerobot_policy.py:321-328) because the env's relative branch
+#       is a decoupled world-frame add, NOT the UMI body-frame composition.
+#
+# So: do not "unify" this flag across the two files. If you ever drive this env
+# with something that emits absolute poses, flip it and expect a jump on the
+# first command — there is no Cartesian startup-offset guard (max_joint_speed /
+# max_startup_joint_offset are ManipulatorJointEnv-only and inert here).
+use_relative_actions: true
+
+# CIC gains come from the bring-up launch, deliberately not loaded here:
+# "control/default_cartesian_impedance.yaml" resolves to crisp_py's packaged
+# copy, not crisp_gym's, so setting it would silently apply the wrong gains.
+# The joint config is loaded so homing shares one tuned set of JIC gains with
+# the FACTR env.
+cartesian_control_param_config: null
+joint_control_param_config: "control/fr3_joint_control.yaml"
+
+# Resolved by home_for_env() BEFORE the legacy Franka HomeConfig enum, whose
+# OPEN_POSE differs from this rig by ~0.08 rad on joint4. The recorder homes
+# twice at startup (close_to_table, then open_pose) and once after every
+# episode (open_pose); both names point at the SAME pose via a YAML anchor, so
+# the second startup move is a no-op and the two cannot drift apart when edited.
+named_home_configs:
+  open_pose: &home_pose
+    - 0.4246407298371954
+    - -0.01130037897899503
+    - -0.3321400257658427
+    - -2.6908276789742325
+    - 0.09774443531853239
+    - 4.257101518895322
+    - -0.013673332419279224
+  close_to_table: *home_pose
+
+robot_config:
+  robot_type: "franka"
+  # Effort comes from the `effort` field of the sensor_msgs/JointState messages
+  # the FR3 driver already publishes on the robot's joint_state topic. crisp_py
+  # ingests it in Robot._callback_current_joint only when this flag is true AND
+  # len(msg.effort) == len(msg.position); otherwise current_joint_effort returns
+  # zeros with a throttled warning. Required for the record config's
+  # extra.joint_efforts column to hold real values.
+  has_effort_feedback: true
+  home_config:
+  - 0.425725623070977
+  - -0.013800044320084788
+  - -0.33286129072276527
+  - -2.6913555955684414
+  - 0.10167396715537252
+  - 4.262024898082136
+  - -0.021739227284989265
+
+gripper_config:
+  min_value: 0.79
+  max_value: 0.0
+  command_topic: "/robotiq_2f85/robotiq_gripper_controller/gripper_cmd"
+  joint_state_topic: /robotiq_2f85/joint_states
+  use_gripper_command_action: True
+  max_delta: 1.0
+  max_effort: 5.0
+
+# Camera names define the observation.images.* keys and MUST match both the
+# record config's `camera:` fields and the keys the checkpoint is trained on.
+# The historical "wirst_cam"/"wirst_link" misspelling is corrected here (the ROS
+# topics always used the correct spelling); a checkpoint trained on
+# observation.images.wirst_cam will not find its input under the corrected key.
+camera_configs:
+  - camera_name: "env_cam"
+    camera_frame: "env_link"
+    resolution: [256, 256]
+    camera_color_image_topic: "/env/env_cam/color/image_raw"
+    camera_color_info_topic: "/env/env_cam/color/camera_info"
+  - camera_name: "wrist_cam"
+    camera_frame: "wrist_link"
+    camera_color_image_topic: "/wrist/wrist_cam/color/image_rect_raw"
+    camera_color_info_topic: "/wrist/wrist_cam/color/camera_info"
+    resolution: [256, 256]
+
+# EXTERNAL joint torque from franka_ros2's franka_robot_state_broadcaster:
+# tau_ext with gravity and arm dynamics already removed by the robot firmware,
+# so it is ~0 in free motion and non-zero only on real contact. Recorded via the
+# generic sensor path (crisp_py joint_state_effort reads the JointState `effort`
+# field) — distinct from robot.joint_efforts, which is the TOTAL measured torque
+# on the robot's own /joint_states and is dominated by gravity.
+#
+# REQUIRED by the record config's extra.ext_torque column: _src_sensor raises
+# KeyError on the FIRST frame if no sensor by this name exists.
+#
+# The broadcaster publishes NINE values — the 7 arm joints followed by the two
+# Robotiq knuckle joints:
+#   [fr3_joint1..7, robotiq_85_left_knuckle_joint, robotiq_85_right_knuckle_joint]
+# `indices` keeps the arm only, so `shape: [7]` describes the recorded value.
+sensor_configs:
+  - sensor_type: "joint_state_effort"
+    name: "ext_torque"
+    shape: [7]
+    indices: [0, 1, 2, 3, 4, 5, 6]
+    data_topic: "/franka_robot_state_broadcaster/external_joint_torques"

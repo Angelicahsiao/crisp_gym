@@ -58,7 +58,16 @@ observations:
     source: robot.joint_efforts                 # TOTAL torque (gravity included)
     shape: [7]
     include_in_state: false
-  - key: extra.ext_torque                       # tau_ext: gravity/dynamics removed
+  # tau_ext: gravity/dynamics removed by the firmware, so unlike
+  # extra.joint_efforts it is ~0 in free motion and non-zero only on real
+  # contact. REQUIRES an "ext_torque" entry in the env's sensor_configs —
+  # _src_sensor raises KeyError on the FIRST frame if it is missing. Both
+  # RECORDING envs this config is used with declare it
+  # (dric_dual_rscam_franka_umi.yaml for streamed teleop,
+  # factr_dric_dual_rscam_franka.yaml for FACTR); comment this block out if you
+  # record with an env that does not. The deploy env has no sensor_configs, but
+  # it never records.
+  - key: extra.ext_torque
     source: robot.sensor                        # -> env sensor_configs "ext_torque"
     name: ext_torque
     shape: [7]
