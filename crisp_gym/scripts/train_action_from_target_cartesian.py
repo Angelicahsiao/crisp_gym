@@ -72,6 +72,10 @@ class TargetCartesianActionDataset:
 
         self._assert_features(dataset)
         self._assert_target_varies(dataset)
+        # Best-effort eager injection. But delta_indices may be built lazily —
+        # in some lerobot versions it is empty when make_dataset returns and is
+        # populated on the first __getitem__ — so __getitem__ ALSO injects and
+        # re-queries on the first shape mismatch. Do not rely on this alone.
         self._inject_windowing(dataset)
 
     # Delegate .meta, .num_frames, .hf_dataset, etc.
@@ -157,23 +161,20 @@ class TargetCartesianActionDataset:
         )
 
     def _inject_windowing(self, dataset) -> None:
-        """Make lerobot window TARGET_KEY exactly like ACTION_KEY."""
-        di = getattr(dataset, "delta_indices", None)
-        dt = getattr(dataset, "delta_timestamps", None)
-        self._windowed = False
-        if di is not None and ACTION_KEY in di:
-            di[TARGET_KEY] = di[ACTION_KEY]
-            self._windowed = True
-        if dt is not None and ACTION_KEY in dt:
-            dt[TARGET_KEY] = dt[ACTION_KEY]
-        if not self._windowed:
-            # No action horizon configured (single-step policy): action arrives
-            # as a single frame and so does TARGET_KEY — the swap still works,
-            # frame-for-frame. Nothing to inject.
-            logger.info(
-                "No action horizon in delta_indices; swapping single-frame "
-                "actions (policy has no action chunk)."
-            )
+        """Mirror ACTION_KEY's window offsets onto TARGET_KEY. Returns injected?
+
+        Copies the action offsets in whichever of delta_indices / delta_timestamps
+        lerobot has populated, so the dataloader stacks and pads
+        extra.target_cartesian exactly like `action`. Idempotent.
+        """
+        injected = False
+        for attr in ("delta_indices", "delta_timestamps"):
+            d = getattr(dataset, attr, None)
+            if isinstance(d, dict) and ACTION_KEY in d:
+                if TARGET_KEY not in d:
+                    d[TARGET_KEY] = d[ACTION_KEY]
+                injected = True
+        return injected
 
     # ── the swap ──
     def convert_item(self, item: dict) -> dict:
@@ -189,15 +190,35 @@ class TargetCartesianActionDataset:
         if a.shape[:-1] != tc.shape[:-1]:
             raise ValueError(
                 f"'{ACTION_KEY}' window {a.shape} and '{TARGET_KEY}' window "
-                f"{tc.shape} disagree — target was not windowed like action, so "
-                "the horizons are not aligned. See _inject_windowing()."
+                f"{tc.shape} disagree — target was not windowed like action even "
+                "after re-querying. lerobot did not honor the injected delta for "
+                f"'{TARGET_KEY}'. Add it to the policy's delta_timestamps, or "
+                "preprocess the dataset offline."
             )
         a[..., :ARM_DIMS] = tc[..., :ARM_DIMS]     # arm := commanded pose; gripper kept
         item[ACTION_KEY] = torch.from_numpy(a.astype(np.float32))
         return item
 
     def __getitem__(self, idx: int) -> dict:
-        return self.convert_item(self._dataset[idx])
+        item = self._dataset[idx]
+        # If the target came back un-windowed while the action is windowed, the
+        # delta config was populated lazily (only now, by this very query).
+        # Mirror it onto the target and re-query ONCE so both horizons align.
+        # A single-step policy (no action horizon) leaves both single-frame and
+        # matching, so this branch is skipped.
+        if TARGET_KEY in item and ACTION_KEY in item:
+            a_np = self._to_np(item[ACTION_KEY])
+            t_np = self._to_np(item[TARGET_KEY])
+            if a_np.shape[:-1] != t_np.shape[:-1] and not self._requeried_ok:
+                if self._inject_windowing(self._dataset):
+                    item = self._dataset[idx]
+                # Only try this dance once; if it did not take, convert_item
+                # raises a clear error rather than looping every sample.
+                self._requeried_ok = True
+        return self.convert_item(item)
+
+    # Set lazily on first use; guards the one-shot re-query in __getitem__.
+    _requeried_ok = False
 
 
 # ── Stats recomputation ───────────────────────────────────────────────────────
