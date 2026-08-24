@@ -356,6 +356,40 @@ python crisp_gym/scripts/check_relative_pose.py /path/to/dataset_rot6d
 # expect: identity err ~1e-16, round-trip err ~1e-8, small |Δpos|, PASS
 ```
 
+### Train ABSOLUTE (no relative conversion)
+
+For the plain absolute-pose baseline — the policy predicts the next absolute TCP
+pose, exactly the recorded `action` — use `train_absolute_next_pose.py` instead
+of `lerobot_relative_pose.py`. It runs `lerobot-train` with NO obs/action
+transform, stamping `action_repr.json` (absolute) next to the checkpoint:
+
+```bash
+python crisp_gym/scripts/train_absolute_next_pose.py \
+    --dataset.repo_id=delta/vive \
+    --policy.type=diffusion \
+    --output_dir=outputs/train/vive_absolute \
+    --batch_size=64 --steps=200000
+```
+
+### Train with the COMMANDED pose as the action (ablation)
+
+`train_action_from_target_cartesian.py` swaps the arm dims of `action` for
+`extra.target_cartesian` (the pose commanded to the CIC), keeping the gripper —
+so the policy learns the command stream, not the achieved trajectory. Same args
+as above. **Only valid for Cartesian-driven data** (streamed pose → CIC, e.g.
+`dric_dual_rscam_franka_umi`): on FACTR/JIC joint-space data `target_cartesian`
+is constant per episode, and the script REFUSES with a message rather than
+training a constant. Recomputes the action stats and stamps
+`action_repr.json` (source `extra.target_cartesian`).
+
+```bash
+python crisp_gym/scripts/train_action_from_target_cartesian.py \
+    --dataset.repo_id=delta/vive \
+    --policy.type=diffusion \
+    --output_dir=outputs/train/vive_target_cmd \
+    --batch_size=64 --steps=200000
+```
+
 ---
 
 ## 9. Deploy a trained policy

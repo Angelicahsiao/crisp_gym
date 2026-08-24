@@ -148,6 +148,9 @@ Repos involved (same owner, branch conventions apply to all):
 | `tests/test_pose_math.py` | HANDOFF §3 invariants as real tests (rot6d round-trip, identity, matrix round-trip, world-frame invariance, gripper pass-through, RemotePolicy obs-time chunk base). Runs without torch (stubbed). |
 | `tests/test_migration_euler_delta.py` | Migration round-trip on synthetic v2.x/v3.0 datasets (rotations, state rebuild, lookahead episode boundaries, stats incl. quantiles, byte-identical videos, guards). |
 | `tests/test_target_joint_source.py` | `robot.target_joint` source (float32 cast, explicit-shape requirement) + `umi_robot_full_record.yaml` carrying BOTH commanded targets with neither leaking into `observation.state`. Numpy-only. |
+| `crisp_gym/scripts/train_absolute_next_pose.py` | ABSOLUTE-pose training launcher: runs `lerobot-train` with NO obs/action transform (action = recorded `next_tcp_pose`), stamping `action_repr.json` (absolute). Counterpart to `lerobot_relative_pose.py`. GPU-PC, crisp-import-free. |
+| `crisp_gym/scripts/train_action_from_target_cartesian.py` | Training launcher that swaps the ARM dims of `action` for `extra.target_cartesian` (commanded pose), keeping the gripper; injects the target into `delta_indices` so it windows like `action`, recomputes action stats (no-video guard), stamps `action_repr.json`. REFUSES when `target_cartesian` is constant per episode (FACTR/JIC dead-column). GPU-PC, crisp-import-free. |
+| `tests/test_action_swap.py` | Action-swap wrapper: arm←target / gripper kept, `delta_indices` injection, constant-column refusal, window-shape-mismatch guard, action-stats recompute. torch stubbed, numpy-only. |
 
 LeRobot version target: **0.4.4** (module path `lerobot.datasets.lerobot_dataset`;
 train entry `lerobot.scripts.lerobot_train`; diffusion defaults n_obs_steps=2,
