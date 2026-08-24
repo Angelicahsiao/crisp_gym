@@ -191,9 +191,13 @@ class TargetCartesianActionDataset:
             raise ValueError(
                 f"'{ACTION_KEY}' window {a.shape} and '{TARGET_KEY}' window "
                 f"{tc.shape} disagree — target was not windowed like action even "
-                "after re-querying. lerobot did not honor the injected delta for "
-                f"'{TARGET_KEY}'. Add it to the policy's delta_timestamps, or "
-                "preprocess the dataset offline."
+                "after re-querying. This lerobot fixes its windowed-key set at "
+                "dataset construction from the policy's features, so a "
+                "post-construction wrapper cannot get a non-policy key windowed. "
+                "Use the OFFLINE path instead: "
+                "`python crisp_gym/crisp_gym/scripts/swap_action_offline.py "
+                "--input <root> --output <root_targetcmd>` then train the result "
+                "with train_absolute_next_pose.py."
             )
         a[..., :ARM_DIMS] = tc[..., :ARM_DIMS]     # arm := commanded pose; gripper kept
         item[ACTION_KEY] = torch.from_numpy(a.astype(np.float32))

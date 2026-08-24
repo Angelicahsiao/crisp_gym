@@ -384,11 +384,38 @@ training a constant. Recomputes the action stats and stamps
 
 ```bash
 python crisp_gym/scripts/train_action_from_target_cartesian.py \
-    --dataset.repo_id=delta/vive \
-    --policy.type=diffusion \
-    --output_dir=outputs/train/vive_target_cmd \
+    --dataset.repo_id=franka_electricbox \
+    --dataset.root=datasets/franka_electricbox/lerobot \
+    --policy.type=diffusion --policy.push_to_hub=false \
+    --output_dir=outputs/train/target_cmd \
     --batch_size=64 --steps=200000
 ```
+
+`--dataset.root=<local dir>` loads a local dataset (the dir holding
+`meta/info.json`) instead of the Hub; `--policy.push_to_hub=false` skips the hub
+push. Both apply to `train_absolute_next_pose.py` too.
+
+**If it raises `… window (H,10) and … window (9,) disagree`:** your lerobot fixes
+its windowed-key set at dataset construction from the policy's features, so the
+online wrapper cannot get `extra.target_cartesian` windowed. Use the OFFLINE path
+— rewrite the action column on disk once, then train the copy with the plain
+absolute launcher:
+
+```bash
+python crisp_gym/scripts/swap_action_offline.py \
+    --input datasets/franka_electricbox/lerobot \
+    --output datasets/franka_electricbox_targetcmd/lerobot
+python crisp_gym/scripts/train_absolute_next_pose.py \
+    --dataset.repo_id=franka_electricbox_targetcmd \
+    --dataset.root=datasets/franka_electricbox_targetcmd/lerobot \
+    --policy.type=diffusion --policy.push_to_hub=false \
+    --output_dir=outputs/train/target_cmd --batch_size=64 --steps=200000
+```
+
+The offline script copies videos byte-for-byte, rewrites only the `action`
+column (arm ← `extra.target_cartesian`, gripper kept), recomputes the action
+stats, and refuses on FACTR/JIC data (constant `target_cartesian`). Same-frame
+swap — identical training target to the online wrapper.
 
 ---
 
