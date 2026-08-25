@@ -227,6 +227,33 @@ class TargetCartesianActionDataset:
 
 # ── Stats recomputation ───────────────────────────────────────────────────────
 
+# Known names for LeRobotDataset's internal video-query method (newest first),
+# disabled during the stats pass. A list so a lerobot rename does not silently
+# re-enable video decode and crash the workers.
+_VIDEO_QUERY_ATTRS = ("_query_videos", "_query_video", "query_videos")
+
+
+def _disable_video_query(ds):
+    """Temporarily no-op the dataset's video query. Returns (attr_name, original).
+
+    Patches the first known method that exists; warns LOUDLY with the mitigation
+    if none is found rather than silently decoding video in the main process.
+    """
+    for name in _VIDEO_QUERY_ATTRS:
+        if hasattr(ds, name):
+            orig = getattr(ds, name)
+            setattr(ds, name, lambda *a, **k: {})
+            return name, orig
+    logger.warning(
+        "Could not find a video-query method on the dataset (tried %s) to "
+        "disable video decode during the stats pass. If DataLoader workers "
+        "crash at step 0 with 'Could not push packet to decoder', rerun with "
+        "--num_workers=0 or --dataset.video_backend=pyav.",
+        _VIDEO_QUERY_ATTRS,
+    )
+    return None, None
+
+
 def recompute_action_stats(wrapped: TargetCartesianActionDataset, num_samples: int = 2000) -> None:
     """Overwrite meta.stats['action'] with stats of the SWAPPED action.
 
@@ -243,9 +270,7 @@ def recompute_action_stats(wrapped: TargetCartesianActionDataset, num_samples: i
     # DataLoader workers broken, and every worker dies at step 0. action is
     # low-dim, so no-op the video query while sampling.
     ds = wrapped._dataset
-    _orig_query_videos = getattr(ds, "_query_videos", None)
-    if _orig_query_videos is not None:
-        ds._query_videos = lambda *a, **k: {}
+    _attr, _orig = _disable_video_query(ds)
     try:
         collected: list[np.ndarray] = []
         for i in indices:
@@ -253,8 +278,8 @@ def recompute_action_stats(wrapped: TargetCartesianActionDataset, num_samples: i
             v = v.numpy() if isinstance(v, torch.Tensor) else np.asarray(v)
             collected.append(v.reshape(-1, v.shape[-1]))
     finally:
-        if _orig_query_videos is not None:
-            ds._query_videos = _orig_query_videos
+        if _attr is not None:
+            setattr(ds, _attr, _orig)
 
     data = np.concatenate(collected, axis=0)
     wrapped.meta.stats[ACTION_KEY] = {
