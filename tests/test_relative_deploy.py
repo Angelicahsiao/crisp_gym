@@ -519,6 +519,7 @@ def test_client_loop_end_to_end():
     pol.device_max_width = dev
     pol.target_to_euler = False
     pol.compose_mode = "coupled"
+    pol.action_repr = "relative"
     pol.invert_gripper = False
     pol._log_actions = False
     pol._log_actions_n = 0
@@ -576,6 +577,7 @@ def test_decoupled_composition_matches_umi_rel():
     pol._chunk_base = T_base
     pol.reference_width = pol.device_max_width = 0.085
     pol.invert_gripper = False
+    pol.action_repr = "relative"
     pol._log_actions = False
     pol._log_actions_n = 0
     pol._action_log_left = 0
@@ -605,6 +607,50 @@ def test_decoupled_composition_matches_umi_rel():
     assert abs(pol._to_env_action(a2)[-1] - 0.2) < 1e-6
     pol.invert_gripper = True
     assert abs(pol._to_env_action(a2)[-1] - 0.8) < 1e-6
+
+
+# ── 10. absolute action = model pose sent directly (no compose) ───────────────
+
+def test_absolute_action_sends_pose_directly():
+    """action_repr='absolute' must send the model's [pos3,rot6d6] pose straight
+    through as the command, ignoring the obs-time base (no T_base@T_rel), with
+    the gripper still reference->device converted."""
+    T_base = _random_traj(1, seed=71)[0]
+    T_target = _random_traj(1, seed=72)[0]
+    action = np.concatenate([_pose9(T_target), [0.3]]).astype(np.float64)
+
+    pol = object.__new__(rlp.RelativeLerobotPolicy)
+    pol._chunk_base = T_base          # deliberately NON-identity: must be ignored
+    pol.reference_width = pol.device_max_width = 0.085   # identity gripper scaling
+    pol.invert_gripper = False
+    pol.action_repr = "absolute"
+    pol.compose_mode = "coupled"      # must be ignored in absolute mode
+    pol._log_actions = False
+    pol._log_actions_n = 0
+    pol._action_log_left = 0
+
+    class _Cfg:
+        orientation_representation = "rotation_6d"
+    pol.env = types.SimpleNamespace(config=_Cfg())
+
+    out = pol._to_env_action(action)
+    # position is the model's, NOT composed with the base
+    np.testing.assert_allclose(out[:3], action[:3], atol=1e-9)
+    # full pose (pos + rot6d) reconstructs the target matrix, base-independent
+    def _mat9(p9):
+        T = np.eye(4)
+        a1, a2 = p9[3:6], p9[6:9]
+        b1 = a1 / np.linalg.norm(a1)
+        b2 = a2 - np.dot(b1, a2) * b1
+        b2 = b2 / np.linalg.norm(b2)
+        T[:3, :3] = np.stack([b1, b2, np.cross(b1, b2)])
+        T[:3, 3] = p9[:3]
+        return T
+    np.testing.assert_allclose(_mat9(out[:9]), T_target, atol=1e-6)
+    assert abs(out[-1] - 0.3) < 1e-6            # gripper passes through (ref==dev)
+    # composing against the base would have moved the position — confirm it didn't
+    composed = rlp.compose_relative_pose(action[:9], T_base)[:3, 3]
+    assert np.linalg.norm(out[:3] - composed) > 1e-3
 
 
 if __name__ == "__main__":

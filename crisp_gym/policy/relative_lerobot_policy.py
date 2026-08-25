@@ -1,4 +1,13 @@
-"""Local (in-process) deployment of a relative-pose rot6d LeRobot checkpoint.
+"""Local (in-process) deployment of a rot6d LeRobot checkpoint (relative OR absolute).
+
+Handles both action conventions via `action_repr` (auto|relative|absolute):
+  relative  (lerobot_relative_pose.py checkpoints): compose T_cmd = T_base @ T_rel.
+  absolute  (train_absolute_next_pose.py / train_action_from_target_cartesian.py):
+            the model outputs the absolute TCP pose, sent to the CIC directly —
+            no composition. 'auto' picks absolute when an action_repr.json marker
+            sits next to the checkpoint, else relative (every prior deploy
+            unchanged). Config: absolute_lerobot_policy.yaml. Either way the
+            deploy env must be rotation_6d + use_relative_actions: false.
 
 Deployment counterpart of `scripts/lerobot_relative_pose.py` for the case where
 the robot machine's lerobot version MATCHES the training version (0.4.4). Use
@@ -170,6 +179,32 @@ def find_pose_repr(pretrained_path: str) -> dict | None:
     return None
 
 
+def find_action_repr(pretrained_path: str) -> dict | None:
+    """Load action_repr.json stamped by the ABSOLUTE training launchers.
+
+    train_absolute_next_pose.py and train_action_from_target_cartesian.py stamp
+    action_repr.json (action.pose_repr == "absolute") at the training output
+    root, next to the checkpoints — the marker that the checkpoint outputs an
+    ABSOLUTE pose rather than a relative one. Relative checkpoints stamp
+    pose_repr.json instead, so this file present with pose_repr "absolute" is a
+    reliable absolute-action signal. Walked up the same few levels as
+    find_pose_repr, since pretrained_path is usually
+    <output_dir>/checkpoints/<step>/pretrained_model.
+    """
+    import json
+    from pathlib import Path
+
+    p = Path(pretrained_path).resolve()
+    for candidate in (p, *list(p.parents)[:4]):
+        f = candidate / "action_repr.json"
+        if f.exists():
+            try:
+                return json.loads(f.read_text())
+            except Exception:
+                return None
+    return None
+
+
 def target_pose9d_to_euler6d(target9: np.ndarray) -> np.ndarray:
     """9-D [pos3, rot6d] target -> 6-D [pos3, euler_xyz] (legacy state layout).
 
@@ -295,6 +330,7 @@ class RelativeLerobotPolicy(Policy):
         num_inference_steps: int | None = None,
         scheduler: str | None = None,
         state_input: str = "auto",
+        action_repr: str = "auto",
         target_to_euler: bool = False,
         compose_mode: str = "coupled",
         invert_gripper: bool = False,
@@ -306,6 +342,11 @@ class RelativeLerobotPolicy(Policy):
                 f"compose_mode must be 'coupled' (UMI 'relative', T_base@T_rel) "
                 f"or 'decoupled' (UMI 'rel', base-frame position delta), got "
                 f"{compose_mode!r}"
+            )
+        if action_repr not in ("auto", "relative", "absolute"):
+            raise ValueError(
+                "action_repr must be 'auto', 'relative' or 'absolute', got "
+                f"{action_repr!r}"
             )
         if state_input not in ("auto", "absolute", "relative", "relative_wrt_start"):
             raise ValueError(
@@ -334,6 +375,32 @@ class RelativeLerobotPolicy(Policy):
         self.target_to_euler = bool(target_to_euler)
         self.compose_mode = compose_mode
         self.invert_gripper = bool(invert_gripper)
+
+        # ACTION representation: does the checkpoint output an ABSOLUTE pose
+        # (train_absolute_next_pose.py / train_action_from_target_cartesian.py)
+        # or a RELATIVE one (lerobot_relative_pose.py)? Relative composes
+        # T_cmd = T_base @ T_rel; absolute sends the pose straight through. Auto
+        # reads action_repr.json (absolute marker) next to the checkpoint and
+        # falls back to relative, preserving every existing deployment.
+        if action_repr == "auto":
+            ar = find_action_repr(pretrained_path)
+            if ar and ar.get("action", {}).get("pose_repr") == "absolute":
+                self.action_repr = "absolute"
+                logger.info(
+                    "action_repr=auto -> ABSOLUTE (action_repr.json: source=%s). "
+                    "Sending the model's pose directly; NOT composing T_base@T_rel.",
+                    ar.get("action", {}).get("source", "?"),
+                )
+            else:
+                self.action_repr = "relative"
+                logger.info(
+                    "action_repr=auto -> RELATIVE (no absolute action_repr.json "
+                    "found). Composing T_cmd = T_base @ T_rel (compose_mode=%s).",
+                    self.compose_mode,
+                )
+        else:
+            self.action_repr = action_repr
+            logger.info("action_repr=%s (explicit).", self.action_repr)
         # log_actions = how many steps to log PER CHUNK (reset every new
         # inference), so later chunks are logged too — not just the first.
         self._log_actions = int(log_actions) > 0
@@ -410,12 +477,25 @@ class RelativeLerobotPolicy(Policy):
         return T
 
     def _to_env_action(self, action: np.ndarray) -> np.ndarray:
-        """Relative model action -> absolute env command in the env's units."""
+        """Model action -> absolute env command in the env's units.
+
+        action_repr 'absolute': the model already outputs the absolute TCP pose
+        (train_absolute_next_pose.py), so the command IS action[:9] — no
+        composition with the obs-time base. 'relative': compose T_cmd =
+        T_base @ T_rel (or the decoupled variant).
+        """
         from scipy.spatial.transform import Rotation
 
         from crisp_gym.util.rot6d import rot6d_to_mat
 
-        if self.compose_mode == "decoupled":
+        if self.action_repr == "absolute":
+            # The model's [pos3, rot6d6] IS the absolute target pose. _chunk_base
+            # is irrelevant here (do not compose), matching how the dataset's
+            # action column was the absolute next_tcp_pose / target_cartesian.
+            T_cmd = np.eye(4)
+            T_cmd[:3, :3] = rot6d_to_mat(np.asarray(action[3:9]))
+            T_cmd[:3, 3] = np.asarray(action[:3])
+        elif self.compose_mode == "decoupled":
             # UMI 'rel' (legacy/decoupled): position is a BASE-frame delta
             # (NOT rotated by the current EE orientation), rotation composes
             # in the body frame. Use only if the checkpoint was trained with
@@ -467,9 +547,13 @@ class RelativeLerobotPolicy(Policy):
             # (a) MODEL OUTPUT — relative action, EE/body frame (identity
             #     current frame -> pure translation reads as EE-axis motion),
             #     INCLUDING the raw gripper value the policy predicts.
-            rel_euler = Rotation.from_matrix(
+            model_euler = Rotation.from_matrix(
                 rot6d_to_mat(np.asarray(action[3:9]))
             ).as_euler("xyz")
+            # In absolute mode the model output IS the pose (not an EE-frame
+            # delta), so label it accordingly; the numbers are the raw output.
+            model_label = "abs   " if self.action_repr == "absolute" else "rel(EE)"
+            mode_label = self.action_repr if self.action_repr == "absolute" else self.compose_mode
             # (c) gripper value actually PUBLISHED to the gripper ROS2 topic:
             #     crisp_py Gripper.set_target(t) publishes _unnormalize(t) =
             #     (max-min)*t + min (GripperCommand position / command topic).
@@ -484,9 +568,10 @@ class RelativeLerobotPolicy(Policy):
                    np.round(base_euler, 4).tolist())
             )
             logger.info(
-                "[action] MODEL rel(EE)  pos=%s rot_euler=%s grip=%.4f  (dim=%d)"
-                % (np.round(action[:3], 4).tolist(),
-                   np.round(rel_euler, 4).tolist(),
+                "[action] MODEL %s  pos=%s rot_euler=%s grip=%.4f  (dim=%d)"
+                % (model_label,
+                   np.round(action[:3], 4).tolist(),
+                   np.round(model_euler, 4).tolist(),
                    float(action[-1]), len(action))
             )
             logger.info(
@@ -494,7 +579,7 @@ class RelativeLerobotPolicy(Policy):
                 "(mode=%s, Δpos_base=%s, |Δ|=%.1fmm)"
                 % (np.round(pos, 4).tolist(),
                    np.round(cmd_euler, 4).tolist(),
-                   self.compose_mode,
+                   mode_label,
                    np.round(pos - Tb[:3, 3], 4).tolist(),
                    float(np.linalg.norm(pos - Tb[:3, 3]) * 1000))
             )

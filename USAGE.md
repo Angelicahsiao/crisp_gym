@@ -438,6 +438,33 @@ machine (any lerobot version), crisp_gym is only the websocket client. See
 Local in-process deployment (`crisp_gym/scripts/deploy_policy.py`) is legacy:
 only for checkpoints trained with the robot machine's own lerobot (0.4.4).
 
+### Deploy an ABSOLUTE checkpoint (train_absolute_next_pose.py)
+
+A checkpoint from `train_absolute_next_pose.py` (or the target-cartesian swap)
+outputs the **absolute** next TCP pose — it must NOT be composed with the
+current pose. Use the `absolute_lerobot_policy` config, which is the same
+`relative_lerobot_policy` class with `action_repr: absolute` (auto-detected from
+the `action_repr.json` stamped next to the checkpoint):
+
+```bash
+python -m crisp_gym.scripts.deploy_policy \
+    --env-config dric_dual_rscam_franka_deploy_umi \
+    --policy-config absolute_lerobot_policy \
+    --path outputs/train/<run>/checkpoints/<step>/pretrained_model
+```
+
+The deploy env still needs `rotation_6d` + `use_relative_actions: false` (the
+policy always sends absolute commands to the CIC; the difference is only whether
+it composes first). Gripper: set the config's `device_max_width` to your
+end-effector (0.085 for the 2F-85) and `reference_width` to the recording value
+(0.09).
+
+> Gripper caveat (relative and absolute alike): the deploy env observation is
+> `1 - gripper.value`, but record configs stored `gripper.width_normalized`
+> WITHOUT that inversion. If the gripper misbehaves, flip `invert_gripper` in
+> the policy config. This is a pre-existing model-serving inconsistency, not
+> specific to absolute deployment.
+
 ---
 
 ## 10. Write your own record config
