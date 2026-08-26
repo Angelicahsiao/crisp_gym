@@ -181,6 +181,21 @@ def test_lazy_delta_indices_requery_aligns_window():
     assert ds.delta_indices["extra.target_cartesian"] == ds.delta_indices["action"]
 
 
+def test_getattr_guarded_against_unpickle_recursion():
+    """Under a 'spawn' DataLoader the wrapper is pickled; during unpickling
+    __dict__ is empty, so __getattr__ must raise AttributeError, not recurse
+    into self._dataset forever (the RecursionError seen on lerobot 0.6.1)."""
+    m = _load()
+    obj = object.__new__(m.TargetCartesianActionDataset)  # __init__ NOT run: no _dataset
+    try:
+        obj.some_missing_attr
+        raise AssertionError("expected AttributeError")
+    except RecursionError:
+        raise AssertionError("__getattr__ recurses when _dataset is unset")
+    except AttributeError:
+        pass
+
+
 def test_stats_recomputed_for_action():
     m = _load()
     w = m.TargetCartesianActionDataset(_FakeDS(tc_constant=False))

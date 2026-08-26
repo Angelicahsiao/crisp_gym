@@ -653,6 +653,22 @@ def test_absolute_action_sends_pose_directly():
     assert np.linalg.norm(out[:3] - composed) > 1e-3
 
 
+# ── 11. __getattr__ must not recurse when unpickled (spawn DataLoader) ─────────
+
+def test_relative_dataset_getattr_guarded_against_unpickle_recursion():
+    """Under a 'spawn' DataLoader RelativePoseDataset is pickled; during
+    unpickling __dict__ is empty, so __getattr__ must raise AttributeError, not
+    recurse into self._dataset (the RecursionError seen on lerobot 0.6.1)."""
+    obj = object.__new__(lrp.RelativePoseDataset)  # __init__ NOT run: no _dataset
+    try:
+        obj.some_missing_attr
+        raise AssertionError("expected AttributeError")
+    except RecursionError:
+        raise AssertionError("__getattr__ recurses when _dataset is unset")
+    except AttributeError:
+        pass
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

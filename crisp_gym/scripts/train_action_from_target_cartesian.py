@@ -80,7 +80,15 @@ class TargetCartesianActionDataset:
 
     # Delegate .meta, .num_frames, .hf_dataset, etc.
     def __getattr__(self, name):
-        return getattr(self._dataset, name)
+        # Delegate to the wrapped dataset, but read _dataset from __dict__ so a
+        # 'spawn' DataLoader unpickling this wrapper (where __dict__ is not yet
+        # populated) raises AttributeError instead of recursing forever. See
+        # lerobot_relative_pose.RelativePoseDataset.__getattr__.
+        try:
+            dataset = self.__dict__["_dataset"]
+        except KeyError:
+            raise AttributeError(name)
+        return getattr(dataset, name)
 
     def __len__(self) -> int:
         return len(self._dataset)

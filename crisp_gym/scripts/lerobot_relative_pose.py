@@ -181,8 +181,19 @@ class RelativePoseDataset(torch.utils.data.Dataset):
         return len(self._dataset)
 
     def __getattr__(self, name):
-        # Delegate everything else (.meta, .num_frames, .episodes, ...)
-        return getattr(self._dataset, name)
+        # Delegate everything else (.meta, .num_frames, .episodes, ...) to the
+        # wrapped dataset. __getattr__ fires ONLY when normal lookup fails; under
+        # a 'spawn' DataLoader the dataset is pickled and, during unpickling,
+        # __dict__ is not yet populated, so `_dataset` is absent — a plain
+        # `self._dataset` would re-enter __getattr__ and recurse forever
+        # (RecursionError in the workers). Read it straight from __dict__ and
+        # raise AttributeError when it isn't there yet, so pickle falls back to
+        # its default protocol.
+        try:
+            dataset = self.__dict__["_dataset"]
+        except KeyError:
+            raise AttributeError(name)
+        return getattr(dataset, name)
 
     @staticmethod
     def _to_np(v) -> np.ndarray:
