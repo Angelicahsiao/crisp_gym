@@ -299,31 +299,59 @@ class RelativePoseDataset(torch.utils.data.Dataset):
 # ── Stats recomputation ───────────────────────────────────────────────────────
 
 # Candidate names for LeRobotDataset's internal video-query method, newest to
-# oldest. The stats pass disables it to avoid decoding video in the main
-# process; kept as a list so a lerobot rename does not SILENTLY re-enable video
-# decode (which would fork broken torchcodec decoders into the workers).
+# oldest. The stats pass disables it to avoid opening torchcodec decoders in the
+# MAIN process — see HANDOFF §1.6. Kept as a list so a lerobot rename does not
+# silently skip the guard where it IS needed (a FORKING DataLoader). lerobot
+# 0.4.x used `_query_videos`; >=0.5 may have renamed it.
 _VIDEO_QUERY_ATTRS = ("_query_videos", "_query_video", "query_videos")
+
+
+def _forking_dataloader() -> bool:
+    """Best-effort: will DataLoader workers FORK (inherit the parent's decoders)?
+
+    The torchcodec crash (HANDOFF §1.6) is fork-ONLY: spawn/forkserver workers
+    start fresh and never inherit the main process's broken decoders. lerobot
+    >=0.5 defaults its DataLoader to 'spawn', so the no-op is usually moot there;
+    it stays essential on 0.4.x / fork. get_start_method() is the process
+    default, which is what lerobot uses when it does not pass an explicit context.
+    """
+    try:
+        import multiprocessing as mp
+
+        return mp.get_start_method(allow_none=True) == "fork"
+    except Exception:
+        return True  # unknown -> assume fork and warn, the safe side
 
 
 def _disable_video_query(ds):
     """Temporarily no-op the dataset's video query. Returns (attr_name, original).
 
-    Patches the first known method that exists. If NONE is found (a lerobot
-    that renamed it again), warns LOUDLY with the mitigation instead of letting
-    the stats pass decode video and crash the DataLoader workers at step 0.
+    Patches the first known method that exists. If NONE is found, the guard
+    cannot be applied: warn ONLY when the DataLoader would fork (where the
+    torchcodec crash is real). Under spawn (lerobot >=0.5 default) it is a
+    non-issue, so stay quiet instead of crying wolf.
     """
     for name in _VIDEO_QUERY_ATTRS:
         if hasattr(ds, name):
             orig = getattr(ds, name)
             setattr(ds, name, lambda *a, **k: {})
             return name, orig
-    logger.warning(
-        "Could not find a video-query method on the dataset (tried %s) to "
-        "disable video decode during the stats pass. Stats stay correct, but if "
-        "DataLoader workers crash at step 0 with 'Could not push packet to "
-        "decoder', rerun with --num_workers=0 or --dataset.video_backend=pyav.",
-        _VIDEO_QUERY_ATTRS,
-    )
+    if _forking_dataloader():
+        logger.warning(
+            "Could not find a video-query method on the dataset (tried %s) to "
+            "disable video decode during the stats pass, and the DataLoader may "
+            "FORK. If workers crash at step 0 with 'Could not push packet to "
+            "decoder', rerun with --num_workers=0 or --dataset.video_backend=pyav "
+            "(HANDOFF §1.6).",
+            _VIDEO_QUERY_ATTRS,
+        )
+    else:
+        logger.info(
+            "No video-query method found to no-op (tried %s), but the DataLoader "
+            "is not forking (spawn/forkserver) — the torchcodec fork crash "
+            "(HANDOFF §1.6) does not apply here, so this is harmless.",
+            _VIDEO_QUERY_ATTRS,
+        )
     return None, None
 
 

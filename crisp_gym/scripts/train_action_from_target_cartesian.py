@@ -236,29 +236,50 @@ class TargetCartesianActionDataset:
 # ── Stats recomputation ───────────────────────────────────────────────────────
 
 # Known names for LeRobotDataset's internal video-query method (newest first),
-# disabled during the stats pass. A list so a lerobot rename does not silently
-# re-enable video decode and crash the workers.
+# disabled during the stats pass to avoid opening torchcodec decoders in the
+# MAIN process (HANDOFF §1.6). The crash is FORK-only.
 _VIDEO_QUERY_ATTRS = ("_query_videos", "_query_video", "query_videos")
+
+
+def _forking_dataloader() -> bool:
+    """Will DataLoader workers FORK (inherit the parent's decoders)? See
+    HANDOFF §1.6 — the torchcodec crash is fork-only; spawn/forkserver are safe.
+    lerobot >=0.5 defaults to spawn, so the no-op is usually moot there."""
+    try:
+        import multiprocessing as mp
+
+        return mp.get_start_method(allow_none=True) == "fork"
+    except Exception:
+        return True
 
 
 def _disable_video_query(ds):
     """Temporarily no-op the dataset's video query. Returns (attr_name, original).
 
-    Patches the first known method that exists; warns LOUDLY with the mitigation
-    if none is found rather than silently decoding video in the main process.
+    Patches the first known method that exists; if none is found, warn ONLY when
+    the DataLoader would fork (where the crash is real). Under spawn it is a
+    non-issue, so stay quiet.
     """
     for name in _VIDEO_QUERY_ATTRS:
         if hasattr(ds, name):
             orig = getattr(ds, name)
             setattr(ds, name, lambda *a, **k: {})
             return name, orig
-    logger.warning(
-        "Could not find a video-query method on the dataset (tried %s) to "
-        "disable video decode during the stats pass. If DataLoader workers "
-        "crash at step 0 with 'Could not push packet to decoder', rerun with "
-        "--num_workers=0 or --dataset.video_backend=pyav.",
-        _VIDEO_QUERY_ATTRS,
-    )
+    if _forking_dataloader():
+        logger.warning(
+            "Could not find a video-query method on the dataset (tried %s) to "
+            "disable video decode during the stats pass, and the DataLoader may "
+            "FORK. If workers crash at step 0 with 'Could not push packet to "
+            "decoder', rerun with --num_workers=0 or --dataset.video_backend=pyav "
+            "(HANDOFF §1.6).",
+            _VIDEO_QUERY_ATTRS,
+        )
+    else:
+        logger.info(
+            "No video-query method found to no-op, but the DataLoader is not "
+            "forking (spawn) — the torchcodec fork crash (HANDOFF §1.6) does not "
+            "apply, so this is harmless.",
+        )
     return None, None
 
 

@@ -125,6 +125,14 @@ Repos involved (same owner, branch conventions apply to all):
   decoding into that pass.
 - Fallbacks if a future change breaks this: `--dataset.video_backend=pyav`
   (correct, slower) or `--num_workers=0` (no fork, slow).
+- lerobot >=0.5 / 0.6.1 (SPAWN DataLoader): the crash is FORK-only — spawn
+  workers start fresh and never inherit the main process's decoders, so the
+  `_query_videos` no-op is unnecessary there. 0.6.1 also RENAMED the method, so
+  `_disable_video_query` can't find it and logs (INFO, not a warning, because it
+  detects the non-fork context) that the guard was skipped harmlessly. If you
+  ever force `--dataloader.multiprocessing_context=fork` on 0.6.1, find the new
+  video-query method name and add it to `_VIDEO_QUERY_ATTRS`, or the fork crash
+  returns. The no-op stays essential on 0.4.x (fork).
 
 ---
 
