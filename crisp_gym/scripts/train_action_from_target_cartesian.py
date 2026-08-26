@@ -241,45 +241,26 @@ class TargetCartesianActionDataset:
 _VIDEO_QUERY_ATTRS = ("_query_videos", "_query_video", "query_videos")
 
 
-def _forking_dataloader() -> bool:
-    """Will DataLoader workers FORK (inherit the parent's decoders)? See
-    HANDOFF §1.6 — the torchcodec crash is fork-only; spawn/forkserver are safe.
-    lerobot >=0.5 defaults to spawn, so the no-op is usually moot there."""
-    try:
-        import multiprocessing as mp
-
-        return mp.get_start_method(allow_none=True) == "fork"
-    except Exception:
-        return True
-
-
 def _disable_video_query(ds):
     """Temporarily no-op the dataset's video query. Returns (attr_name, original).
 
-    Patches the first known method that exists; if none is found, warn ONLY when
-    the DataLoader would fork (where the crash is real). Under spawn it is a
-    non-issue, so stay quiet.
+    Essential on lerobot 0.4.x (forking DataLoader — HANDOFF §1.6). If no known
+    method exists we are on a newer lerobot that removed it (0.6.1) and defaults
+    to spawn, where the fork-only crash cannot occur — so absence is harmless
+    (INFO, not a warning). Add the new method name to _VIDEO_QUERY_ATTRS only if
+    you force fork on such a lerobot.
     """
     for name in _VIDEO_QUERY_ATTRS:
         if hasattr(ds, name):
             orig = getattr(ds, name)
             setattr(ds, name, lambda *a, **k: {})
             return name, orig
-    if _forking_dataloader():
-        logger.warning(
-            "Could not find a video-query method on the dataset (tried %s) to "
-            "disable video decode during the stats pass, and the DataLoader may "
-            "FORK. If workers crash at step 0 with 'Could not push packet to "
-            "decoder', rerun with --num_workers=0 or --dataset.video_backend=pyav "
-            "(HANDOFF §1.6).",
-            _VIDEO_QUERY_ATTRS,
-        )
-    else:
-        logger.info(
-            "No video-query method found to no-op, but the DataLoader is not "
-            "forking (spawn) — the torchcodec fork crash (HANDOFF §1.6) does not "
-            "apply, so this is harmless.",
-        )
+    logger.info(
+        "No video-query method to no-op (tried %s) — expected on lerobot >=0.5 "
+        "(removed it; DataLoader defaults to spawn), so the torchcodec fork crash "
+        "(HANDOFF §1.6) does not apply.",
+        _VIDEO_QUERY_ATTRS,
+    )
     return None, None
 
 

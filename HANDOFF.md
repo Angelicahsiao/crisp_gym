@@ -127,12 +127,15 @@ Repos involved (same owner, branch conventions apply to all):
   (correct, slower) or `--num_workers=0` (no fork, slow).
 - lerobot >=0.5 / 0.6.1 (SPAWN DataLoader): the crash is FORK-only — spawn
   workers start fresh and never inherit the main process's decoders, so the
-  `_query_videos` no-op is unnecessary there. 0.6.1 also RENAMED the method, so
-  `_disable_video_query` can't find it and logs (INFO, not a warning, because it
-  detects the non-fork context) that the guard was skipped harmlessly. If you
-  ever force `--dataloader.multiprocessing_context=fork` on 0.6.1, find the new
-  video-query method name and add it to `_VIDEO_QUERY_ATTRS`, or the fork crash
-  returns. The no-op stays essential on 0.4.x (fork).
+  no-op is unnecessary there. 0.6.1 REMOVED the video-query method entirely
+  (`lerobot_dataset.py` has no `_query_videos`; decode goes through
+  `_video_backend` / `get_safe_default_video_backend`), so `_disable_video_query`
+  finds nothing and logs INFO that the guard was skipped harmlessly. VERIFIED:
+  full relative training runs to completion on 0.6.1 + torchcodec + num_workers=4
+  with no decoder crash. If you ever force
+  `--dataloader.multiprocessing_context=fork` on 0.6.1, find the new decode entry
+  point and add it to `_VIDEO_QUERY_ATTRS`, or the fork crash returns. The no-op
+  stays essential on 0.4.x (fork).
 
 ---
 
