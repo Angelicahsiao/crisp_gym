@@ -92,13 +92,13 @@ gripper_config:
 camera_configs:
   - camera_name: "env_cam"
     camera_frame: "env_link"
-    resolution: [256, 256]
+    resolution: [224, 224]   # MUST equal the trained image size (dataset is 224x224)
     camera_color_image_topic: "/env/env_cam/color/image_raw"
     camera_color_info_topic: "/env/env_cam/color/camera_info"
   - camera_name: "wrist_cam"
     camera_frame: "wrist_link"
     camera_color_image_topic: "/wrist/wrist_cam/color/image_rect_raw"
     camera_color_info_topic: "/wrist/wrist_cam/color/camera_info"
-    resolution: [256, 256]
+    resolution: [224, 224]   # MUST equal the trained image size (dataset is 224x224)
 
 sensor_configs: []
