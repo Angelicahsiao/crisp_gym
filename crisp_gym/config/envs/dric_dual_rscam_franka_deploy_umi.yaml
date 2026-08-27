@@ -32,6 +32,19 @@ use_relative_actions: false
 cartesian_control_param_config: null
 joint_control_param_config: "control/fr3_joint_control.yaml"
 
+# observation.state fed to the POLICY must match what the training dataset's
+# record config put there. umi_robot_full_record.yaml made observation.state =
+# [cartesian(9), gripper(1)] = 10-D (joints/effort/ext_torque/target were
+# extra.* and excluded from the policy state). The env DEFAULT instead includes
+# cartesian + joints + gripper + target, and adds effort when
+# has_effort_feedback is true and a sensor sub-key per sensor_config — which
+# builds a 40-D state and makes RelativeLerobotPolicy raise
+# "observation.state dim mismatch: checkpoint expects 10, client built 40".
+# Pin it to the trained layout, IN THE SAME ORDER (cartesian then gripper).
+observations_to_include_to_state:
+  - observation.state.cartesian
+  - observation.state.gripper
+
 # Named home poses, resolved by home_for_env() BEFORE the legacy Franka
 # HomeConfig enum — without these the enum wins and this rig's tuned pose is
 # ignored (the enum's OPEN_POSE differs on joint4 by ~0.08 rad).
@@ -53,6 +66,11 @@ named_home_configs:
 
 robot_config:
   robot_type: "franka"
+  # FALSE at deploy: effort is not a policy input for the UMI model, and
+  # has_effort_feedback: true would auto-append observation.state.effort (+7),
+  # breaking the 10-D state the checkpoint expects. (Recording envs set it true
+  # to fill the extra.joint_efforts column; deployment does not record that.)
+  has_effort_feedback: false
   home_config:
   - 0.425725623070977
   - -0.013800044320084788
