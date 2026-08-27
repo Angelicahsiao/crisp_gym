@@ -20,7 +20,9 @@ control_frequency: 15.0          # = recording rate_hz (umi_robot_record.yaml)
 
 robot_config:
   robot_type: "ur"
-  has_effort_feedback: true
+  # FALSE at deploy: effort is not a UMI policy input, and has_effort_feedback:
+  # true auto-appends observation.state.effort, breaking the trained state dim.
+  has_effort_feedback: false
   # For UMI-compatible deployment the TCP must be the SAME frame used at
   # recording (fingertip TCP, not the flange) — see ur7e_robotiq.yaml notes.
   # target_frame: "robotiq_2f140_tcp"
@@ -33,6 +35,15 @@ gripper_threshold: 0.1
 
 orientation_representation: "rotation_6d"
 use_relative_actions: false
+
+# observation.state fed to the POLICY must match the training record config
+# (umi_robot_record.yaml): [cartesian(9), gripper(1)] = 10-D. The env default
+# also includes joints + target (and effort via has_effort_feedback), which
+# would make RelativeLerobotPolicy raise "observation.state dim mismatch".
+# Pin it, in the SAME ORDER as the record config.
+observations_to_include_to_state:
+  - observation.state.cartesian
+  - observation.state.gripper
 
 camera_configs:
   - camera_name: "primary"       # -> observation.images.primary (training key)
