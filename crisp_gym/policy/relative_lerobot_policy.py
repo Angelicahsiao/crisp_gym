@@ -412,10 +412,20 @@ class RelativeLerobotPolicy(Policy):
         # DIFFUSION model (its step count + scheduler are cached at load time,
         # so a policy.config setattr alone does NOT take effect) — passed
         # explicitly, separate from the generic policy-config overrides.
-        from multiprocessing import Pipe, Process
+        #
+        # SPAWN, not fork: the worker initializes CUDA (loads the model on the
+        # GPU). Linux defaults multiprocessing to 'fork', but CUDA cannot be
+        # re-initialized in a forked child once the parent has touched CUDA
+        # ("Cannot re-initialize CUDA in forked subprocess") — deploy_policy runs
+        # in the ROS process, which does. A spawn context starts a fresh
+        # interpreter that initializes CUDA cleanly. inference_worker is a
+        # module-level function and every kwarg is picklable, so spawn works;
+        # deploy_policy.py has the required `if __name__ == "__main__"` guard.
+        import multiprocessing as mp
 
-        self.parent_conn, child_conn = Pipe()
-        self.inf_proc = Process(
+        ctx = mp.get_context("spawn")
+        self.parent_conn, child_conn = ctx.Pipe()
+        self.inf_proc = ctx.Process(
             target=inference_worker,
             kwargs={
                 "conn": child_conn,
