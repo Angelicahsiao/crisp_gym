@@ -534,28 +534,36 @@ class RelativeLerobotPolicy(Policy):
             return None
         return np.asarray(result)
 
-    def _recent_tick_ms(self) -> float:
-        """Mean wall-clock ms per control tick over the recent window (0 if unknown)."""
-        if len(self._tick_times) < 2:
-            return 0.0
-        span = self._tick_times[-1] - self._tick_times[0]
-        n = len(self._tick_times) - 1
-        return (span / n) * 1e3 if span > 0 else 0.0
+    def _replay_tick_ms(self) -> float:
+        """Estimated cost of a REPLAY tick (obs + step, no inference), in ms.
+
+        The MIN consecutive gap over the recent window: replay ticks are the
+        fast ones, inference/stall ticks the slow ones, so the minimum is a
+        robust estimate of a pure replay tick. Using the MEAN would be polluted
+        by the very inference ticks the prefetch is meant to hide, yielding a
+        too-small lead and a stall. 0 if not enough samples yet.
+        """
+        ts = list(self._tick_times)
+        gaps = [(ts[i + 1] - ts[i]) * 1e3 for i in range(len(ts) - 1)]
+        gaps = [g for g in gaps if g > 0]
+        return min(gaps) if gaps else 0.0
 
     def _effective_prefetch_lead(self) -> int:
         """Steps before a chunk's end to kick off the next inference.
 
-        Explicit prefetch_lead wins. Otherwise auto: enough steps to cover the
-        last measured inference latency at the recent tick rate (+2 margin), so
-        the next chunk is ready exactly when needed and the obs it used is as
-        FRESH as possible. Clamped to [1, n_action_steps-1].
+        Explicit prefetch_lead wins. Otherwise auto: enough REPLAY ticks to
+        cover the last inference latency (+2 margin), so the next chunk is ready
+        just in time and the obs it used is as FRESH as possible. Clamped to
+        [1, n_action_steps-1]; if it can't fit, use the max lead (best effort —
+        inference longer than a whole chunk will still stall, use fewer
+        denoising steps).
         """
         if self._prefetch_lead is not None:
             return max(1, min(int(self._prefetch_lead), self.n_action_steps - 1))
-        tick_ms = self._recent_tick_ms()
-        if tick_ms <= 0 or self._last_infer_ms <= 0:
+        replay_ms = self._replay_tick_ms()
+        if replay_ms <= 0 or self._last_infer_ms <= 0:
             return max(1, self.n_action_steps // 2)
-        lead = int(-(-self._last_infer_ms // tick_ms)) + 2  # ceil + margin
+        lead = int(-(-self._last_infer_ms // replay_ms)) + 2  # ceil + margin
         return max(1, min(lead, self.n_action_steps - 1))
 
     def _to_env_action(self, action: np.ndarray) -> np.ndarray:
