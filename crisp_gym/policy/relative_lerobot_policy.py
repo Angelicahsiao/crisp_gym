@@ -564,6 +564,25 @@ class RelativeLerobotPolicy(Policy):
         if replay_ms <= 0 or self._last_infer_ms <= 0:
             return max(1, self.n_action_steps // 2)
         lead = int(-(-self._last_infer_ms // replay_ms)) + 2  # ceil + margin
+        if lead >= self.n_action_steps:
+            # Inference is LONGER than a whole chunk's execution time — async
+            # cannot hide it. The lead saturates, so each cycle executes ~1
+            # (often the farthest-future, least reliable) step and re-plans,
+            # which reads as the arm barely moving or oscillating. Make it
+            # visible: raise n_action_steps so the chunk outlasts inference, or
+            # lower the denoising steps (--num-inference-steps / --scheduler ddim).
+            if not getattr(self, "_warned_async_too_slow", False):
+                logger.warning(
+                    "async inference cannot keep up: last inference %.0f ms > "
+                    "chunk execution ~%.0f ms (%d steps x %.0f ms replay). Async "
+                    "is DEGENERATE here (barely moves / oscillates). Raise "
+                    "n_action_steps above ~%d, or cut denoising steps "
+                    "(--num-inference-steps 20 --scheduler ddim).",
+                    self._last_infer_ms, self.n_action_steps * replay_ms,
+                    self.n_action_steps, replay_ms,
+                    int(-(-self._last_infer_ms // replay_ms)) + 2,
+                )
+                self._warned_async_too_slow = True
         return max(1, min(lead, self.n_action_steps - 1))
 
     def _to_env_action(self, action: np.ndarray) -> np.ndarray:
