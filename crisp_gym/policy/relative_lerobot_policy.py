@@ -241,7 +241,17 @@ def build_obs_frame(
             "(pos3 + rot6d). Configure the deploy env with "
             "orientation_representation: rotation_6d."
         )
-    g_dev = float(np.asarray(obs_raw["observation.state.gripper"]).reshape(-1)[0])
+    # The env observation gripper is `1 - gripper.value`
+    # (ManipulatorBaseEnv._get_obs), but the RECORD CONFIG source
+    # gripper.width_normalized stored the RAW device value (env.gripper.value)
+    # WITHOUT that inversion — so the dataset (and the trained model) use
+    # "high = open". Recover the device value here by un-inverting; otherwise the
+    # model sees a FLIPPED gripper and the policy oscillates open/close every
+    # chunk. (This couples to _get_obs's `1 - value`; keep them in sync. The
+    # ACTION side needs no inversion — invert_gripper stays false for UMI
+    # record-config models.)
+    g_obs = float(np.asarray(obs_raw["observation.state.gripper"]).reshape(-1)[0])
+    g_dev = 1.0 - g_obs
     g_ref = gripper_device_to_ref(g_dev, reference_width, device_max_width)
 
     # observation.state must reproduce the DATASET's concatenation: every
