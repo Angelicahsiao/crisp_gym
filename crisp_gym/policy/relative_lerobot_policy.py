@@ -335,6 +335,8 @@ class RelativeLerobotPolicy(Policy):
         compose_mode: str = "coupled",
         invert_gripper: bool = False,
         log_actions: int = 0,
+        async_inference: bool = False,
+        prefetch_lead: int | None = None,
         overrides: dict | None = None,
     ):
         if compose_mode not in ("coupled", "decoupled"):
@@ -465,6 +467,32 @@ class RelativeLerobotPolicy(Policy):
         # (HANDOFF §1.1 DEPLOY INVARIANT; same as RemotePolicy._chunk_base).
         self._chunk_base: np.ndarray | None = None
 
+        # ── async inference (opt-in) ────────────────────────────────────────
+        # Default False -> EXACTLY the synchronous behavior (block on recv each
+        # new chunk). When True, the NEXT chunk is requested `prefetch_lead`
+        # steps before the current one ends and collected without blocking, so
+        # the control loop never stalls on inference — letting you keep full
+        # denoising steps at a high rate. prefetch_lead=None auto-sizes it from
+        # the measured inference latency and tick rate.
+        self._async = bool(async_inference)
+        self._prefetch_lead = prefetch_lead
+        self._pending = False                 # an infer request is in flight
+        self._pending_base: np.ndarray | None = None   # obs-time base for it
+        self._pending_t0: float | None = None
+        self._next_chunk: np.ndarray | None = None     # prefetched, not yet swapped
+        # Steps that will elapse between a prefetch's obs and the swap that uses
+        # it. The prefetched chunk[j] predicts the pose j+1 steps after ITS obs,
+        # so on swap the arm has already advanced `offset` of those — start the
+        # new chunk at index `offset`, not 0, or it commands already-passed poses
+        # (the arm jerks backward). offset = n_action_steps - idx_at_prefetch.
+        self._pending_offset = 0
+        if self._async:
+            logger.info(
+                "Async inference ON (prefetch_lead=%s). Set async_inference: "
+                "false for the classic synchronous loop.",
+                self._prefetch_lead if self._prefetch_lead is not None else "auto",
+            )
+
         # ── control-loop rate tracking ──────────────────────────────────────
         # Real execution frequency of the policy (how fast the robot actually
         # gets new commands). Compare to the training fps: a large shortfall
@@ -485,6 +513,50 @@ class RelativeLerobotPolicy(Policy):
         T[:3, :3] = pose.orientation.as_matrix()
         T[:3, 3] = pose.position
         return T
+
+    # ── chunk acquisition (shared by the sync and async loops) ──────────────
+    def _send_infer(self) -> np.ndarray:
+        """Snapshot the obs-time base and send the current obs window to the worker.
+
+        Returns the base pose (4x4) that the resulting chunk must be composed
+        against — captured NOW, the same tick as the newest obs in the window
+        (HANDOFF §1.1: base = last obs frame, obs-time not execution-time).
+        """
+        base = self._current_pose_mat()
+        self.parent_conn.send(("infer", list(self._history)))
+        return base
+
+    def _recv_chunk(self) -> np.ndarray | None:
+        """Block for one chunk result. None on a worker error (caller holds pose)."""
+        result = self.parent_conn.recv()
+        if isinstance(result, tuple) and result[0] == "error":
+            logger.error(f"Inference failed: {result[1]} — holding pose.")
+            return None
+        return np.asarray(result)
+
+    def _recent_tick_ms(self) -> float:
+        """Mean wall-clock ms per control tick over the recent window (0 if unknown)."""
+        if len(self._tick_times) < 2:
+            return 0.0
+        span = self._tick_times[-1] - self._tick_times[0]
+        n = len(self._tick_times) - 1
+        return (span / n) * 1e3 if span > 0 else 0.0
+
+    def _effective_prefetch_lead(self) -> int:
+        """Steps before a chunk's end to kick off the next inference.
+
+        Explicit prefetch_lead wins. Otherwise auto: enough steps to cover the
+        last measured inference latency at the recent tick rate (+2 margin), so
+        the next chunk is ready exactly when needed and the obs it used is as
+        FRESH as possible. Clamped to [1, n_action_steps-1].
+        """
+        if self._prefetch_lead is not None:
+            return max(1, min(int(self._prefetch_lead), self.n_action_steps - 1))
+        tick_ms = self._recent_tick_ms()
+        if tick_ms <= 0 or self._last_infer_ms <= 0:
+            return max(1, self.n_action_steps // 2)
+        lead = int(-(-self._last_infer_ms // tick_ms)) + 2  # ceil + margin
+        return max(1, min(lead, self.n_action_steps - 1))
 
     def _to_env_action(self, action: np.ndarray) -> np.ndarray:
         """Model action -> absolute env command in the env's units.
@@ -687,28 +759,86 @@ class RelativeLerobotPolicy(Policy):
                        sub_keys)
                 )
 
-            if self._chunk is None or self._chunk_idx >= min(
-                self.n_action_steps, len(self._chunk)
-            ):
-                # Snapshot the base pose NOW — the same tick as the newest obs
-                # of the window being sent (training base = last obs frame).
-                chunk_base = self._current_pose_mat()
-                t0 = time.monotonic()
-                self.parent_conn.send(("infer", list(self._history)))
-                result = self.parent_conn.recv()
-                if isinstance(result, tuple) and result[0] == "error":
-                    logger.error(f"Inference failed: {result[1]} — holding pose.")
-                    return obs_raw, None
-                self._chunk = np.asarray(result)
-                self._chunk_idx = 0
-                self._chunk_base = chunk_base
-                self._last_infer_ms = (time.monotonic() - t0) * 1e3
-                # Re-arm per-chunk logging so every new chunk logs its first
-                # _log_actions_n steps (not only the very first chunk).
-                self._action_log_left = self._log_actions_n
-                logger.debug(
-                    f"Chunk {self._chunk.shape} in {self._last_infer_ms:.1f} ms"
-                )
+            if not self._async:
+                # ── SYNCHRONOUS (default): block for a new chunk when exhausted.
+                if self._chunk is None or self._chunk_idx >= min(
+                    self.n_action_steps, len(self._chunk)
+                ):
+                    # Snapshot the base pose NOW — the same tick as the newest
+                    # obs of the window being sent (training base = last obs).
+                    t0 = time.monotonic()
+                    chunk_base = self._send_infer()
+                    result = self._recv_chunk()
+                    if result is None:
+                        return obs_raw, None
+                    self._chunk = result
+                    self._chunk_idx = 0
+                    self._chunk_base = chunk_base
+                    self._last_infer_ms = (time.monotonic() - t0) * 1e3
+                    # Re-arm per-chunk logging so every new chunk logs its first
+                    # _log_actions_n steps (not only the very first chunk).
+                    self._action_log_left = self._log_actions_n
+                    logger.debug(
+                        f"Chunk {self._chunk.shape} in {self._last_infer_ms:.1f} ms"
+                    )
+            else:
+                # ── ASYNC: overlap inference with chunk execution.
+                # (a) Bootstrap: the very first chunk must block.
+                if self._chunk is None:
+                    t0 = time.monotonic()
+                    base = self._send_infer()
+                    result = self._recv_chunk()
+                    if result is None:
+                        return obs_raw, None
+                    self._chunk, self._chunk_idx, self._chunk_base = result, 0, base
+                    self._last_infer_ms = (time.monotonic() - t0) * 1e3
+                    self._action_log_left = self._log_actions_n
+                # (b) Collect a prefetched result if it has arrived (non-blocking).
+                if self._pending and self.parent_conn.poll(0):
+                    self._next_chunk = self._recv_chunk()   # may be None on error
+                    self._pending = False
+                # (c) Prefetch the next chunk once we are `lead` steps from the
+                #     end — its base is the pose NOW (obs-time for that window).
+                lead = self._effective_prefetch_lead()
+                if (
+                    not self._pending
+                    and self._next_chunk is None
+                    and self._chunk_idx >= self.n_action_steps - lead
+                ):
+                    # Steps still to run before the swap = how far into the new
+                    # chunk we'll already be by the time we use it.
+                    self._pending_offset = self.n_action_steps - self._chunk_idx
+                    self._pending_t0 = time.monotonic()
+                    self._pending_base = self._send_infer()
+                    self._pending = True
+                # (d) Swap when the current chunk is exhausted.
+                if self._chunk_idx >= min(self.n_action_steps, len(self._chunk)):
+                    if self._next_chunk is None and self._pending:
+                        # Inference slower than the chunk — block for it (a stall,
+                        # rare once lead is right; raise prefetch_lead if frequent).
+                        self._next_chunk = self._recv_chunk()
+                        self._pending = False
+                    if self._next_chunk is not None:
+                        self._chunk = self._next_chunk
+                        self._chunk_base = self._pending_base
+                        # Skip the steps already executed since the prefetch obs
+                        # (see _pending_offset) so we command the NEXT pose, not
+                        # a passed one.
+                        self._chunk_idx = min(self._pending_offset, len(self._chunk) - 1)
+                        self._next_chunk = None
+                        if self._pending_t0 is not None:
+                            self._last_infer_ms = (time.monotonic() - self._pending_t0) * 1e3
+                        self._action_log_left = self._log_actions_n
+                    else:
+                        # Prefetch errored / nothing pending: re-issue, blocking.
+                        t0 = time.monotonic()
+                        base = self._send_infer()
+                        result = self._recv_chunk()
+                        if result is None:
+                            return obs_raw, None
+                        self._chunk, self._chunk_idx, self._chunk_base = result, 0, base
+                        self._last_infer_ms = (time.monotonic() - t0) * 1e3
+                        self._action_log_left = self._log_actions_n
 
             action = self._chunk[self._chunk_idx]
             self._chunk_idx += 1
@@ -745,6 +875,18 @@ class RelativeLerobotPolicy(Policy):
 
     def reset(self):
         """Clear obs history / chunk state here and policy queues in the worker."""
+        # Drain an in-flight async prefetch: the worker will still send its
+        # result (it processes messages in order), so read and discard it now,
+        # or the next tick would poll a stale chunk from the pipe.
+        if self._pending:
+            try:
+                self.parent_conn.recv()
+            except Exception:
+                pass
+            self._pending = False
+        self._pending_base = None
+        self._pending_t0 = None
+        self._next_chunk = None
         self._history.clear()
         self._chunk = None
         self._chunk_idx = 0

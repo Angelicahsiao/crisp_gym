@@ -534,6 +534,11 @@ def test_client_loop_end_to_end():
     pol._chunk = None
     pol._chunk_idx = 0
     pol._chunk_base = None
+    pol._async = False            # exercise the synchronous path
+    pol._pending = False
+    pol._pending_base = None
+    pol._pending_t0 = None
+    pol._next_chunk = None
     pol._tick_times = deque(maxlen=30)
     pol._last_infer_ms = 0.0
     pol._rate_log_every = 15
@@ -651,6 +656,125 @@ def test_absolute_action_sends_pose_directly():
     # composing against the base would have moved the position — confirm it didn't
     composed = rlp.compose_relative_pose(action[:9], T_base)[:3, 3]
     assert np.linalg.norm(out[:3] - composed) > 1e-3
+
+
+# ── 11b. async prefetch reproduces ground truth (no backward commands) ────────
+
+def test_async_loop_reproduces_ground_truth():
+    """With async_inference and instant inference, the overlapped loop must
+    command the SAME ground-truth trajectory as the sync loop — proving the
+    prefetch-offset accounting (else the swapped chunk re-commands passed poses
+    and the arm jerks backward)."""
+    from collections import deque
+
+    GT = _random_traj(30, seed=77)
+    ref = dev = 0.085
+
+    def _mat(p9):
+        T = np.eye(4)
+        a1, a2 = p9[3:6], p9[6:9]
+        b1 = a1 / np.linalg.norm(a1)
+        b2 = a2 - np.dot(b1, a2) * b1
+        b2 = b2 / np.linalg.norm(b2)
+        T[:3, :3] = np.stack([b1, b2, np.cross(b1, b2)])
+        T[:3, 3] = p9[:3]
+        return T
+
+    class _Env:
+        def __init__(self):
+            self.k = 0
+            self.commands = []
+            self.config = types.SimpleNamespace(
+                orientation_representation="rotation_6d", use_relative_actions=False)
+            self.robot = types.SimpleNamespace()
+            self._sync()
+
+        def _sync(self):
+            T = GT[self.k]
+            self.robot.end_effector_pose = types.SimpleNamespace(
+                position=T[:3, 3].copy(), orientation=Rotation.from_matrix(T[:3, :3]))
+
+        def get_obs(self):
+            return {
+                "observation.state.cartesian": _pose9(GT[self.k]).astype(np.float32),
+                "observation.state.gripper": np.array([0.6], np.float32),
+                "observation.images.primary": np.zeros((4, 4, 3), np.uint8),
+            }
+
+        def step(self, action, block=False):
+            self.commands.append((self.k, np.asarray(action, np.float64).copy()))
+            self.k += 1
+            self._sync()
+
+    class _Conn:
+        """Instant worker: chunk of CHUNK relative poses wrt the sent window's base."""
+        CHUNK = 8
+
+        def __init__(self, env):
+            self.env = env
+            self._buf = deque()
+
+        def send(self, msg):
+            _, window = msg
+            base9 = np.asarray(window[-1]["observation.state"][:9], np.float64)
+            Tbi = np.linalg.inv(_mat(base9))
+            chunk = np.stack([
+                np.concatenate([_pose9(Tbi @ GT[self.env.k + 1 + j]), [0.7]]).astype(np.float32)
+                for j in range(self.CHUNK)
+            ])
+            self._buf.append(chunk)
+
+        def poll(self, timeout=0):
+            return len(self._buf) > 0
+
+        def recv(self):
+            return self._buf.popleft()
+
+    env = _Env()
+    pol = object.__new__(rlp.RelativeLerobotPolicy)
+    pol.env = env
+    pol.reference_width = ref
+    pol.device_max_width = dev
+    pol.target_to_euler = False
+    pol.compose_mode = "coupled"
+    pol.action_repr = "relative"
+    pol.invert_gripper = False
+    pol._log_actions = False
+    pol._log_actions_n = 0
+    pol._action_log_left = 0
+    pol.meta = {"n_obs_steps": 2, "n_action_steps": 8, "state_input": "relative",
+                "state_dim": 10, "image_keys": ["observation.images.primary"]}
+    pol.n_obs_steps = 2
+    pol.n_action_steps = 8
+    pol._history = deque(maxlen=2)
+    pol._state_dim_checked = True
+    pol._chunk = None
+    pol._chunk_idx = 0
+    pol._chunk_base = None
+    # async ON, fixed small lead
+    pol._async = True
+    pol._prefetch_lead = 3
+    pol._pending = False
+    pol._pending_base = None
+    pol._pending_t0 = None
+    pol._pending_offset = 0
+    pol._next_chunk = None
+    pol._tick_times = deque(maxlen=30)
+    pol._last_infer_ms = 0.0
+    pol._rate_log_every = 15
+    pol._tick_count = 0
+    pol.parent_conn = _Conn(env)
+
+    fn = pol.make_data_fn()
+    for _ in range(20):
+        obs, act = fn()
+        assert act is not None, "async loop returned None (stall/deadlock)"
+
+    # every commanded pose reproduces ground truth -> offset accounting correct
+    assert len(env.commands) == 20
+    for k, action in env.commands:
+        np.testing.assert_allclose(_mat(np.asarray(action[:9])), GT[k + 1], atol=1e-6)
+        assert abs(action[9] - 0.7) < 1e-6
 
 
 # ── 11. __getattr__ must not recurse when unpickled (spawn DataLoader) ─────────

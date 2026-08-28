@@ -91,3 +91,11 @@ log_actions: 0
 
 # Optional lerobot policy-config overrides, e.g. {num_inference_steps: 10}.
 # overrides: {}
+
+# Async inference (opt-in): overlap the diffusion inference with chunk execution
+# so the control loop never STALLS on it — lets you keep FULL denoising steps at
+# a high control rate. false (default) = the classic synchronous loop (blocks on
+# each new chunk, current behaviour). The next chunk is requested `prefetch_lead`
+# steps before the current one ends; null auto-sizes it from measured latency.
+async_inference: false
+# prefetch_lead: null

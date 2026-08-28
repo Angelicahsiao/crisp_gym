@@ -55,3 +55,9 @@ invert_gripper: false
 
 # Log the first N steps of every action chunk to diagnose conventions. 0 = off.
 log_actions: 0
+
+# Async inference (opt-in): overlap inference with chunk execution to avoid the
+# per-chunk stall and keep full denoising steps at a high control rate. false
+# (default) = classic synchronous loop. See relative_lerobot_policy.yaml.
+async_inference: false
+# prefetch_lead: null

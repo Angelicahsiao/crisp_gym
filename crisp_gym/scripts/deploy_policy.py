@@ -132,6 +132,15 @@ def main():
         "'ddim' with a low --num-inference-steps (e.g. 10) to run a DDPM-trained "
         "checkpoint fast. Overrides the policy config YAML.",
     )
+    parser.add_argument(
+        "--async-inference",
+        action="store_true",
+        default=False,
+        help="Overlap diffusion inference with chunk execution so the control "
+        "loop never stalls on it — keep full denoising steps at a high rate. "
+        "Overrides the policy config's async_inference. (relative/absolute "
+        "lerobot policies only.)",
+    )
 
     args = parser.parse_args()
     logger = logging.getLogger(__name__)
@@ -241,6 +250,8 @@ def main():
             policy_overrides["n_action_steps"] = args.n_action_steps
         if args.scheduler is not None:
             policy_overrides["scheduler"] = args.scheduler
+        if args.async_inference:  # only override when explicitly requested
+            policy_overrides["async_inference"] = True
         policy = make_policy(
             name_or_config_name=args.policy_config,
             pretrained_path=args.path,
