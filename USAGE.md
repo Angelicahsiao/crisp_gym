@@ -459,11 +459,13 @@ it composes first). Gripper: set the config's `device_max_width` to your
 end-effector (0.085 for the 2F-85) and `reference_width` to the recording value
 (0.09).
 
-> Gripper caveat (relative and absolute alike): the deploy env observation is
-> `1 - gripper.value`, but record configs stored `gripper.width_normalized`
-> WITHOUT that inversion. If the gripper misbehaves, flip `invert_gripper` in
-> the policy config. This is a pre-existing model-serving inconsistency, not
-> specific to absolute deployment.
+> Gripper convention (relative and absolute alike): one convention everywhere —
+> the device value, `0.0 = closed, 1.0 = open`. The env observation
+> (`_get_obs`), the record source `gripper.width_normalized`, the command side,
+> and `UmiHandheldEnv` all use it, so `build_obs_frame` consumes the obs as-is
+> (no inversion) and only rescales by `device_max_width`/`reference_width`.
+> `invert_gripper` stays `false`; it exists only for legacy datasets whose
+> *action* gripper was stored inverted.
 
 ---
 

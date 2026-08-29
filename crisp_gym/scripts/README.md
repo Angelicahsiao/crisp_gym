@@ -167,10 +167,11 @@ python -m crisp_gym.scripts.deploy_policy \
 Both require `device_max_width` (0.085 for the Robotiq 2F-85) and
 `reference_width` (0.09) to match the record config's gripper scaling.
 
-> **Gripper caveat (both configs):** the deploy env observation is
-> `1 - gripper.value`, but record configs stored `gripper.width_normalized`
-> without that inversion. If the gripper oscillates or opens when it should
-> close, flip `invert_gripper: true` in the policy config.
+> **Gripper convention (both configs):** one convention everywhere — the device
+> value, `0=closed / 1=open`. The env observation, the record source
+> `gripper.width_normalized`, and the command path all agree, so no inversion
+> happens at deploy. Keep `invert_gripper: false`; it exists only for legacy
+> datasets whose *action* gripper was stored inverted.
 
 ### `check_policy_openloop.py` (GPU PC, no robot)
 

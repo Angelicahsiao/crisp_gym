@@ -241,17 +241,13 @@ def build_obs_frame(
             "(pos3 + rot6d). Configure the deploy env with "
             "orientation_representation: rotation_6d."
         )
-    # The env observation gripper is `1 - gripper.value`
-    # (ManipulatorBaseEnv._get_obs), but the RECORD CONFIG source
-    # gripper.width_normalized stored the RAW device value (env.gripper.value)
-    # WITHOUT that inversion — so the dataset (and the trained model) use
-    # "high = open". Recover the device value here by un-inverting; otherwise the
-    # model sees a FLIPPED gripper and the policy oscillates open/close every
-    # chunk. (This couples to _get_obs's `1 - value`; keep them in sync. The
-    # ACTION side needs no inversion — invert_gripper stays false for UMI
-    # record-config models.)
-    g_obs = float(np.asarray(obs_raw["observation.state.gripper"]).reshape(-1)[0])
-    g_dev = 1.0 - g_obs
+    # Gripper obs is the crisp_py device value directly (0 = closed, 1 = open):
+    # the env _get_obs, the record source gripper.width_normalized, and the
+    # command side all use this one convention, so no inversion is needed here —
+    # just the reference-width rescale to training units. (The ACTION side
+    # likewise needs no inversion; invert_gripper stays false for UMI
+    # record-config models and exists only for legacy inverted-action datasets.)
+    g_dev = float(np.asarray(obs_raw["observation.state.gripper"]).reshape(-1)[0])
     g_ref = gripper_device_to_ref(g_dev, reference_width, device_max_width)
 
     # observation.state must reproduce the DATASET's concatenation: every
@@ -643,13 +639,12 @@ class RelativeLerobotPolicy(Policy):
             rot_arr = rot.as_euler("xyz")
 
         # gripper is the LAST action dim (robust to any pose-dim count).
-        # invert_gripper: the env OBSERVATION is 1 - gripper.value but the
-        # COMMAND (_set_gripper_action -> set_target) uses value directly. If
-        # the model's action-gripper is in the OBSERVATION convention (e.g.
-        # datasets where the action gripper == obs gripper at t+1, such as the
-        # migrated legacy demos), it must be inverted back before commanding,
-        # otherwise the gripper oscillates (obs=0 -> cmd close -> obs=1 ->
-        # cmd open -> ...).
+        # invert_gripper: obs, command and UMI record-config action all share the
+        # device convention (0=closed/1=open), so it stays FALSE by default. It
+        # exists only for LEGACY datasets whose action gripper was stored in an
+        # inverted convention (e.g. migrated demos where the action gripper ==
+        # an inverted obs at t+1); for those, flip it back before commanding,
+        # otherwise the gripper oscillates (cmd close -> cmd open -> ...).
         a_grip = float(action[-1])
         if self.invert_gripper:
             a_grip = 1.0 - a_grip
@@ -773,7 +768,7 @@ class RelativeLerobotPolicy(Policy):
                 g_raw = float(getattr(self.env.gripper, "value", float("nan")))
                 logger.info(
                     "[gripper-obs] fed_to_model=%.4f  (raw gripper.value=%.4f, "
-                    "env obs = 1 - value)" % (g_obs, g_raw)
+                    "env obs = value, 0=closed/1=open)" % (g_obs, g_raw)
                 )
                 # Absolute TCP pose the model is being fed this tick — the
                 # observation.state the policy consumes (rot6d decoded to euler

@@ -46,11 +46,10 @@ target_to_euler: false
 # for config parity with relative_lerobot_policy.
 compose_mode: "coupled"
 
-# The env OBSERVATION gripper is `1 - gripper.value`, but the record config
-# recorded `gripper.width_normalized` WITHOUT that inversion. If your dataset
-# was recorded via the record-config path (umi_robot_full_record) the obs the
-# model sees at deploy is inverted vs training — if the gripper misbehaves,
-# this is the first knob to try (see HANDOFF, model-serving notes).
+# One gripper convention everywhere (device value, 0=closed/1=open): the env
+# observation, the record source `gripper.width_normalized`, and the command
+# path all agree, so this stays false. It exists only for LEGACY datasets whose
+# ACTION gripper was stored inverted (migrated demos); see HANDOFF.
 invert_gripper: false
 
 # Log the first N steps of every action chunk to diagnose conventions. 0 = off.

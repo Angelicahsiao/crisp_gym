@@ -402,8 +402,14 @@ class ManipulatorBaseEnv(gym.Env):
             )
             self._previous_rotation_vector = cartesian_pose[3:]
 
+        # Gripper observation follows the crisp_py device convention directly:
+        # 0.0 = closed, 1.0 = open (same as gripper.value, the record source
+        # gripper.width_normalized, the command side, and UmiHandheldEnv). No
+        # inversion — build_obs_frame consumes this as-is. (Historically this
+        # returned 1 - value; that lone inversion is gone so every gripper site
+        # agrees on one convention.)
         gripper_value = (
-            1 - np.array([self.gripper.value])
+            np.array([self.gripper.value])
             if self.config.gripper_mode != GripperMode.NONE
             else np.array([0.0])
         )

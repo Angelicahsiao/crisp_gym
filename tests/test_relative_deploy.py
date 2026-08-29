@@ -170,9 +170,9 @@ def test_gripper_scaling_matches_recording():
 def test_build_obs_frame_layout_and_guards():
     ref, dev_max = 0.09, 0.140
     cart = _pose9(_random_traj(1, seed=7)[0]).astype(np.float32)
-    # env obs gripper is 1 - value; use a NON-0.5 value so the un-inversion is
-    # actually exercised (0.5 is the fixed point).
-    g_env = 0.3   # env reports 1 - value -> device value is 0.7
+    # env obs gripper is the device value directly (0=closed/1=open); no
+    # inversion, so build_obs_frame only reference-rescales it.
+    g_env = 0.3   # device value 0.3 -> ref-scaled by dev/ref
     obs = {
         "observation.state.cartesian": cart,
         "observation.state.gripper": np.array([g_env], dtype=np.float32),
@@ -184,9 +184,9 @@ def test_build_obs_frame_layout_and_guards():
     # training layout: [cartesian9 ABSOLUTE, gripper_ref1]
     assert frame["observation.state"].shape == (10,)
     np.testing.assert_allclose(frame["observation.state"][:9], cart, atol=0)
-    # build_obs_frame UN-INVERTS the env's `1 - value` to the record-config
-    # convention before scaling: g_ref = clip((1 - g_env) * dev/ref).
-    expected_g = np.clip((1.0 - g_env) * dev_max / ref, 0, 1)
+    # build_obs_frame takes the device-convention obs as-is and only rescales to
+    # training units: g_ref = clip(g_env * dev/ref).
+    expected_g = np.clip(g_env * dev_max / ref, 0, 1)
     assert abs(frame["observation.state"][9] - expected_g) < 1e-6
     # only the requested image key is forwarded
     assert "observation.images.primary" in frame
@@ -377,7 +377,7 @@ def test_build_obs_frame_promoted_state_with_euler_target():
     s = frame["observation.state"]
     assert s.shape == (23,)
     np.testing.assert_allclose(s[:9], cart, atol=0)          # cartesian first
-    assert abs(s[9] - 0.4) < 1e-6            # un-invert(0.6)=0.4, identity scale
+    assert abs(s[9] - 0.6) < 1e-6            # device value as-is, identity scale
     np.testing.assert_allclose(s[10:17], joints, atol=0)     # joints untouched
     # target: 9-D rot6d -> 6-D euler, matching scipy on the same rotation
     np.testing.assert_allclose(s[17:20], target9[:3], atol=1e-6)
