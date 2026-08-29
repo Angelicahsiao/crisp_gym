@@ -41,7 +41,7 @@ observation:
       shape: [1]
       dtype: float32
       reference_width: 0.09
-      device_max_width: 0.140       # SET to your gripper (0.085 2F-85)
+      device_max_width: 0.085       # Robotiq 2F-85 (matches record config)
       model_input: "as_sent"
     # The tensor the 0.4.4 policy ACTUALLY consumes. `components` is the
     # MACHINE-READABLE build recipe (concat the sent keys in order, applying
@@ -83,7 +83,7 @@ action:
     meaning: "normalized_width"
     range: [0.0, 1.0]
     reference_width: 0.09
-    device_max_width: 0.140         # command = clip(a,0,1) * 0.09 / 0.140
+    device_max_width: 0.085         # command = clip(a,0,1) * 0.09 / 0.085
 
 normalization: "server_side"        # relative stats live in the checkpoint
 reset_on_episode_start: true

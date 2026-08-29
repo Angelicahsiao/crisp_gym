@@ -14,7 +14,7 @@ name: "relative_lerobot_policy"
 # Physical gripper width in meters at Gripper.value = 1.0 — REQUIRED, must
 # match the record config's device_max_width:
 #   0.140 Robotiq 2F-140 | 0.085 Robotiq 2F-85 | 0.08 Franka Hand
-device_max_width: 0.140
+device_max_width: 0.085        # Robotiq 2F-85 (matches umi_robot_full_record.yaml)
 
 # Shared UMI reference width used at recording (gripper.width_normalized).
 reference_width: 0.09
