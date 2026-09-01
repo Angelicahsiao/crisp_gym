@@ -1,5 +1,5 @@
 
-FROM ghcr.io/prefix-dev/pixi:0.63.2-jammy
+FROM ghcr.io/prefix-dev/pixi:0.74.0-jammy
 
 
 USER root

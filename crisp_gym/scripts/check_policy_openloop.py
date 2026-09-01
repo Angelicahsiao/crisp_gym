@@ -43,6 +43,27 @@ def _geodesic_deg(Ra: np.ndarray, Rb: np.ndarray) -> float:
     return float(np.degrees(np.arccos(np.clip(c, -1.0, 1.0))))
 
 
+def _find_action_repr(pretrained_path):
+    """Load action_repr.json stamped by the absolute training launchers, if any.
+
+    Walks up from the checkpoint dir (usually <out>/checkpoints/<step>/
+    pretrained_model) to the training output root, like the deploy policy's
+    find_action_repr. Returns the parsed dict or None.
+    """
+    import json
+    from pathlib import Path
+
+    p = Path(pretrained_path).resolve()
+    for cand in (p, *list(p.parents)[:4]):
+        f = cand / "action_repr.json"
+        if f.exists():
+            try:
+                return json.loads(f.read_text())
+            except Exception:
+                return None
+    return None
+
+
 def main():
     p = argparse.ArgumentParser(description="Open-loop action-prediction error vs the demos")
     p.add_argument("--path", required=True, help="checkpoint pretrained_model dir")
@@ -52,6 +73,15 @@ def main():
     p.add_argument("--stride", type=int, default=5)
     p.add_argument("--max-frames", type=int, default=200)
     p.add_argument("--num-inference-steps", type=int, default=None)
+    p.add_argument(
+        "--action-repr", choices=["auto", "relative", "absolute"], default="auto",
+        help="How the checkpoint's action is expressed. 'auto' reads "
+        "action_repr.json next to --path (absolute marker => absolute, else "
+        "relative). RELATIVE wraps the dataset with RelativePoseDataset (obs + "
+        "action re-expressed vs the current frame); ABSOLUTE compares the raw "
+        "on-disk poses directly — use it for train_absolute_next_pose.py "
+        "checkpoints.",
+    )
     args = p.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -99,7 +129,21 @@ def main():
     from lerobot.datasets.factory import make_dataset
     base_ds = make_dataset(train_config)
     ds = base_ds if not hasattr(base_ds, "datasets") else base_ds  # single dataset expected
-    wrapped = lrp.RelativePoseDataset(ds)
+
+    # RELATIVE (lerobot_relative_pose.py checkpoints): wrap so obs + action are
+    # re-expressed vs the current frame, exactly as at training. ABSOLUTE
+    # (train_absolute_next_pose.py): the model saw/predicts raw absolute poses,
+    # so DON'T wrap — comparing wrapped (relative) targets to an absolute model
+    # would be meaningless. Auto-detect from action_repr.json next to --path.
+    is_absolute = args.action_repr == "absolute"
+    if args.action_repr == "auto":
+        ar = _find_action_repr(args.path)
+        is_absolute = bool(ar and ar.get("action", {}).get("pose_repr") == "absolute")
+    logger.info(
+        "[openloop] action_repr=%s -> %s comparison",
+        args.action_repr, "ABSOLUTE (no relative wrap)" if is_absolute else "RELATIVE",
+    )
+    wrapped = ds if is_absolute else lrp.RelativePoseDataset(ds)
 
     image_features = list(getattr(policy.config, "image_features", []) or [])
     n_obs = int(getattr(policy.config, "n_obs_steps", 1))

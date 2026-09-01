@@ -46,4 +46,27 @@ sensor_configs: []
 # Franka defaults (same files FrankaEnvConfig would apply). The generic YAML
 # env class does not inject these, so set them explicitly for joint teleop.
 cartesian_control_param_config: "control/default_cartesian_impedance.yaml"
-joint_control_param_config: "control/joint_control.yaml"
+joint_control_param_config: "control/fr3_joint_control.yaml"
+
+# Absolute joint commands: the FACTR leader is a joint-for-joint replica of the
+# FR3, so its measured joint positions are sent directly as the controller's
+# q_ref instead of being integrated as per-step deltas. This removes the
+# startup offset (the delta scheme seeded the target from the follower once and
+# never re-synced, freezing any leader/follower mismatch in for the whole
+# episode) and the wind-up risk (a blocked follower let the integrated target
+# run away, then lunge when released).
+#
+# NOTE: this makes the leader's absolute pose authoritative, so the leader and
+# follower MUST be aligned before the first step — max_startup_joint_offset
+# below enforces that. Any drive_fn used with this config must emit absolute
+# joint positions, not deltas (see make_factr_drive_fn).
+use_relative_actions: false
+
+# Clamp the per-step target change to max_joint_speed / control_frequency
+# (0.5 / 30 rad per step here). Bounds a leader dropout/reconnect delivering
+# one huge jump, and ramps rather than lunges toward a startup mismatch.
+max_joint_speed: 0.5
+
+# Refuse the first absolute command if any joint is further than this (rad)
+# from the measured arm pose. Set to null to disable.
+max_startup_joint_offset: 0.15

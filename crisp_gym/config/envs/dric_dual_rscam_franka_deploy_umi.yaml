@@ -10,9 +10,13 @@
 #   gripper_mode: absolute_continuous        -> the model outputs a continuous
 #       gripper value; binary thresholding would round it
 #
-# Camera names are kept IDENTICAL to the recording config (including the
-# historical "wirst_cam" spelling) — they define the observation.images.* keys
-# and must match the keys the checkpoint was trained on.
+# Camera names must match the recording config: they define the
+# observation.images.* keys and must match the keys the checkpoint was trained
+# on. The historical "wirst_cam"/"wirst_link" misspelling has been corrected to
+# "wrist_cam"/"wrist_link" (the ROS topics below always used the correct
+# spelling). A checkpoint trained on observation.images.wirst_cam will NOT find
+# its input under the corrected key — retrain, remap the key at load time, or
+# pin this file back to the old spelling for that checkpoint.
 #
 # Gripper units for models trained on MIGRATED legacy dric data: the old
 # recorder stored the device-normalized gripper value, so in
@@ -26,10 +30,47 @@ orientation_representation: "rotation_6d"
 use_relative_actions: false
 
 cartesian_control_param_config: null
-joint_control_param_config: null
+joint_control_param_config: "control/fr3_joint_control.yaml"
+
+# observation.state fed to the POLICY must match what the training dataset's
+# record config put there. umi_robot_full_record.yaml made observation.state =
+# [cartesian(9), gripper(1)] = 10-D (joints/effort/ext_torque/target were
+# extra.* and excluded from the policy state). The env DEFAULT instead includes
+# cartesian + joints + gripper + target, and adds effort when
+# has_effort_feedback is true and a sensor sub-key per sensor_config — which
+# builds a 40-D state and makes RelativeLerobotPolicy raise
+# "observation.state dim mismatch: checkpoint expects 10, client built 40".
+# Pin it to the trained layout, IN THE SAME ORDER (cartesian then gripper).
+observations_to_include_to_state:
+  - observation.state.cartesian
+  - observation.state.gripper
+
+# Named home poses, resolved by home_for_env() BEFORE the legacy Franka
+# HomeConfig enum — without these the enum wins and this rig's tuned pose is
+# ignored (the enum's OPEN_POSE differs on joint4 by ~0.08 rad).
+#
+# The recorder homes twice at startup (close_to_table, then open_pose) and once
+# after every episode (open_pose). Both names point at the SAME pose here via a
+# YAML anchor, so the second startup move is a no-op: the arm travels once and
+# the two can never drift apart when edited.
+named_home_configs:
+  open_pose: &home_pose
+    - 0.4246407298371954
+    - -0.01130037897899503
+    - -0.3321400257658427
+    - -2.6908276789742325
+    - 0.09774443531853239
+    - 4.257101518895322
+    - -0.013673332419279224
+  close_to_table: *home_pose
 
 robot_config:
   robot_type: "franka"
+  # FALSE at deploy: effort is not a policy input for the UMI model, and
+  # has_effort_feedback: true would auto-append observation.state.effort (+7),
+  # breaking the 10-D state the checkpoint expects. (Recording envs set it true
+  # to fill the extra.joint_efforts column; deployment does not record that.)
+  has_effort_feedback: false
   home_config:
   - 0.425725623070977
   - -0.013800044320084788
@@ -51,13 +92,13 @@ gripper_config:
 camera_configs:
   - camera_name: "env_cam"
     camera_frame: "env_link"
-    resolution: [256, 256]
+    resolution: [224, 224]   # MUST equal the trained image size (dataset is 224x224)
     camera_color_image_topic: "/env/env_cam/color/image_raw"
     camera_color_info_topic: "/env/env_cam/color/camera_info"
-  - camera_name: "wirst_cam"           # historical spelling — matches the dataset key
-    camera_frame: "wirst_link"
+  - camera_name: "wrist_cam"
+    camera_frame: "wrist_link"
     camera_color_image_topic: "/wrist/wrist_cam/color/image_rect_raw"
     camera_color_info_topic: "/wrist/wrist_cam/color/camera_info"
-    resolution: [256, 256]
+    resolution: [224, 224]   # MUST equal the trained image size (dataset is 224x224)
 
 sensor_configs: []

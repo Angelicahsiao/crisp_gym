@@ -17,7 +17,7 @@ env_config.cartesian_control_param_config = (
     "./crisp_gym/config/control/default_cartesian_impedance.yaml"
 )
 env_config.joint_control_param_config = (
-    "./crisp_gym/config/control/joint_control.yaml"
+    "./crisp_gym/config/control/fr3_joint_control.yaml"
 )
 env = ManipulatorJointEnv(namespace="", config=env_config)
 

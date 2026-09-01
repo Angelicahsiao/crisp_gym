@@ -126,7 +126,7 @@ env_config.cartesian_control_param_config = str(
 )
 
 env_config.joint_control_param_config = str(
-    BASE_DIR / "config/control/joint_control.yaml"
+    BASE_DIR / "config/control/fr3_joint_control.yaml"
 )
 print("Cartesian config:",
       env_config.cartesian_control_param_config)
@@ -134,7 +134,7 @@ print("Cartesian config:",
 print("Joint config:",
       env_config.joint_control_param_config)
 # env_config.cartesian_control_param_config = "./config/control/default_cartesian_impedance.yaml"
-# env_config.joint_control_param_config = "./config/control/joint_control.yaml"
+# env_config.joint_control_param_config = "./config/control/fr3_joint_control.yaml"
 env = ManipulatorCartesianEnv(namespace="", config=env_config)
 env.robot.home()
 env.reset()

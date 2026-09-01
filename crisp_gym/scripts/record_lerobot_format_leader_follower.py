@@ -26,7 +26,7 @@ from crisp_gym.teleop.teleop_robot import TeleopRobot, make_leader
 from crisp_gym.teleop.teleop_robot_config import list_leader_configs
 from crisp_gym.teleop.teleop_sensor_stream import TeleopStreamedPose
 from crisp_gym.util import prompt
-from crisp_gym.util.lerobot_features import get_features
+from crisp_gym.util.lerobot_features import env_action_names, get_features
 from crisp_gym.util.setup_logger import setup_logging
 
 
@@ -244,6 +244,20 @@ def main():
                     "e.g. config/recording/umi_robot_record.yaml."
                 )
             leader = FACTRStreamedJoints(name=args.factr_name)
+            # The FACTR node STOPS publishing cmd_arm_pos/cmd_gripper_pos while
+            # it is following, and it boots into follow mode. So ask it to leave
+            # follow mode FIRST, otherwise wait_until_ready() below waits for a
+            # stream that will never start. Follow mode is turned back on a few
+            # lines later, once the readiness check is satisfied, so the leader
+            # still converges on the follower during homing.
+            if not leader.wait_for_follow_mode_subscriber():
+                logger.warning(
+                    "No subscriber on the FACTR follow_mode topic after 5s — "
+                    "cannot ask the leader to leave follow mode. If it boots "
+                    "following, it will not publish and the readiness wait "
+                    "below will time out."
+                )
+            leader.set_follow_mode(False)
             leader.wait_until_ready()
             logger.info("Using FACTR leader arm. FACTR stream is ready.")
         elif args.use_streamed_teleop:
@@ -263,8 +277,17 @@ def main():
                     f"--fps {args.fps} != record config rate_hz "
                     f"{record_config.rate_hz}. Align them (part of the data contract)."
                 )
+            # For `definition: command` the action column IS whatever the
+            # drive fn hands to env.step(), so name it from the env's own
+            # action space instead of a command_dim in the record config that
+            # has to be kept in sync by hand.
             features = record_config.to_features(
-                joint_count=env.config.robot_config.num_joints()
+                joint_count=env.config.robot_config.num_joints(),
+                command_names=(
+                    env_action_names(env)
+                    if record_config.action.definition == "command"
+                    else None
+                ),
             )
         else:
             keys_to_ignore = []
@@ -298,7 +321,23 @@ def main():
             with open(
                 recording_manager.dataset_directory / "meta" / "record_config.json", "w"
             ) as f:
-                json.dump(record_config.to_metadata(), f, indent=4)
+                # For `definition: command` the stamped contract carries the
+                # resolved column names AND the env's action convention:
+                # identical columns mean per-step deltas under one env and
+                # absolute values under another, and nothing else in the
+                # contract tells them apart.
+                json.dump(
+                    record_config.to_metadata(
+                        action_names=(
+                            env_action_names(env)
+                            if record_config.action.definition == "command"
+                            else None
+                        ),
+                        use_relative_actions=env.config.use_relative_actions,
+                    ),
+                    f,
+                    indent=4,
+                )
             logger.info("Record contract saved to meta/record_config.json")
 
         logger.info(
@@ -311,6 +350,11 @@ def main():
         if isinstance(leader, TeleopRobot):
             leader.prepare_for_teleop()
             logger.debug("[DEBUG] leader.prepare_for_teleop() done")
+        elif isinstance(leader, FACTRStreamedJoints):
+            # Follow mode covers EVERY homing motion, this initial one included,
+            # so the leader tracks the arm to the start pose. on_start turns it
+            # off at the moment the first episode begins recording.
+            leader.set_follow_mode(True)
 
         env.wait_until_ready()
         logger.debug("[DEBUG] env.wait_until_ready() done")
@@ -343,6 +387,22 @@ def main():
                 if leader.gripper is not None:
                     leader.gripper.disable_torque()
 
+            elif isinstance(leader, FACTRStreamedJoints):
+                # Leave follow mode: the follower has finished homing, so the
+                # leader commands again for the episode about to be recorded.
+                leader.set_follow_mode(False)
+                # FACTR was silent while following, so last_joint_pos still
+                # holds the pose from BEFORE the leader moved to track the
+                # follower. Commanding that would send the arm back there, so
+                # wait for the stream to actually resume before recording.
+                if not leader.wait_for_new_data():
+                    logger.warning(
+                        "FACTR did not resume publishing within 5s of leaving "
+                        "follow mode — the first commands of this episode may "
+                        "use a stale leader pose. Check that the FACTR node "
+                        "acted on follow_mode=false."
+                    )
+
         def on_end():
             """Hook function to be called when stopping the recording."""
             env.robot.reset_targets()
@@ -351,17 +411,24 @@ def main():
             # the robot's own home_config (a mismatched trajectory is silently
             # rejected by the controller -> the robot never homed on UR).
             random_home = home_for_env(env, "open_pose", noise=args.home_config_noise)
-            env.robot.home(blocking=False, home_config=random_home)
-            if isinstance(leader, TeleopRobot):
-                leader.robot.reset_targets()
-                # Activate incase leader should go to the same position as the follower
-                # leader.robot.home(blocking=False, home_config=random_home)
-                leader.robot.home(blocking=False)
-            elif isinstance(leader, FACTRStreamedJoints):
-                # Ask the FACTR leader node (external) to home too, passing the
-                # follower's (noise-randomized) home pose so both arms end up
-                # at the SAME configuration each episode.
-                leader.send_home(home_config=random_home)
+            if isinstance(leader, FACTRStreamedJoints):
+                # Follow mode ON *before* the arm starts moving, so the leader
+                # tracks the whole homing motion instead of joining it part-way,
+                # and both arms end up in the SAME (noise-randomized) pose
+                # without crisp_gym having to send it.
+                leader.set_follow_mode(True)
+                # Blocking: this hook must not return while the arm is still
+                # travelling. The next episode — and the follow_mode=False that
+                # comes with it in on_start — may only begin once the robot has
+                # actually reached the home pose.
+                env.robot.home(blocking=True, home_config=random_home)
+            else:
+                env.robot.home(blocking=False, home_config=random_home)
+                if isinstance(leader, TeleopRobot):
+                    leader.robot.reset_targets()
+                    # Activate incase leader should go to the same position as the follower
+                    # leader.robot.home(blocking=False, home_config=random_home)
+                    leader.robot.home(blocking=False)
             env.gripper.open()
 
         with recording_manager:
@@ -376,7 +443,7 @@ def main():
                     # Config-driven recorder: teleop only drives, the record
                     # config decides what is stored (e.g. UMI next_tcp_pose).
                     if isinstance(leader, FACTRStreamedJoints):
-                        drive_fn = make_factr_drive_fn(leader)
+                        drive_fn = make_factr_drive_fn(leader, env)
                     elif isinstance(leader, TeleopRobot):
                         drive_fn = make_teleop_drive_fn(env, leader)
                     elif isinstance(leader, TeleopStreamedPose) and isinstance(
@@ -413,8 +480,8 @@ def main():
             logger.info("Homing leader.")
             leader.robot.home()
         elif isinstance(leader, FACTRStreamedJoints):
-            logger.info("Requesting FACTR leader home.")
-            leader.send_home(home_config=list(env.robot.config.home_config))
+            logger.info("Putting FACTR leader in follow mode for final homing.")
+            leader.set_follow_mode(True)
         logger.info("Homing follower.")
         env.home()
 

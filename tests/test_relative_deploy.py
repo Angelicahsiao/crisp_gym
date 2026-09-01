@@ -170,9 +170,12 @@ def test_gripper_scaling_matches_recording():
 def test_build_obs_frame_layout_and_guards():
     ref, dev_max = 0.09, 0.140
     cart = _pose9(_random_traj(1, seed=7)[0]).astype(np.float32)
+    # env obs gripper is the device value directly (0=closed/1=open); no
+    # inversion, so build_obs_frame only reference-rescales it.
+    g_env = 0.3   # device value 0.3 -> ref-scaled by dev/ref
     obs = {
         "observation.state.cartesian": cart,
-        "observation.state.gripper": np.array([0.5], dtype=np.float32),
+        "observation.state.gripper": np.array([g_env], dtype=np.float32),
         "observation.images.primary": np.zeros((224, 224, 3), np.uint8),
         "observation.images.wrist": np.zeros((224, 224, 3), np.uint8),
     }
@@ -181,7 +184,9 @@ def test_build_obs_frame_layout_and_guards():
     # training layout: [cartesian9 ABSOLUTE, gripper_ref1]
     assert frame["observation.state"].shape == (10,)
     np.testing.assert_allclose(frame["observation.state"][:9], cart, atol=0)
-    expected_g = np.clip(0.5 * dev_max / ref, 0, 1)
+    # build_obs_frame takes the device-convention obs as-is and only rescales to
+    # training units: g_ref = clip(g_env * dev/ref).
+    expected_g = np.clip(g_env * dev_max / ref, 0, 1)
     assert abs(frame["observation.state"][9] - expected_g) < 1e-6
     # only the requested image key is forwarded
     assert "observation.images.primary" in frame
@@ -372,7 +377,7 @@ def test_build_obs_frame_promoted_state_with_euler_target():
     s = frame["observation.state"]
     assert s.shape == (23,)
     np.testing.assert_allclose(s[:9], cart, atol=0)          # cartesian first
-    assert abs(s[9] - 0.6) < 1e-6                            # identity gripper
+    assert abs(s[9] - 0.6) < 1e-6            # device value as-is, identity scale
     np.testing.assert_allclose(s[10:17], joints, atol=0)     # joints untouched
     # target: 9-D rot6d -> 6-D euler, matching scipy on the same rotation
     np.testing.assert_allclose(s[17:20], target9[:3], atol=1e-6)
@@ -519,6 +524,7 @@ def test_client_loop_end_to_end():
     pol.device_max_width = dev
     pol.target_to_euler = False
     pol.compose_mode = "coupled"
+    pol.action_repr = "relative"
     pol.invert_gripper = False
     pol._log_actions = False
     pol._log_actions_n = 0
@@ -533,6 +539,11 @@ def test_client_loop_end_to_end():
     pol._chunk = None
     pol._chunk_idx = 0
     pol._chunk_base = None
+    pol._async = False            # exercise the synchronous path
+    pol._pending = False
+    pol._pending_base = None
+    pol._pending_t0 = None
+    pol._next_chunk = None
     pol._tick_times = deque(maxlen=30)
     pol._last_infer_ms = 0.0
     pol._rate_log_every = 15
@@ -576,6 +587,7 @@ def test_decoupled_composition_matches_umi_rel():
     pol._chunk_base = T_base
     pol.reference_width = pol.device_max_width = 0.085
     pol.invert_gripper = False
+    pol.action_repr = "relative"
     pol._log_actions = False
     pol._log_actions_n = 0
     pol._action_log_left = 0
@@ -605,6 +617,185 @@ def test_decoupled_composition_matches_umi_rel():
     assert abs(pol._to_env_action(a2)[-1] - 0.2) < 1e-6
     pol.invert_gripper = True
     assert abs(pol._to_env_action(a2)[-1] - 0.8) < 1e-6
+
+
+# ── 10. absolute action = model pose sent directly (no compose) ───────────────
+
+def test_absolute_action_sends_pose_directly():
+    """action_repr='absolute' must send the model's [pos3,rot6d6] pose straight
+    through as the command, ignoring the obs-time base (no T_base@T_rel), with
+    the gripper still reference->device converted."""
+    T_base = _random_traj(1, seed=71)[0]
+    T_target = _random_traj(1, seed=72)[0]
+    action = np.concatenate([_pose9(T_target), [0.3]]).astype(np.float64)
+
+    pol = object.__new__(rlp.RelativeLerobotPolicy)
+    pol._chunk_base = T_base          # deliberately NON-identity: must be ignored
+    pol.reference_width = pol.device_max_width = 0.085   # identity gripper scaling
+    pol.invert_gripper = False
+    pol.action_repr = "absolute"
+    pol.compose_mode = "coupled"      # must be ignored in absolute mode
+    pol._log_actions = False
+    pol._log_actions_n = 0
+    pol._action_log_left = 0
+
+    class _Cfg:
+        orientation_representation = "rotation_6d"
+    pol.env = types.SimpleNamespace(config=_Cfg())
+
+    out = pol._to_env_action(action)
+    # position is the model's, NOT composed with the base
+    np.testing.assert_allclose(out[:3], action[:3], atol=1e-9)
+    # full pose (pos + rot6d) reconstructs the target matrix, base-independent
+    def _mat9(p9):
+        T = np.eye(4)
+        a1, a2 = p9[3:6], p9[6:9]
+        b1 = a1 / np.linalg.norm(a1)
+        b2 = a2 - np.dot(b1, a2) * b1
+        b2 = b2 / np.linalg.norm(b2)
+        T[:3, :3] = np.stack([b1, b2, np.cross(b1, b2)])
+        T[:3, 3] = p9[:3]
+        return T
+    np.testing.assert_allclose(_mat9(out[:9]), T_target, atol=1e-6)
+    assert abs(out[-1] - 0.3) < 1e-6            # gripper passes through (ref==dev)
+    # composing against the base would have moved the position — confirm it didn't
+    composed = rlp.compose_relative_pose(action[:9], T_base)[:3, 3]
+    assert np.linalg.norm(out[:3] - composed) > 1e-3
+
+
+# ── 11b. async prefetch reproduces ground truth (no backward commands) ────────
+
+def test_async_loop_reproduces_ground_truth():
+    """With async_inference and instant inference, the overlapped loop must
+    command the SAME ground-truth trajectory as the sync loop — proving the
+    prefetch-offset accounting (else the swapped chunk re-commands passed poses
+    and the arm jerks backward)."""
+    from collections import deque
+
+    GT = _random_traj(30, seed=77)
+    ref = dev = 0.085
+
+    def _mat(p9):
+        T = np.eye(4)
+        a1, a2 = p9[3:6], p9[6:9]
+        b1 = a1 / np.linalg.norm(a1)
+        b2 = a2 - np.dot(b1, a2) * b1
+        b2 = b2 / np.linalg.norm(b2)
+        T[:3, :3] = np.stack([b1, b2, np.cross(b1, b2)])
+        T[:3, 3] = p9[:3]
+        return T
+
+    class _Env:
+        def __init__(self):
+            self.k = 0
+            self.commands = []
+            self.config = types.SimpleNamespace(
+                orientation_representation="rotation_6d", use_relative_actions=False)
+            self.robot = types.SimpleNamespace()
+            self._sync()
+
+        def _sync(self):
+            T = GT[self.k]
+            self.robot.end_effector_pose = types.SimpleNamespace(
+                position=T[:3, 3].copy(), orientation=Rotation.from_matrix(T[:3, :3]))
+
+        def get_obs(self):
+            return {
+                "observation.state.cartesian": _pose9(GT[self.k]).astype(np.float32),
+                "observation.state.gripper": np.array([0.6], np.float32),
+                "observation.images.primary": np.zeros((4, 4, 3), np.uint8),
+            }
+
+        def step(self, action, block=False):
+            self.commands.append((self.k, np.asarray(action, np.float64).copy()))
+            self.k += 1
+            self._sync()
+
+    class _Conn:
+        """Instant worker: chunk of CHUNK relative poses wrt the sent window's base."""
+        CHUNK = 8
+
+        def __init__(self, env):
+            self.env = env
+            self._buf = deque()
+
+        def send(self, msg):
+            _, window = msg
+            base9 = np.asarray(window[-1]["observation.state"][:9], np.float64)
+            Tbi = np.linalg.inv(_mat(base9))
+            chunk = np.stack([
+                np.concatenate([_pose9(Tbi @ GT[self.env.k + 1 + j]), [0.7]]).astype(np.float32)
+                for j in range(self.CHUNK)
+            ])
+            self._buf.append(chunk)
+
+        def poll(self, timeout=0):
+            return len(self._buf) > 0
+
+        def recv(self):
+            return self._buf.popleft()
+
+    env = _Env()
+    pol = object.__new__(rlp.RelativeLerobotPolicy)
+    pol.env = env
+    pol.reference_width = ref
+    pol.device_max_width = dev
+    pol.target_to_euler = False
+    pol.compose_mode = "coupled"
+    pol.action_repr = "relative"
+    pol.invert_gripper = False
+    pol._log_actions = False
+    pol._log_actions_n = 0
+    pol._action_log_left = 0
+    pol.meta = {"n_obs_steps": 2, "n_action_steps": 8, "state_input": "relative",
+                "state_dim": 10, "image_keys": ["observation.images.primary"]}
+    pol.n_obs_steps = 2
+    pol.n_action_steps = 8
+    pol._history = deque(maxlen=2)
+    pol._state_dim_checked = True
+    pol._chunk = None
+    pol._chunk_idx = 0
+    pol._chunk_base = None
+    # async ON, fixed small lead
+    pol._async = True
+    pol._prefetch_lead = 3
+    pol._pending = False
+    pol._pending_base = None
+    pol._pending_t0 = None
+    pol._pending_offset = 0
+    pol._next_chunk = None
+    pol._tick_times = deque(maxlen=30)
+    pol._last_infer_ms = 0.0
+    pol._rate_log_every = 15
+    pol._tick_count = 0
+    pol.parent_conn = _Conn(env)
+
+    fn = pol.make_data_fn()
+    for _ in range(20):
+        obs, act = fn()
+        assert act is not None, "async loop returned None (stall/deadlock)"
+
+    # every commanded pose reproduces ground truth -> offset accounting correct
+    assert len(env.commands) == 20
+    for k, action in env.commands:
+        np.testing.assert_allclose(_mat(np.asarray(action[:9])), GT[k + 1], atol=1e-6)
+        assert abs(action[9] - 0.7) < 1e-6
+
+
+# ── 11. __getattr__ must not recurse when unpickled (spawn DataLoader) ─────────
+
+def test_relative_dataset_getattr_guarded_against_unpickle_recursion():
+    """Under a 'spawn' DataLoader RelativePoseDataset is pickled; during
+    unpickling __dict__ is empty, so __getattr__ must raise AttributeError, not
+    recurse into self._dataset (the RecursionError seen on lerobot 0.6.1)."""
+    obj = object.__new__(lrp.RelativePoseDataset)  # __init__ NOT run: no _dataset
+    try:
+        obj.some_missing_attr
+        raise AssertionError("expected AttributeError")
+    except RecursionError:
+        raise AssertionError("__getattr__ recurses when _dataset is unset")
+    except AttributeError:
+        pass
 
 
 if __name__ == "__main__":

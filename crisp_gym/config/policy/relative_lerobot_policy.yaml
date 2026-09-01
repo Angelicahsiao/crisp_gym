@@ -14,7 +14,7 @@ name: "relative_lerobot_policy"
 # Physical gripper width in meters at Gripper.value = 1.0 — REQUIRED, must
 # match the record config's device_max_width:
 #   0.140 Robotiq 2F-140 | 0.085 Robotiq 2F-85 | 0.08 Franka Hand
-device_max_width: 0.140
+device_max_width: 0.085        # Robotiq 2F-85 (matches umi_robot_full_record.yaml)
 
 # Shared UMI reference width used at recording (gripper.width_normalized).
 reference_width: 0.09
@@ -75,12 +75,11 @@ target_to_euler: false
 # vice versa), the checkpoint's convention differs from this setting — flip it.
 compose_mode: "coupled"
 
-# The env OBSERVATION gripper is `1 - gripper.value` but the COMMAND path
-# (_set_gripper_action -> set_target) uses `value` directly. If the model's
-# action-gripper is in the OBSERVATION convention (action gripper == obs
-# gripper, as in the MIGRATED legacy demos), set true to invert it back before
-# commanding. Symptom of it being WRONG (either way): the gripper oscillates
-# open/close every step, and the logged model grip sits near 0 while open.
+# Obs, command and UMI record-config action all share the device convention
+# (0=closed/1=open), so this stays false. Set true ONLY for LEGACY datasets
+# whose action gripper was stored in an inverted convention (action gripper ==
+# an inverted obs, as in the MIGRATED legacy demos): it flips the command back.
+# Symptom of it being WRONG: the gripper oscillates open/close every step.
 invert_gripper: false
 
 # Log the first N steps of EVERY action chunk (model rel(EE) action + composed
@@ -91,3 +90,11 @@ log_actions: 0
 
 # Optional lerobot policy-config overrides, e.g. {num_inference_steps: 10}.
 # overrides: {}
+
+# Async inference (opt-in): overlap the diffusion inference with chunk execution
+# so the control loop never STALLS on it — lets you keep FULL denoising steps at
+# a high control rate. false (default) = the classic synchronous loop (blocks on
+# each new chunk, current behaviour). The next chunk is requested `prefetch_lead`
+# steps before the current one ends; null auto-sizes it from measured latency.
+async_inference: false
+# prefetch_lead: null

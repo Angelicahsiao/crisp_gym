@@ -97,7 +97,7 @@ FACTR drives the follower in joint space; the dataset still stores measured
 TCP poses (the FACTR stream itself is never recorded).
 
 **Prerequisites**: UR bringup with Robotiq attached; FACTR node publishing
-`/factr_teleop/{name}/cmd_ur_pos` and `/factr_teleop/{name}/cmd_gripper_pos`.
+`/factr_teleop/{name}/cmd_arm_pos` and `/factr_teleop/{name}/cmd_gripper_pos`.
 
 **Run**
 ```bash
@@ -128,34 +128,46 @@ is resolved per robot, in this order:
 A wrong-size pose now raises immediately. (Previously the 7-joint Franka pose
 was sent to the 6-joint UR and silently rejected — the robot never homed.)
 
-**FACTR leader homing.** After each episode (and at shutdown) the recorder
-publishes two topics:
+**FACTR leader follow mode.** Homing is coordinated with a single topic:
 
 ```
-/factr_teleop/{name}/home_pose   sensor_msgs/JointState  (position[0:6])
-/factr_teleop/{name}/go_home     std_msgs/Bool           (data: true)
+/factr_teleop/{name}/follow_mode   std_msgs/Bool
 ```
 
-`home_pose` carries the EXACT joint configuration the follower is homing to —
-with `--home-config-noise` this differs every episode, so the leader cannot
-assume a fixed home. It is published just before the `go_home` trigger. Both
-are only MESSAGES — the FACTR leader node must subscribe and execute its own
-homing motion. If it doesn't subscribe, a warning is logged and the leader
-stays where it is. Example subscriber pair for the FACTR node:
+In follow mode the leader TRACKS the follower instead of commanding it. The
+recorder publishes `true` after each episode (and at shutdown), while the
+follower homes; the leader follows it there, so both arms converge on the same
+configuration without crisp_gym having to send the pose. `false` is published
+when the next episode starts and teleoperation resumes.
+
+| when | published |
+|---|---|
+| episode ends / shutdown (`on_end`) | `data: true` |
+| next episode starts (`on_start`) | `data: false` |
+
+This matters because `--home-config-noise` randomizes the follower's home every
+episode — having the leader follow removes the need to communicate that pose at
+all.
+
+It is only a MESSAGE: the FACTR leader node must subscribe and implement the
+mode switch itself. If it doesn't subscribe, a warning is logged and the leader
+stays as it is. Example subscriber:
 
 ```python
-latest_home = {"pose": None}
 node.create_subscription(
-    JointState, f"/factr_teleop/{name}/home_pose",
-    lambda msg: latest_home.update(pose=list(msg.position)), 10)
-node.create_subscription(
-    Bool, f"/factr_teleop/{name}/go_home",
-    lambda msg: factr.go_to(latest_home["pose"] or DEFAULT_HOME) if msg.data else None, 10)
+    Bool, f"/factr_teleop/{name}/follow_mode",
+    lambda msg: factr.set_follow_mode(msg.data), 10)
 ```
 
-Order of arrival is guaranteed by publish order (pose first, then trigger),
-but a robust FACTR node should fall back to its own default home if no
-`home_pose` was ever received.
+Test it by hand with:
+
+```bash
+ros2 topic pub --once /factr_teleop/right/follow_mode std_msgs/msg/Bool "{data: true}"
+```
+
+No state is latched on the crisp_gym side — nothing is published unless
+`set_follow_mode()` is called, so a FACTR node that starts late will not see a
+retained value and should default to follow mode off.
 
 ---
 
@@ -344,6 +356,67 @@ python crisp_gym/scripts/check_relative_pose.py /path/to/dataset_rot6d
 # expect: identity err ~1e-16, round-trip err ~1e-8, small |Δpos|, PASS
 ```
 
+### Train ABSOLUTE (no relative conversion)
+
+For the plain absolute-pose baseline — the policy predicts the next absolute TCP
+pose, exactly the recorded `action` — use `train_absolute_next_pose.py` instead
+of `lerobot_relative_pose.py`. It runs `lerobot-train` with NO obs/action
+transform, stamping `action_repr.json` (absolute) next to the checkpoint:
+
+```bash
+python crisp_gym/scripts/train_absolute_next_pose.py \
+    --dataset.repo_id=delta/vive \
+    --policy.type=diffusion \
+    --output_dir=outputs/train/vive_absolute \
+    --batch_size=64 --steps=200000
+```
+
+### Train with the COMMANDED pose as the action (ablation)
+
+`train_action_from_target_cartesian.py` swaps the arm dims of `action` for
+`extra.target_cartesian` (the pose commanded to the CIC), keeping the gripper —
+so the policy learns the command stream, not the achieved trajectory. Same args
+as above. **Only valid for Cartesian-driven data** (streamed pose → CIC, e.g.
+`dric_dual_rscam_franka_umi`): on FACTR/JIC joint-space data `target_cartesian`
+is constant per episode, and the script REFUSES with a message rather than
+training a constant. Recomputes the action stats and stamps
+`action_repr.json` (source `extra.target_cartesian`).
+
+```bash
+python crisp_gym/scripts/train_action_from_target_cartesian.py \
+    --dataset.repo_id=franka_electricbox \
+    --dataset.root=datasets/franka_electricbox/lerobot \
+    --policy.type=diffusion --policy.push_to_hub=false \
+    --output_dir=outputs/train/target_cmd \
+    --batch_size=64 --steps=200000
+```
+
+`--dataset.root=<local dir>` loads a local dataset (the dir holding
+`meta/info.json`) instead of the Hub; `--policy.push_to_hub=false` skips the hub
+push. Both apply to `train_absolute_next_pose.py` too.
+
+**If it raises `… window (H,10) and … window (9,) disagree`:** your lerobot fixes
+its windowed-key set at dataset construction from the policy's features, so the
+online wrapper cannot get `extra.target_cartesian` windowed. Use the OFFLINE path
+— rewrite the action column on disk once, then train the copy with the plain
+absolute launcher:
+
+```bash
+python crisp_gym/scripts/swap_action_offline.py \
+    --input datasets/franka_electricbox/lerobot \
+    --output datasets/franka_electricbox_targetcmd/lerobot
+python crisp_gym/scripts/train_absolute_next_pose.py \
+    --dataset.repo_id=franka_electricbox_targetcmd \
+    --dataset.root=datasets/franka_electricbox_targetcmd/lerobot \
+    --policy.type=diffusion --policy.push_to_hub=false \
+    --output_dir=outputs/train/target_cmd --batch_size=64 --steps=200000
+```
+
+The offline script copies videos byte-for-byte, rewrites only the `action`
+column (arm ← `extra.target_cartesian`, gripper kept), recomputes the action
+stats, and refuses on FACTR/JIC data (constant `target_cartesian`). Same-frame
+swap — identical training target to the online wrapper.
+
 ---
 
 ## 9. Deploy a trained policy
@@ -364,6 +437,35 @@ machine (any lerobot version), crisp_gym is only the websocket client. See
 `crisp_gym/config/policy/remote_policy_example.yaml`.
 Local in-process deployment (`crisp_gym/scripts/deploy_policy.py`) is legacy:
 only for checkpoints trained with the robot machine's own lerobot (0.4.4).
+
+### Deploy an ABSOLUTE checkpoint (train_absolute_next_pose.py)
+
+A checkpoint from `train_absolute_next_pose.py` (or the target-cartesian swap)
+outputs the **absolute** next TCP pose — it must NOT be composed with the
+current pose. Use the `absolute_lerobot_policy` config, which is the same
+`relative_lerobot_policy` class with `action_repr: absolute` (auto-detected from
+the `action_repr.json` stamped next to the checkpoint):
+
+```bash
+python -m crisp_gym.scripts.deploy_policy \
+    --env-config dric_dual_rscam_franka_deploy_umi \
+    --policy-config absolute_lerobot_policy \
+    --path outputs/train/<run>/checkpoints/<step>/pretrained_model
+```
+
+The deploy env still needs `rotation_6d` + `use_relative_actions: false` (the
+policy always sends absolute commands to the CIC; the difference is only whether
+it composes first). Gripper: set the config's `device_max_width` to your
+end-effector (0.085 for the 2F-85) and `reference_width` to the recording value
+(0.09).
+
+> Gripper convention (relative and absolute alike): one convention everywhere —
+> the device value, `0.0 = closed, 1.0 = open`. The env observation
+> (`_get_obs`), the record source `gripper.width_normalized`, the command side,
+> and `UmiHandheldEnv` all use it, so `build_obs_frame` consumes the obs as-is
+> (no inversion) and only rescales by `device_max_width`/`reference_width`.
+> `invert_gripper` stays `false`; it exists only for legacy datasets whose
+> *action* gripper was stored inverted.
 
 ---
 

@@ -1,4 +1,13 @@
-"""Local (in-process) deployment of a relative-pose rot6d LeRobot checkpoint.
+"""Local (in-process) deployment of a rot6d LeRobot checkpoint (relative OR absolute).
+
+Handles both action conventions via `action_repr` (auto|relative|absolute):
+  relative  (lerobot_relative_pose.py checkpoints): compose T_cmd = T_base @ T_rel.
+  absolute  (train_absolute_next_pose.py / train_action_from_target_cartesian.py):
+            the model outputs the absolute TCP pose, sent to the CIC directly —
+            no composition. 'auto' picks absolute when an action_repr.json marker
+            sits next to the checkpoint, else relative (every prior deploy
+            unchanged). Config: absolute_lerobot_policy.yaml. Either way the
+            deploy env must be rotation_6d + use_relative_actions: false.
 
 Deployment counterpart of `scripts/lerobot_relative_pose.py` for the case where
 the robot machine's lerobot version MATCHES the training version (0.4.4). Use
@@ -170,6 +179,32 @@ def find_pose_repr(pretrained_path: str) -> dict | None:
     return None
 
 
+def find_action_repr(pretrained_path: str) -> dict | None:
+    """Load action_repr.json stamped by the ABSOLUTE training launchers.
+
+    train_absolute_next_pose.py and train_action_from_target_cartesian.py stamp
+    action_repr.json (action.pose_repr == "absolute") at the training output
+    root, next to the checkpoints — the marker that the checkpoint outputs an
+    ABSOLUTE pose rather than a relative one. Relative checkpoints stamp
+    pose_repr.json instead, so this file present with pose_repr "absolute" is a
+    reliable absolute-action signal. Walked up the same few levels as
+    find_pose_repr, since pretrained_path is usually
+    <output_dir>/checkpoints/<step>/pretrained_model.
+    """
+    import json
+    from pathlib import Path
+
+    p = Path(pretrained_path).resolve()
+    for candidate in (p, *list(p.parents)[:4]):
+        f = candidate / "action_repr.json"
+        if f.exists():
+            try:
+                return json.loads(f.read_text())
+            except Exception:
+                return None
+    return None
+
+
 def target_pose9d_to_euler6d(target9: np.ndarray) -> np.ndarray:
     """9-D [pos3, rot6d] target -> 6-D [pos3, euler_xyz] (legacy state layout).
 
@@ -206,6 +241,12 @@ def build_obs_frame(
             "(pos3 + rot6d). Configure the deploy env with "
             "orientation_representation: rotation_6d."
         )
+    # Gripper obs is the crisp_py device value directly (0 = closed, 1 = open):
+    # the env _get_obs, the record source gripper.width_normalized, and the
+    # command side all use this one convention, so no inversion is needed here —
+    # just the reference-width rescale to training units. (The ACTION side
+    # likewise needs no inversion; invert_gripper stays false for UMI
+    # record-config models and exists only for legacy inverted-action datasets.)
     g_dev = float(np.asarray(obs_raw["observation.state.gripper"]).reshape(-1)[0])
     g_ref = gripper_device_to_ref(g_dev, reference_width, device_max_width)
 
@@ -295,10 +336,13 @@ class RelativeLerobotPolicy(Policy):
         num_inference_steps: int | None = None,
         scheduler: str | None = None,
         state_input: str = "auto",
+        action_repr: str = "auto",
         target_to_euler: bool = False,
         compose_mode: str = "coupled",
         invert_gripper: bool = False,
         log_actions: int = 0,
+        async_inference: bool = False,
+        prefetch_lead: int | None = None,
         overrides: dict | None = None,
     ):
         if compose_mode not in ("coupled", "decoupled"):
@@ -306,6 +350,11 @@ class RelativeLerobotPolicy(Policy):
                 f"compose_mode must be 'coupled' (UMI 'relative', T_base@T_rel) "
                 f"or 'decoupled' (UMI 'rel', base-frame position delta), got "
                 f"{compose_mode!r}"
+            )
+        if action_repr not in ("auto", "relative", "absolute"):
+            raise ValueError(
+                "action_repr must be 'auto', 'relative' or 'absolute', got "
+                f"{action_repr!r}"
             )
         if state_input not in ("auto", "absolute", "relative", "relative_wrt_start"):
             raise ValueError(
@@ -334,6 +383,32 @@ class RelativeLerobotPolicy(Policy):
         self.target_to_euler = bool(target_to_euler)
         self.compose_mode = compose_mode
         self.invert_gripper = bool(invert_gripper)
+
+        # ACTION representation: does the checkpoint output an ABSOLUTE pose
+        # (train_absolute_next_pose.py / train_action_from_target_cartesian.py)
+        # or a RELATIVE one (lerobot_relative_pose.py)? Relative composes
+        # T_cmd = T_base @ T_rel; absolute sends the pose straight through. Auto
+        # reads action_repr.json (absolute marker) next to the checkpoint and
+        # falls back to relative, preserving every existing deployment.
+        if action_repr == "auto":
+            ar = find_action_repr(pretrained_path)
+            if ar and ar.get("action", {}).get("pose_repr") == "absolute":
+                self.action_repr = "absolute"
+                logger.info(
+                    "action_repr=auto -> ABSOLUTE (action_repr.json: source=%s). "
+                    "Sending the model's pose directly; NOT composing T_base@T_rel.",
+                    ar.get("action", {}).get("source", "?"),
+                )
+            else:
+                self.action_repr = "relative"
+                logger.info(
+                    "action_repr=auto -> RELATIVE (no absolute action_repr.json "
+                    "found). Composing T_cmd = T_base @ T_rel (compose_mode=%s).",
+                    self.compose_mode,
+                )
+        else:
+            self.action_repr = action_repr
+            logger.info("action_repr=%s (explicit).", self.action_repr)
         # log_actions = how many steps to log PER CHUNK (reset every new
         # inference), so later chunks are logged too — not just the first.
         self._log_actions = int(log_actions) > 0
@@ -345,10 +420,20 @@ class RelativeLerobotPolicy(Policy):
         # DIFFUSION model (its step count + scheduler are cached at load time,
         # so a policy.config setattr alone does NOT take effect) — passed
         # explicitly, separate from the generic policy-config overrides.
-        from multiprocessing import Pipe, Process
+        #
+        # SPAWN, not fork: the worker initializes CUDA (loads the model on the
+        # GPU). Linux defaults multiprocessing to 'fork', but CUDA cannot be
+        # re-initialized in a forked child once the parent has touched CUDA
+        # ("Cannot re-initialize CUDA in forked subprocess") — deploy_policy runs
+        # in the ROS process, which does. A spawn context starts a fresh
+        # interpreter that initializes CUDA cleanly. inference_worker is a
+        # module-level function and every kwarg is picklable, so spawn works;
+        # deploy_policy.py has the required `if __name__ == "__main__"` guard.
+        import multiprocessing as mp
 
-        self.parent_conn, child_conn = Pipe()
-        self.inf_proc = Process(
+        ctx = mp.get_context("spawn")
+        self.parent_conn, child_conn = ctx.Pipe()
+        self.inf_proc = ctx.Process(
             target=inference_worker,
             kwargs={
                 "conn": child_conn,
@@ -388,6 +473,32 @@ class RelativeLerobotPolicy(Policy):
         # (HANDOFF §1.1 DEPLOY INVARIANT; same as RemotePolicy._chunk_base).
         self._chunk_base: np.ndarray | None = None
 
+        # ── async inference (opt-in) ────────────────────────────────────────
+        # Default False -> EXACTLY the synchronous behavior (block on recv each
+        # new chunk). When True, the NEXT chunk is requested `prefetch_lead`
+        # steps before the current one ends and collected without blocking, so
+        # the control loop never stalls on inference — letting you keep full
+        # denoising steps at a high rate. prefetch_lead=None auto-sizes it from
+        # the measured inference latency and tick rate.
+        self._async = bool(async_inference)
+        self._prefetch_lead = prefetch_lead
+        self._pending = False                 # an infer request is in flight
+        self._pending_base: np.ndarray | None = None   # obs-time base for it
+        self._pending_t0: float | None = None
+        self._next_chunk: np.ndarray | None = None     # prefetched, not yet swapped
+        # Steps that will elapse between a prefetch's obs and the swap that uses
+        # it. The prefetched chunk[j] predicts the pose j+1 steps after ITS obs,
+        # so on swap the arm has already advanced `offset` of those — start the
+        # new chunk at index `offset`, not 0, or it commands already-passed poses
+        # (the arm jerks backward). offset = n_action_steps - idx_at_prefetch.
+        self._pending_offset = 0
+        if self._async:
+            logger.info(
+                "Async inference ON (prefetch_lead=%s). Set async_inference: "
+                "false for the classic synchronous loop.",
+                self._prefetch_lead if self._prefetch_lead is not None else "auto",
+            )
+
         # ── control-loop rate tracking ──────────────────────────────────────
         # Real execution frequency of the policy (how fast the robot actually
         # gets new commands). Compare to the training fps: a large shortfall
@@ -409,13 +520,97 @@ class RelativeLerobotPolicy(Policy):
         T[:3, 3] = pose.position
         return T
 
+    # ── chunk acquisition (shared by the sync and async loops) ──────────────
+    def _send_infer(self) -> np.ndarray:
+        """Snapshot the obs-time base and send the current obs window to the worker.
+
+        Returns the base pose (4x4) that the resulting chunk must be composed
+        against — captured NOW, the same tick as the newest obs in the window
+        (HANDOFF §1.1: base = last obs frame, obs-time not execution-time).
+        """
+        base = self._current_pose_mat()
+        self.parent_conn.send(("infer", list(self._history)))
+        return base
+
+    def _recv_chunk(self) -> np.ndarray | None:
+        """Block for one chunk result. None on a worker error (caller holds pose)."""
+        result = self.parent_conn.recv()
+        if isinstance(result, tuple) and result[0] == "error":
+            logger.error(f"Inference failed: {result[1]} — holding pose.")
+            return None
+        return np.asarray(result)
+
+    def _replay_tick_ms(self) -> float:
+        """Estimated cost of a REPLAY tick (obs + step, no inference), in ms.
+
+        The MIN consecutive gap over the recent window: replay ticks are the
+        fast ones, inference/stall ticks the slow ones, so the minimum is a
+        robust estimate of a pure replay tick. Using the MEAN would be polluted
+        by the very inference ticks the prefetch is meant to hide, yielding a
+        too-small lead and a stall. 0 if not enough samples yet.
+        """
+        ts = list(self._tick_times)
+        gaps = [(ts[i + 1] - ts[i]) * 1e3 for i in range(len(ts) - 1)]
+        gaps = [g for g in gaps if g > 0]
+        return min(gaps) if gaps else 0.0
+
+    def _effective_prefetch_lead(self) -> int:
+        """Steps before a chunk's end to kick off the next inference.
+
+        Explicit prefetch_lead wins. Otherwise auto: enough REPLAY ticks to
+        cover the last inference latency (+2 margin), so the next chunk is ready
+        just in time and the obs it used is as FRESH as possible. Clamped to
+        [1, n_action_steps-1]; if it can't fit, use the max lead (best effort —
+        inference longer than a whole chunk will still stall, use fewer
+        denoising steps).
+        """
+        if self._prefetch_lead is not None:
+            return max(1, min(int(self._prefetch_lead), self.n_action_steps - 1))
+        replay_ms = self._replay_tick_ms()
+        if replay_ms <= 0 or self._last_infer_ms <= 0:
+            return max(1, self.n_action_steps // 2)
+        lead = int(-(-self._last_infer_ms // replay_ms)) + 2  # ceil + margin
+        if lead >= self.n_action_steps:
+            # Inference is LONGER than a whole chunk's execution time — async
+            # cannot hide it. The lead saturates, so each cycle executes ~1
+            # (often the farthest-future, least reliable) step and re-plans,
+            # which reads as the arm barely moving or oscillating. Make it
+            # visible: raise n_action_steps so the chunk outlasts inference, or
+            # lower the denoising steps (--num-inference-steps / --scheduler ddim).
+            if not getattr(self, "_warned_async_too_slow", False):
+                logger.warning(
+                    "async inference cannot keep up: last inference %.0f ms > "
+                    "chunk execution ~%.0f ms (%d steps x %.0f ms replay). Async "
+                    "is DEGENERATE here (barely moves / oscillates). Raise "
+                    "n_action_steps above ~%d, or cut denoising steps "
+                    "(--num-inference-steps 20 --scheduler ddim).",
+                    self._last_infer_ms, self.n_action_steps * replay_ms,
+                    self.n_action_steps, replay_ms,
+                    int(-(-self._last_infer_ms // replay_ms)) + 2,
+                )
+                self._warned_async_too_slow = True
+        return max(1, min(lead, self.n_action_steps - 1))
+
     def _to_env_action(self, action: np.ndarray) -> np.ndarray:
-        """Relative model action -> absolute env command in the env's units."""
+        """Model action -> absolute env command in the env's units.
+
+        action_repr 'absolute': the model already outputs the absolute TCP pose
+        (train_absolute_next_pose.py), so the command IS action[:9] — no
+        composition with the obs-time base. 'relative': compose T_cmd =
+        T_base @ T_rel (or the decoupled variant).
+        """
         from scipy.spatial.transform import Rotation
 
         from crisp_gym.util.rot6d import rot6d_to_mat
 
-        if self.compose_mode == "decoupled":
+        if self.action_repr == "absolute":
+            # The model's [pos3, rot6d6] IS the absolute target pose. _chunk_base
+            # is irrelevant here (do not compose), matching how the dataset's
+            # action column was the absolute next_tcp_pose / target_cartesian.
+            T_cmd = np.eye(4)
+            T_cmd[:3, :3] = rot6d_to_mat(np.asarray(action[3:9]))
+            T_cmd[:3, 3] = np.asarray(action[:3])
+        elif self.compose_mode == "decoupled":
             # UMI 'rel' (legacy/decoupled): position is a BASE-frame delta
             # (NOT rotated by the current EE orientation), rotation composes
             # in the body frame. Use only if the checkpoint was trained with
@@ -444,13 +639,12 @@ class RelativeLerobotPolicy(Policy):
             rot_arr = rot.as_euler("xyz")
 
         # gripper is the LAST action dim (robust to any pose-dim count).
-        # invert_gripper: the env OBSERVATION is 1 - gripper.value but the
-        # COMMAND (_set_gripper_action -> set_target) uses value directly. If
-        # the model's action-gripper is in the OBSERVATION convention (e.g.
-        # datasets where the action gripper == obs gripper at t+1, such as the
-        # migrated legacy demos), it must be inverted back before commanding,
-        # otherwise the gripper oscillates (obs=0 -> cmd close -> obs=1 ->
-        # cmd open -> ...).
+        # invert_gripper: obs, command and UMI record-config action all share the
+        # device convention (0=closed/1=open), so it stays FALSE by default. It
+        # exists only for LEGACY datasets whose action gripper was stored in an
+        # inverted convention (e.g. migrated demos where the action gripper ==
+        # an inverted obs at t+1); for those, flip it back before commanding,
+        # otherwise the gripper oscillates (cmd close -> cmd open -> ...).
         a_grip = float(action[-1])
         if self.invert_gripper:
             a_grip = 1.0 - a_grip
@@ -467,9 +661,13 @@ class RelativeLerobotPolicy(Policy):
             # (a) MODEL OUTPUT — relative action, EE/body frame (identity
             #     current frame -> pure translation reads as EE-axis motion),
             #     INCLUDING the raw gripper value the policy predicts.
-            rel_euler = Rotation.from_matrix(
+            model_euler = Rotation.from_matrix(
                 rot6d_to_mat(np.asarray(action[3:9]))
             ).as_euler("xyz")
+            # In absolute mode the model output IS the pose (not an EE-frame
+            # delta), so label it accordingly; the numbers are the raw output.
+            model_label = "abs   " if self.action_repr == "absolute" else "rel(EE)"
+            mode_label = self.action_repr if self.action_repr == "absolute" else self.compose_mode
             # (c) gripper value actually PUBLISHED to the gripper ROS2 topic:
             #     crisp_py Gripper.set_target(t) publishes _unnormalize(t) =
             #     (max-min)*t + min (GripperCommand position / command topic).
@@ -484,9 +682,10 @@ class RelativeLerobotPolicy(Policy):
                    np.round(base_euler, 4).tolist())
             )
             logger.info(
-                "[action] MODEL rel(EE)  pos=%s rot_euler=%s grip=%.4f  (dim=%d)"
-                % (np.round(action[:3], 4).tolist(),
-                   np.round(rel_euler, 4).tolist(),
+                "[action] MODEL %s  pos=%s rot_euler=%s grip=%.4f  (dim=%d)"
+                % (model_label,
+                   np.round(action[:3], 4).tolist(),
+                   np.round(model_euler, 4).tolist(),
                    float(action[-1]), len(action))
             )
             logger.info(
@@ -494,7 +693,7 @@ class RelativeLerobotPolicy(Policy):
                 "(mode=%s, Δpos_base=%s, |Δ|=%.1fmm)"
                 % (np.round(pos, 4).tolist(),
                    np.round(cmd_euler, 4).tolist(),
-                   self.compose_mode,
+                   mode_label,
                    np.round(pos - Tb[:3, 3], 4).tolist(),
                    float(np.linalg.norm(pos - Tb[:3, 3]) * 1000))
             )
@@ -569,31 +768,109 @@ class RelativeLerobotPolicy(Policy):
                 g_raw = float(getattr(self.env.gripper, "value", float("nan")))
                 logger.info(
                     "[gripper-obs] fed_to_model=%.4f  (raw gripper.value=%.4f, "
-                    "env obs = 1 - value)" % (g_obs, g_raw)
+                    "env obs = value, 0=closed/1=open)" % (g_obs, g_raw)
+                )
+                # Absolute TCP pose the model is being fed this tick — the
+                # observation.state the policy consumes (rot6d decoded to euler
+                # for readability). This is the RAW absolute obs in the record
+                # frame, BEFORE the server-side relative conversion.
+                from scipy.spatial.transform import Rotation
+                from crisp_gym.util.rot6d import rot6d_to_mat
+
+                cart = np.asarray(frame["observation.state.cartesian"], dtype=np.float64)
+                obs_euler = Rotation.from_matrix(rot6d_to_mat(cart[3:9])).as_euler("xyz")
+                state_vec = np.asarray(frame["observation.state"], dtype=np.float64)
+                sub_keys = [k for k in frame if k.startswith("observation.state.")]
+                logger.info(
+                    "[obs-state] cartesian abs pos=%s rot_euler=%s gripper=%.4f  "
+                    "(observation.state dim=%d, sub-keys=%s)"
+                    % (np.round(cart[:3], 4).tolist(),
+                       np.round(obs_euler, 4).tolist(),
+                       g_obs,
+                       int(state_vec.shape[0]),
+                       sub_keys)
                 )
 
-            if self._chunk is None or self._chunk_idx >= min(
-                self.n_action_steps, len(self._chunk)
-            ):
-                # Snapshot the base pose NOW — the same tick as the newest obs
-                # of the window being sent (training base = last obs frame).
-                chunk_base = self._current_pose_mat()
-                t0 = time.monotonic()
-                self.parent_conn.send(("infer", list(self._history)))
-                result = self.parent_conn.recv()
-                if isinstance(result, tuple) and result[0] == "error":
-                    logger.error(f"Inference failed: {result[1]} — holding pose.")
-                    return obs_raw, None
-                self._chunk = np.asarray(result)
-                self._chunk_idx = 0
-                self._chunk_base = chunk_base
-                self._last_infer_ms = (time.monotonic() - t0) * 1e3
-                # Re-arm per-chunk logging so every new chunk logs its first
-                # _log_actions_n steps (not only the very first chunk).
-                self._action_log_left = self._log_actions_n
-                logger.debug(
-                    f"Chunk {self._chunk.shape} in {self._last_infer_ms:.1f} ms"
-                )
+            if not self._async:
+                # ── SYNCHRONOUS (default): block for a new chunk when exhausted.
+                if self._chunk is None or self._chunk_idx >= min(
+                    self.n_action_steps, len(self._chunk)
+                ):
+                    # Snapshot the base pose NOW — the same tick as the newest
+                    # obs of the window being sent (training base = last obs).
+                    t0 = time.monotonic()
+                    chunk_base = self._send_infer()
+                    result = self._recv_chunk()
+                    if result is None:
+                        return obs_raw, None
+                    self._chunk = result
+                    self._chunk_idx = 0
+                    self._chunk_base = chunk_base
+                    self._last_infer_ms = (time.monotonic() - t0) * 1e3
+                    # Re-arm per-chunk logging so every new chunk logs its first
+                    # _log_actions_n steps (not only the very first chunk).
+                    self._action_log_left = self._log_actions_n
+                    logger.debug(
+                        f"Chunk {self._chunk.shape} in {self._last_infer_ms:.1f} ms"
+                    )
+            else:
+                # ── ASYNC: overlap inference with chunk execution.
+                # (a) Bootstrap: the very first chunk must block.
+                if self._chunk is None:
+                    t0 = time.monotonic()
+                    base = self._send_infer()
+                    result = self._recv_chunk()
+                    if result is None:
+                        return obs_raw, None
+                    self._chunk, self._chunk_idx, self._chunk_base = result, 0, base
+                    self._last_infer_ms = (time.monotonic() - t0) * 1e3
+                    self._action_log_left = self._log_actions_n
+                # (b) Collect a prefetched result if it has arrived (non-blocking).
+                if self._pending and self.parent_conn.poll(0):
+                    self._next_chunk = self._recv_chunk()   # may be None on error
+                    self._pending = False
+                # (c) Prefetch the next chunk once we are `lead` steps from the
+                #     end — its base is the pose NOW (obs-time for that window).
+                lead = self._effective_prefetch_lead()
+                if (
+                    not self._pending
+                    and self._next_chunk is None
+                    and self._chunk_idx >= self.n_action_steps - lead
+                ):
+                    # Steps still to run before the swap = how far into the new
+                    # chunk we'll already be by the time we use it.
+                    self._pending_offset = self.n_action_steps - self._chunk_idx
+                    self._pending_t0 = time.monotonic()
+                    self._pending_base = self._send_infer()
+                    self._pending = True
+                # (d) Swap when the current chunk is exhausted.
+                if self._chunk_idx >= min(self.n_action_steps, len(self._chunk)):
+                    if self._next_chunk is None and self._pending:
+                        # Inference slower than the chunk — block for it (a stall,
+                        # rare once lead is right; raise prefetch_lead if frequent).
+                        self._next_chunk = self._recv_chunk()
+                        self._pending = False
+                    if self._next_chunk is not None:
+                        self._chunk = self._next_chunk
+                        self._chunk_base = self._pending_base
+                        # Skip the steps already executed since the prefetch obs
+                        # (see _pending_offset) so we command the NEXT pose, not
+                        # a passed one.
+                        self._chunk_idx = min(self._pending_offset, len(self._chunk) - 1)
+                        self._next_chunk = None
+                        if self._pending_t0 is not None:
+                            self._last_infer_ms = (time.monotonic() - self._pending_t0) * 1e3
+                        self._action_log_left = self._log_actions_n
+                    else:
+                        # Prefetch errored / nothing pending: re-issue, blocking.
+                        t0 = time.monotonic()
+                        base = self._send_infer()
+                        result = self._recv_chunk()
+                        if result is None:
+                            return obs_raw, None
+                        self._chunk, self._chunk_idx, self._chunk_base = result, 0, base
+                        self._last_infer_ms = (time.monotonic() - t0) * 1e3
+                        self._action_log_left = self._log_actions_n
 
             action = self._chunk[self._chunk_idx]
             self._chunk_idx += 1
@@ -630,6 +907,18 @@ class RelativeLerobotPolicy(Policy):
 
     def reset(self):
         """Clear obs history / chunk state here and policy queues in the worker."""
+        # Drain an in-flight async prefetch: the worker will still send its
+        # result (it processes messages in order), so read and discard it now,
+        # or the next tick would poll a stale chunk from the pipe.
+        if self._pending:
+            try:
+                self.parent_conn.recv()
+            except Exception:
+                pass
+            self._pending = False
+        self._pending_base = None
+        self._pending_t0 = None
+        self._next_chunk = None
         self._history.clear()
         self._chunk = None
         self._chunk_idx = 0

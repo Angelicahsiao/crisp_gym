@@ -73,7 +73,11 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.spatial.transform import Rotation
+
+# NOTE: scipy is imported lazily inside euler_pose_to_rot6d (the only user), so
+# importing this module for its parquet/stats helpers — e.g. from
+# swap_action_offline.py — does not require scipy, which the training env may
+# not have.
 
 logger = logging.getLogger("migrate_euler_delta_to_rot6d")
 
@@ -96,6 +100,8 @@ def euler_pose_to_rot6d(pose6: np.ndarray) -> np.ndarray:
     rot6d = first two ROWS of the rotation matrix, flattened row-major — the
     UMI/pytorch3d convention used across this repo.
     """
+    from scipy.spatial.transform import Rotation
+
     pose6 = np.asarray(pose6, dtype=np.float64).reshape(-1)
     pos = pose6[:3]
     mat = Rotation.from_euler("xyz", pose6[3:6]).as_matrix()

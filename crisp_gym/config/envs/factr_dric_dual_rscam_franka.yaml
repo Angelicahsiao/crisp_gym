@@ -1,0 +1,125 @@
+# FACTR leader -> dric Franka FR3 + Robotiq 2F-85 + dual RealSense.
+#
+# Joint-space RECORDING env for the FACTR leader arm, split off from
+# dric_dual_rscam_franka.yaml so the two teleop modes stop sharing one config:
+# that one is driven in CARTESIAN space (streamed phone pose, relative deltas),
+# this one in JOINT space by FACTR. The differences below are exactly the
+# settings that cannot be right for both at once.
+#
+# Use with:
+#   python crisp_gym/scripts/record_lerobot_format_leader_follower.py \
+#       --use-factr --factr-name right --joint-control \
+#       --follower-config factr_dric_dual_rscam_franka \
+#       --record-config crisp_gym/config/recording/umi_robot_full_record.yaml \
+#       --repo-id <org>/<name> --fps 15
+#
+# The recorded dataset is IDENTICAL in schema to the Cartesian-driven one: the
+# UMI contract stores next_tcp_pose from robot.end_effector_pose and the
+# MEASURED gripper width, neither of which depends on how the arm was driven.
+# Only the arm's behaviour differs.
+#
+# Everything not listed here (cameras, gripper, ext_torque sensor, effort
+# feedback) is a copy of dric_dual_rscam_franka.yaml — keep them in sync.
+control_frequency: 30.0
+
+# Continuous, NOT absolute_binary. FACTR publishes a continuous trigger; binary
+# mode thresholds it so the gripper only ever fully opens or closes, and the
+# recorded (measured) width comes out bimodal — poor training data for a
+# continuous-gripper policy.
+gripper_mode: "absolute_continuous"
+
+cartesian_control_param_config: null
+# Actually load the JIC gains. Left null, manipulator_env treats it as falsy and
+# skips loading entirely, so the controller keeps whatever bring-up set and the
+# tuned nullspace weights/stiffness/max_tau never apply.
+joint_control_param_config: "control/fr3_joint_control.yaml"
+
+# ABSOLUTE joint commands (see examples/10 and factr_franka_robotiq.yaml). The
+# delta scheme seeded the target from the follower once and only ever added
+# leader deltas, so a startup offset was frozen in for the whole episode and a
+# blocked follower let the target integrate away and lunge on release.
+#
+# To fall back to per-step deltas (the examples/09 scheme), set this to true and
+# the two guards below become inert — they only apply in absolute mode.
+use_relative_actions: false
+
+# Clamp the per-step target change to max_joint_speed / control_frequency.
+# Bounds a leader dropout/reconnect delivering one huge jump.
+max_joint_speed: 0.5
+
+# Refuse the first absolute command after each reset if any joint is further
+# than this (rad) from the measured pose — the leader/follower alignment check.
+# null disables it.
+max_startup_joint_offset: 0.15
+
+# Resolved BEFORE the legacy Franka HomeConfig enum, whose OPEN_POSE differs
+# from this rig by ~0.08 rad on joint4. Both names point at the same pose via a
+# YAML anchor, so the recorder's two startup homings collapse to one move and
+# they cannot drift apart when edited.
+named_home_configs:
+  open_pose: &home_pose
+    - 0.4246407298371954
+    - -0.01130037897899503
+    - -0.3321400257658427
+    - -2.6908276789742325
+    - 0.09774443531853239
+    - 4.257101518895322
+    - -0.013673332419279224
+  close_to_table: *home_pose
+
+robot_config:
+  robot_type: "franka"
+  # Effort comes from the `effort` field of the sensor_msgs/JointState messages
+  # the FR3 driver already publishes on the robot's joint_state topic. crisp_py
+  # ingests it in Robot._callback_current_joint only when this flag is true AND
+  # len(msg.effort) == len(msg.position); otherwise current_joint_effort returns
+  # zeros with a throttled warning. Required for the record config's
+  # extra.joint_efforts column to hold real values.
+  has_effort_feedback: true
+  home_config:
+  - 0.425725623070977
+  - -0.013800044320084788
+  - -0.33286129072276527
+  - -2.6913555955684414
+  - 0.10167396715537252
+  - 4.262024898082136
+  - -0.021739227284989265
+
+gripper_config:
+  min_value: 0.79
+  max_value: 0.0
+  command_topic: "/robotiq_2f85/robotiq_gripper_controller/gripper_cmd"
+  joint_state_topic: /robotiq_2f85/joint_states
+  use_gripper_command_action: True
+  max_delta: 1.0
+  max_effort: 5.0
+
+camera_configs:
+  - camera_name: "env_cam"
+    camera_frame: "env_link"
+    resolution: [256, 256]
+    camera_color_image_topic: "/env/env_cam/color/image_raw"
+    camera_color_info_topic: "/env/env_cam/color/camera_info"
+  - camera_name: "wrist_cam"
+    camera_frame: "wrist_link"
+    camera_color_image_topic: "/wrist/wrist_cam/color/image_rect_raw"
+    camera_color_info_topic: "/wrist/wrist_cam/color/camera_info"
+    resolution: [256, 256]
+
+# EXTERNAL joint torque from franka_ros2's franka_robot_state_broadcaster:
+# tau_ext with gravity and arm dynamics already removed by the robot firmware,
+# so it is ~0 in free motion and non-zero only on real contact. Recorded via
+# the generic sensor path (crisp_py joint_state_effort spec reads the JointState
+# `effort` field) — distinct from robot.joint_efforts, which is the TOTAL
+# measured torque on the robot's own /joint_states and is dominated by gravity.
+#
+# The broadcaster publishes NINE values — the 7 arm joints followed by the two
+# Robotiq knuckle joints:
+#   [fr3_joint1..7, robotiq_85_left_knuckle_joint, robotiq_85_right_knuckle_joint]
+# `indices` keeps the arm only, so `shape: [7]` describes the recorded value.
+sensor_configs:
+  - sensor_type: "joint_state_effort"
+    name: "ext_torque"
+    shape: [7]
+    indices: [0, 1, 2, 3, 4, 5, 6]
+    data_topic: "/franka_robot_state_broadcaster/external_joint_torques"

@@ -19,29 +19,49 @@ class FACTRStreamedJoints:
     """Subscribe to FACTR leader arm joint and gripper topics.
 
     FACTR publishes (both as sensor_msgs/JointState):
-      /factr_teleop/{name}/cmd_ur_pos      — 6-DOF arm joint positions (position[0:6])
+      /factr_teleop/{name}/cmd_arm_pos     — arm joint positions, one per follower
+                                             joint (position[0:N]; N=6 on the UR7e,
+                                             7 on the FR3)
       /factr_teleop/{name}/cmd_gripper_pos — gripper trigger position (position[0])
 
     This class additionally PUBLISHES:
-      /factr_teleop/{name}/go_home    (std_msgs/Bool, data=True)
-          — request that the FACTR leader arm moves to its home pose (sent by
-            send_home(), e.g. between recorded episodes). The FACTR node must
-            subscribe and execute the homing motion itself — this is only the
-            trigger.
-      /factr_teleop/{name}/home_pose  (sensor_msgs/JointState, position[0:6])
-          — the TARGET home joint configuration, published just before the
-            go_home trigger when send_home(home_config=...) is given one.
-            Because the follower's home pose is randomized per episode
-            (--home-config-noise), the leader cannot assume a fixed home; the
-            FACTR node should store the latest home_pose and move there on the
-            go_home trigger (fall back to its own default if none received).
+      /factr_teleop/{name}/follow_mode (std_msgs/Bool)
+          — whether the FACTR leader should FOLLOW the follower arm rather than
+            command it (sent by set_follow_mode()).
 
-    The gripper trigger is expected in [0, 1] where 0 = open, 1 = fully squeezed.
-    It is inverted to match the Robotiq convention (set_target: 0 = closed, 1 = open),
-    so squeezing the leader closes the follower.
+            data=True  — entered between recorded episodes, while the follower
+                homes to its (per-episode randomized, see --home-config-noise)
+                pose. The leader tracks the follower there, so both arms end up
+                in the same configuration without crisp_gym having to tell the
+                leader which pose that is.
+            data=False — teleoperation resumes; the leader commands again.
+
+            The FACTR node must subscribe and implement the mode switch itself
+            — this is only the request. Nothing is published until
+            set_follow_mode() is first called; after that the CURRENT state is
+            republished at follow_mode_republish_hz (default 2 Hz).
+
+            That repetition matters: the topic is RELIABLE but VOLATILE, so a
+            FACTR node matching after a transition — started late, restarted
+            mid-session, or still completing cross-machine discovery — would
+            otherwise never see it and sit in the wrong mode until the next
+            episode boundary. With the republish it converges within one
+            period. Subscribers must therefore be idempotent: expect the same
+            value repeatedly and act only on CHANGES.
+
+    The gripper trigger is expected in [0, 1] ALREADY in the follower's
+    convention (Gripper.set_target: 0 = closed, 1 = open) and is passed through
+    unchanged — only clamped, since the trigger can overshoot to roughly
+    [-1, 2]. The FACTR node owns the mapping from its physical trigger to this
+    range; if squeezing the leader OPENS the follower, invert it there, not here.
     """
 
-    def __init__(self, name: str = "right", namespace: str = ""):
+    def __init__(
+        self,
+        name: str = "right",
+        namespace: str = "",
+        follow_mode_republish_hz: float = 2.0,
+    ):
         if not rclpy.ok():
             rclpy.init()
 
@@ -49,13 +69,18 @@ class FACTRStreamedJoints:
         self._prefix = f"{namespace}_" if namespace else ""
         self.node = rclpy.create_node("factr_stream", namespace=namespace)
 
-        self._joint_topic = f"/factr_teleop/{name}/cmd_ur_pos"
+        self._joint_topic = f"/factr_teleop/{name}/cmd_arm_pos"
         self._gripper_topic = f"/factr_teleop/{name}/cmd_gripper_pos"
-        self._home_topic = f"/factr_teleop/{name}/go_home"
-        self._home_pose_topic = f"/factr_teleop/{name}/home_pose"
+        self._follow_mode_topic = f"/factr_teleop/{name}/follow_mode"
 
         self._last_joint_pos: np.ndarray | None = None
         self._last_gripper: float | None = None
+
+        # Message counters, so callers can tell a FRESH sample from the stale
+        # one cached before follow mode silenced the stream. See
+        # wait_for_new_data().
+        self._joint_msg_count = 0
+        self._gripper_msg_count = 0
 
         logger.info(f"Subscribing to: {self._joint_topic}, {self._gripper_topic}")
 
@@ -73,20 +98,44 @@ class FACTRStreamedJoints:
             callback_group=ReentrantCallbackGroup(),
             qos_profile=qos_profile_sensor_data,
         )
-        self._home_publisher = self.node.create_publisher(
+        self._follow_mode_publisher = self.node.create_publisher(
             Bool,
-            self._home_topic,
-            qos_profile_system_default,
-            callback_group=ReentrantCallbackGroup(),
-        )
-        self._home_pose_publisher = self.node.create_publisher(
-            JointState,
-            self._home_pose_topic,
+            self._follow_mode_topic,
             qos_profile_system_default,
             callback_group=ReentrantCallbackGroup(),
         )
 
+        # Last state set_follow_mode() asked for, republished periodically.
+        # None until something is requested, so the timer never asserts a
+        # default the operator did not choose.
+        self._follow_mode_state: bool | None = None
+        self._follow_mode_timer = None
+        if follow_mode_republish_hz and follow_mode_republish_hz > 0.0:
+            # The follow_mode publisher is RELIABLE but VOLATILE, so a FACTR
+            # node that matches AFTER a transition — started late, restarted
+            # mid-session, or still completing cross-machine discovery — never
+            # sees it, and the leader silently sits in the wrong mode. A
+            # transition is published once; nothing retries it.
+            #
+            # Repeating the current state makes the topic self-healing: a node
+            # that misses a transition picks it up within one period instead of
+            # waiting for the next episode boundary. One Bool at a few Hz is
+            # negligible traffic.
+            self._follow_mode_timer = self.node.create_timer(
+                1.0 / follow_mode_republish_hz,
+                self._republish_follow_mode,
+                callback_group=ReentrantCallbackGroup(),
+            )
+
         threading.Thread(target=self._spin_node, daemon=True).start()
+
+    def _republish_follow_mode(self) -> None:
+        """Re-send the last requested follow mode. Silent: set_follow_mode logs."""
+        if self._follow_mode_state is None:
+            return
+        msg = Bool()
+        msg.data = self._follow_mode_state
+        self._follow_mode_publisher.publish(msg)
 
     def _spin_node(self):
         executor = rclpy.executors.MultiThreadedExecutor(num_threads=2)
@@ -99,15 +148,17 @@ class FACTRStreamedJoints:
 
     def _callback_joints(self, msg: JointState):
         self._last_joint_pos = np.array(msg.position, dtype=np.float64)
+        self._joint_msg_count += 1
 
     def _callback_gripper(self, msg: JointState):
-        # FACTR trigger (position[0]): 0 = released, 1 = squeezed (can overshoot
-        # to ~[-1, 2]). Invert so squeezing the leader closes the follower, then
-        # clamp into the [0, 1] range Gripper.set_target expects (0 = closed,
-        # 1 = open).
+        # FACTR trigger (position[0]) is already in the follower's convention
+        # (Gripper.set_target: 0 = closed, 1 = open), so it is passed through
+        # unchanged — only clamped, because the trigger can overshoot its
+        # nominal range to roughly [-1, 2].
         if not msg.position:
             return
-        self._last_gripper = float(np.clip(1.0 - msg.position[0], 0.0, 1.0))
+        self._last_gripper = float(np.clip(msg.position[0], 0.0, 1.0))
+        self._gripper_msg_count += 1
 
     @property
     def last_joint_pos(self) -> np.ndarray:
@@ -127,44 +178,94 @@ class FACTRStreamedJoints:
             )
         return self._last_gripper
 
-    def send_home(self, home_config: "list[float] | None" = None) -> None:
-        """Ask the FACTR leader node to move the leader arm to its home pose.
+    def wait_for_new_data(self, timeout: float = 5.0) -> bool:
+        """Block until a joint AND gripper message arrive that postdate this call.
 
-        Publishes:
-          1. the target joint configuration on /factr_teleop/{name}/home_pose
-             (sensor_msgs/JointState, position field) — only when home_config
-             is given. With --home-config-noise the follower's home differs
-             every episode; this tells the leader the EXACT pose to match.
-          2. std_msgs/Bool(data=True) on /factr_teleop/{name}/go_home — the
-             trigger to execute the motion.
-
-        Fire-and-forget: the FACTR node owns the actual homing motion. If it
-        does not subscribe, the messages are ignored (a warning is logged).
+        The FACTR node stops publishing while it is following, so
+        last_joint_pos / last_gripper keep returning whatever was cached before
+        follow mode began. Commanding that stale pose is dangerous in absolute
+        mode: it is the leader's position from BEFORE it moved to track the
+        follower, so the arm would be sent back there. Call this after leaving
+        follow mode, before the first command, so the values are known-fresh.
 
         Args:
-            home_config: Joint values (radians) the leader should home to —
-                typically the follower's randomized home for this episode.
-                None publishes only the trigger (leader uses its own default).
+            timeout: Seconds to wait for a new sample on both topics.
+
+        Returns:
+            True if both topics produced a new message, False on timeout.
         """
-        if self._home_publisher.get_subscription_count() == 0:
+        joints_at_call = self._joint_msg_count
+        gripper_at_call = self._gripper_msg_count
+        start = time.time()
+        while time.time() - start < timeout:
+            if (
+                self._joint_msg_count > joints_at_call
+                and self._gripper_msg_count > gripper_at_call
+            ):
+                return True
+            time.sleep(0.01)
+        return False
+
+    def wait_for_follow_mode_subscriber(self, timeout: float = 5.0) -> bool:
+        """Block until the FACTR node has subscribed to the follow_mode topic.
+
+        The publisher is VOLATILE, so anything sent before the FACTR node has
+        discovered it is dropped silently. Call this before a set_follow_mode()
+        whose message MUST arrive — notably the one sent at startup, before
+        wait_until_ready(), which is what puts the leader into follow mode in
+        the first place.
+
+        Args:
+            timeout: Seconds to wait for a subscriber to appear.
+
+        Returns:
+            True if a subscriber appeared, False if the timeout elapsed.
+        """
+        start = time.time()
+        while time.time() - start < timeout:
+            if self._follow_mode_publisher.get_subscription_count() > 0:
+                return True
+            time.sleep(0.05)
+        return False
+
+    def set_follow_mode(self, enabled: bool) -> None:
+        """Ask the FACTR leader node to enter or leave follow mode.
+
+        Publishes std_msgs/Bool(data=enabled) on
+        /factr_teleop/{name}/follow_mode. Equivalent to:
+
+            ros2 topic pub --once /factr_teleop/right/follow_mode \\
+                std_msgs/msg/Bool "{data: true}"
+
+        In follow mode the leader TRACKS the follower instead of commanding it.
+        Recording turns it on between episodes, while the follower homes to a
+        per-episode randomized pose, so both arms converge without crisp_gym
+        having to send the pose itself; it is turned off again when the next
+        episode starts.
+
+        Fire-and-forget: the FACTR node owns the actual mode switch. If it does
+        not subscribe, the message goes nowhere (a warning is logged).
+
+        Args:
+            enabled: True to follow the follower, False to resume commanding it.
+        """
+        if self._follow_mode_publisher.get_subscription_count() == 0:
             logger.warning(
-                f"send_home: no subscriber on {self._home_topic} — the FACTR "
-                "node does not listen for home requests; the leader arm will "
-                "NOT move. Add a subscriber in the FACTR node to enable this."
-            )
-        if home_config is not None:
-            pose_msg = JointState()
-            pose_msg.header.stamp = self.node.get_clock().now().to_msg()
-            pose_msg.position = [float(v) for v in home_config]
-            self._home_pose_publisher.publish(pose_msg)
-            logger.info(
-                f"Published FACTR leader home pose ({len(pose_msg.position)} "
-                f"joints) via {self._home_pose_topic}."
+                f"set_follow_mode: no subscriber on {self._follow_mode_topic} "
+                "— the FACTR node does not listen for follow-mode requests; "
+                "the leader arm will NOT change mode. Add a subscriber in the "
+                "FACTR node to enable this."
             )
         msg = Bool()
-        msg.data = True
-        self._home_publisher.publish(msg)
-        logger.info(f"Requested FACTR leader home via {self._home_topic}.")
+        msg.data = bool(enabled)
+        # Latch BEFORE publishing so the republish timer cannot race in with
+        # the previous state between the two statements.
+        self._follow_mode_state = msg.data
+        self._follow_mode_publisher.publish(msg)
+        logger.info(
+            f"Requested FACTR leader follow_mode={msg.data} via "
+            f"{self._follow_mode_topic}."
+        )
 
     def is_ready(self) -> bool:
         return self._last_joint_pos is not None and self._last_gripper is not None

@@ -15,6 +15,11 @@ observations:
     shape: [224, 224, 3]
 
 action:
+  # The action column is exactly the vector handed to env.step(). Its width and
+  # names are derived from the env's own action_space at record time
+  # (util.lerobot_features.env_action_names), so nothing is declared here:
+  # a Cartesian env yields [x, y, z, <rotation dims>, gripper].
+  #
+  # Whether those are DELTAS or absolute follows the env's use_relative_actions
+  # (true for the classic teleop path this config is used with).
   definition: command
-  command_dim: 7                       # [dx,dy,dz,droll,dpitch,dyaw,gripper]
-  command_semantics: "delta_pose_euler_gripper"

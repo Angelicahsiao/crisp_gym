@@ -158,7 +158,7 @@ if __name__ == "__main__":
         "./crisp_gym/config/control/default_cartesian_impedance.yaml"
     )
     env_config.joint_control_param_config = (
-        "./crisp_gym/config/control/joint_control.yaml"
+        "./crisp_gym/config/control/fr3_joint_control.yaml"
     )
     try:
         control_robot_with_spacemouse(

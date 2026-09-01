@@ -142,8 +142,32 @@ def _src_sensor(env, name: str = "", **_) -> np.ndarray:
 
 @register_source("robot.target_pose")
 def _src_target_pose(env, representation: str = "rotation_6d", **_) -> np.ndarray:
-    """Commanded (target) TCP pose — useful to analyze controller tracking."""
+    """Commanded (target) TCP pose — useful to analyze controller tracking.
+
+    MEANINGFUL ONLY UNDER CARTESIAN CONTROL. crisp_py's Robot._target_pose is
+    written by set_target()/move_to(); set_target_joint() never touches it. On a
+    joint-driven env (FACTR + JIC) it is therefore seeded from the measured pose
+    after each home() and then stays CONSTANT for the whole episode — a column
+    that looks like data but is not. Record robot.target_joint there instead.
+    """
     return _pose_to_array(env.robot.target_pose, representation)
+
+
+@register_source("robot.target_joint")
+def _src_target_joint(env, **_) -> np.ndarray:
+    """Commanded (target) joint configuration — joint-space tracking analysis.
+
+    The exact vector env.step() handed to Robot.set_target_joint, i.e. AFTER the
+    env's clamps (_limit_joint_speed, the startup-offset check), so it is the
+    effective command rather than the raw teleop request. Pair it with
+    robot.joint_positions to see what the JIC actually tracked.
+
+    The joint-space mirror of robot.target_pose, with the mirrored caveat: under
+    Cartesian control nothing calls set_target_joint, so this stays at whatever
+    the joint state seeded it with. Record whichever one matches how the arm is
+    driven; the other is a constant.
+    """
+    return np.asarray(env.robot.target_joint, dtype=np.float32)
 
 
 @register_source("gripper.raw_value")
@@ -359,7 +383,22 @@ class RecordConfig:
 
     # ── features (LeRobot schema) ──
     def to_features(self, joint_count: int | None = None,
-                    use_video: bool = True) -> Dict[str, Dict]:
+                    use_video: bool = True,
+                    command_names: List[str] | None = None) -> Dict[str, Dict]:
+        """Build the LeRobot feature schema for this contract.
+
+        Args:
+            joint_count: The robot's DOF, for definitions sized by it.
+            use_video: Encode images as video rather than stills.
+            command_names: For `definition: command` ONLY — the names of the
+                vector env.step() accepts, from
+                util.lerobot_features.env_action_names(env). When given, the
+                action feature is built from these rather than from the
+                config's command_dim, so the column always describes the
+                command actually sent. A declared command_dim is then only
+                cross-checked, and a disagreement raises rather than being
+                silently overridden.
+        """
         features: Dict[str, Dict] = {}
         state_len, state_names = 0, []
         for o in self.observations:
@@ -387,15 +426,68 @@ class RecordConfig:
         features["observation.state"] = {
             "dtype": "float32", "shape": (state_len,), "names": state_names,
         }
+        if self.action.definition == "command" and command_names is not None:
+            declared = self.action.command_dim
+            if declared is not None and declared != len(command_names):
+                raise ValueError(
+                    f"action.command_dim is {declared} but the env's action "
+                    f"vector has {len(command_names)} dimensions "
+                    f"({command_names}). Drop command_dim from the record "
+                    "config — it is derived from the env — or fix the env."
+                )
+            action_dim, action_names = len(command_names), list(command_names)
+        else:
+            action_dim, action_names = (
+                self.action.dim(joint_count),
+                self.action.names(joint_count),
+            )
         features["action"] = {
             "dtype": "float32",
-            "shape": (self.action.dim(joint_count),),
-            "names": self.action.names(joint_count),
+            "shape": (action_dim,),
+            "names": action_names,
         }
         return features
 
     # ── contract stamping / compatibility ──
-    def to_metadata(self) -> dict:
+    def to_metadata(
+        self,
+        action_names: List[str] | None = None,
+        use_relative_actions: bool | None = None,
+    ) -> dict:
+        """Stamp the resolved contract for meta/record_config.json.
+
+        Args:
+            action_names: Resolved action column names, from
+                util.lerobot_features.env_action_names(env).
+            use_relative_actions: The env's action convention.
+
+        Both are recorded for `definition: command` ONLY, and both are
+        deliberately scoped that way.
+
+        For `command` the action column IS the drive fn's vector, so the
+        convention decides what the numbers mean: identical
+        [x, y, z, roll, pitch, yaw, gripper] columns are per-step DELTAS under
+        one env and ABSOLUTE poses under another. Nothing else in this contract
+        distinguishes them, so without this two such datasets compare as
+        mixable and train together silently.
+
+        For next_tcp_pose / next_joint_positions the action is a MEASURED value
+        and the convention never reaches the data, so stamping it there would
+        only make datasets recorded either side of this change compare as
+        incompatible over a field that cannot matter.
+        """
+        action: Dict[str, Any] = {
+            "definition": self.action.definition,
+            "lookahead": self.action.lookahead,
+            "representation": self.action.representation,
+            "include_gripper": self.action.include_gripper,
+            "command_semantics": self.action.command_semantics,
+        }
+        if self.action.definition == "command":
+            if action_names is not None:
+                action["names"] = list(action_names)
+            if use_relative_actions is not None:
+                action["use_relative_actions"] = bool(use_relative_actions)
         return {
             "record_config_name": self.name,
             "rate_hz": self.rate_hz,
@@ -408,13 +500,7 @@ class RecordConfig:
                 }
                 for o in self.observations
             ],
-            "action": {
-                "definition": self.action.definition,
-                "lookahead": self.action.lookahead,
-                "representation": self.action.representation,
-                "include_gripper": self.action.include_gripper,
-                "command_semantics": self.action.command_semantics,
-            },
+            "action": action,
         }
 
     # Fields that must match for two datasets to be trained together.

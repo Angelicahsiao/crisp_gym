@@ -1,0 +1,62 @@
+# Local (in-process) deployment of an ABSOLUTE-pose rot6d checkpoint trained
+# with scripts/train_absolute_next_pose.py (or the target-cartesian swap +
+# train_absolute_next_pose.py). The policy outputs the absolute next TCP pose,
+# so it is sent to the CIC DIRECTLY — no T_base @ T_rel composition.
+#
+# Same class as relative_lerobot_policy (registry name below); the only
+# difference is action_repr: absolute. Deploy env must be rotation_6d +
+# use_relative_actions: false (e.g. config/envs/dric_dual_rscam_franka_deploy_umi.yaml):
+#   python -m crisp_gym.scripts.deploy_policy \
+#       --env-config dric_dual_rscam_franka_deploy_umi \
+#       --policy-config absolute_lerobot_policy --path <.../pretrained_model>
+name: "relative_lerobot_policy"
+
+# ABSOLUTE action: send the model's [pos3, rot6d6] pose straight through as the
+# CIC target, do NOT compose against the obs-time base. 'auto' also resolves to
+# absolute when action_repr.json (stamped by the absolute training launchers)
+# sits next to the checkpoint; set it explicitly here so a missing stamp still
+# deploys correctly.
+action_repr: "absolute"
+
+# Physical gripper width in meters at Gripper.value = 1.0 — REQUIRED, must match
+# the record config's device_max_width. Robotiq 2F-85 = 0.085.
+device_max_width: 0.085
+
+# Shared UMI reference width used at recording (gripper.width_normalized).
+reference_width: 0.09
+
+# ── control-loop rate knobs (see relative_lerobot_policy.yaml for detail) ────
+# LOWER num_inference_steps (e.g. 10) + scheduler: ddim to speed a 100-step DDPM
+# checkpoint toward the training fps. null -> checkpoint defaults.
+num_inference_steps: null
+scheduler: null
+# n_action_steps: chunk steps executed before re-planning. null -> full chunk.
+n_action_steps: null
+
+# Observation state layout. An absolute checkpoint saw ABSOLUTE state at
+# training (train_absolute_next_pose makes no obs change), and there is no
+# pose_repr.json next to it, so 'auto' resolves to absolute. Left explicit.
+state_input: "absolute"
+
+# Datasets recorded natively with rot6d record configs keep the target sub-key
+# (if any) in rot6d — leave false. Only migrated-Euler datasets need true.
+target_to_euler: false
+
+# compose_mode is IGNORED when action_repr is absolute (no composition). Kept
+# for config parity with relative_lerobot_policy.
+compose_mode: "coupled"
+
+# One gripper convention everywhere (device value, 0=closed/1=open): the env
+# observation, the record source `gripper.width_normalized`, and the command
+# path all agree, so this stays false. It exists only for LEGACY datasets whose
+# ACTION gripper was stored inverted (migrated demos); see HANDOFF.
+invert_gripper: false
+
+# Log the first N steps of every action chunk to diagnose conventions. 0 = off.
+log_actions: 0
+
+# Async inference (opt-in): overlap inference with chunk execution to avoid the
+# per-chunk stall and keep full denoising steps at a high control rate. false
+# (default) = classic synchronous loop. See relative_lerobot_policy.yaml.
+async_inference: false
+# prefetch_lead: null

@@ -125,6 +125,17 @@ Repos involved (same owner, branch conventions apply to all):
   decoding into that pass.
 - Fallbacks if a future change breaks this: `--dataset.video_backend=pyav`
   (correct, slower) or `--num_workers=0` (no fork, slow).
+- lerobot >=0.5 / 0.6.1 (SPAWN DataLoader): the crash is FORK-only — spawn
+  workers start fresh and never inherit the main process's decoders, so the
+  no-op is unnecessary there. 0.6.1 REMOVED the video-query method entirely
+  (`lerobot_dataset.py` has no `_query_videos`; decode goes through
+  `_video_backend` / `get_safe_default_video_backend`), so `_disable_video_query`
+  finds nothing and logs INFO that the guard was skipped harmlessly. VERIFIED:
+  full relative training runs to completion on 0.6.1 + torchcodec + num_workers=4
+  with no decoder crash. If you ever force
+  `--dataloader.multiprocessing_context=fork` on 0.6.1, find the new decode entry
+  point and add it to `_VIDEO_QUERY_ATTRS`, or the fork crash returns. The no-op
+  stays essential on 0.4.x (fork).
 
 ---
 
@@ -137,7 +148,7 @@ Repos involved (same owner, branch conventions apply to all):
 | `crisp_gym/record/record_functions.py::make_record_fn` | Config-driven recorder; 1-step lookahead pairing done per RecordConfig. |
 | `crisp_gym/scripts/record_umi_handheld.py` | Recording entry point (KeyboardRecordingManager: r/s/d/q). |
 | `crisp_gym/scripts/lerobot_relative_pose.py` | Training-side dataset wrapper + `lerobot-train` launcher (patches `make_dataset`). Converts `observation.state.cartesian`, `action`, AND the CONCATENATED `observation.state` (§1.2); recomputes relative stats; stamps `pose_repr.json` into the output dir. Runs on the GPU PC, needs only lerobot/torch/numpy — NO crisp imports, keep it that way. |
-| `crisp_gym/policy/relative_lerobot_policy.py` | LOCAL deployment of a relative-pose rot6d checkpoint (robot lerobot == training lerobot == 0.4.4). Mirrors the REMOTE_INFERENCE.md division of labor: client (main proc) = obs history, obs-time chunk base, T_cmd composition, gripper unit conversion; worker (subprocess) = checkpoint + processors, window→queues→`predict_action_chunk`, and the server-side obs conversion `convert_window_state_to_relative` for relative-state checkpoints. Auto-detects the checkpoint generation from `pose_repr.json` (`state_input: auto`; missing stamp => absolute). Logs the first `observation.state` fed to the policy (absolute/relative eyeball check). Config: `config/policy/relative_lerobot_policy.yaml` (`device_max_width` REQUIRED); deploy env: `config/envs/ur7e_robotiq_deploy_umi.yaml` (rotation_6d + use_relative_actions:false + `primary` camera). |
+| `crisp_gym/policy/relative_lerobot_policy.py` | LOCAL deployment of a relative-pose rot6d checkpoint (robot lerobot == training lerobot == 0.4.4). Mirrors the REMOTE_INFERENCE.md division of labor: client (main proc) = obs history, obs-time chunk base, T_cmd composition, gripper unit conversion; worker (subprocess) = checkpoint + processors, window→queues→`predict_action_chunk`, and the server-side obs conversion `convert_window_state_to_relative` for relative-state checkpoints. Auto-detects the checkpoint generation from `pose_repr.json` (`state_input: auto`; missing stamp => absolute). Logs the first `observation.state` fed to the policy (absolute/relative eyeball check). Config: `config/policy/relative_lerobot_policy.yaml` (`device_max_width` REQUIRED); deploy env: `config/envs/ur7e_robotiq_deploy_umi.yaml` (rotation_6d + use_relative_actions:false + `primary` camera). ALSO deploys ABSOLUTE checkpoints via `action_repr` (auto\|relative\|absolute): absolute sends the model pose to the CIC directly (no T_base@T_rel), auto-detected from `action_repr.json` next to the checkpoint; config `config/policy/absolute_lerobot_policy.yaml`. GRIPPER OBS (UNIFIED): one convention everywhere — the crisp_py device value, `0=closed / 1=open`. `env._get_obs`, the record source `gripper.width_normalized`, the command side (`_set_gripper_action`), and `UmiHandheldEnv._get_obs` all use it, so `build_obs_frame` consumes the obs as-is (`g_dev = obs`) and only reference-rescales. (Historically `manipulator_env._get_obs` alone returned `1 - value`, forcing an un-invert here; that lone inversion was removed so all sites agree and deploy-recorded episodes are training-compatible.) Existing record-source datasets/checkpoints are unaffected — removing the `_get_obs` inversion and the `build_obs_frame` un-invert cancels to the same `device_to_ref(value)` fed before. `invert_gripper` still exists for the ACTION side of legacy migrated demos (default false for UMI). OPT-IN `async_inference` (default false = classic sync loop): prefetches the next chunk `prefetch_lead` steps early and collects it without blocking so the loop never stalls on inference (keep full denoising steps at rate); the swap indexes the prefetched chunk by the elapsed offset (`_pending_offset`) so it never re-commands passed poses. DEPLOY-ENV CONTRACT (must equal the training dataset's info.json): `observation.state` components/order via `observations_to_include_to_state` + `has_effort_feedback:false` + `sensor_configs:[]` (sensors are force-added to state), image keys via `camera_name`, and image `resolution` (crisp_py resizes to it — 224 for UMI). |
 | `tests/test_relative_deploy.py` | Deploy math vs training reference on synthetic SE(3): composition inverts `make_relative`, obs-time chunk base, gripper ref<->device scaling parity with the record source, obs frame layout, training `observation.state` conversion, worker window conversion == training conversion. Numpy-only (torch stubbed). |
 | `crisp_gym/scripts/migrate_euler_delta_to_rot6d.py` | One-time migration of LEGACY datasets (Euler pose + delta-command action from the old `stream_fn` recorder) to the UMI absolute rot6d schema. File surgery: copies the dataset (videos byte-identical, NO re-encode), rewrites only low-dim parquet columns (cartesian Euler(6)→rot6d(9), rebuilt `observation.state`, reconstructed `next_tcp_pose` action) + `info.json` + stats. Handles BOTH v2.x (`episode_*.parquet`) and v3.0 (`data/file-*.parquet` multi-episode + `meta/episodes/*.parquet` stats) layouts. USAGE.md §11. |
 | `crisp_gym/scripts/check_relative_pose.py` | Verify a rot6d dataset's relative-pose conversion: identity (current frame → identity), round-trip (`T_current ∘ T_rel` recovers the on-disk absolute `next_tcp_pose` — deploy parity), Δpos magnitude, gripper pass-through. Runs `RelativePoseDataset` with no start-pose noise. USAGE.md §8. |
@@ -147,6 +158,12 @@ Repos involved (same owner, branch conventions apply to all):
 | `tests/test_lerobot_record.py` | Stubs crisp_py/ROS at import; its `_OrientationRepresentation` stub MUST mirror the real enum (already includes ROTATION_6D). |
 | `tests/test_pose_math.py` | HANDOFF §3 invariants as real tests (rot6d round-trip, identity, matrix round-trip, world-frame invariance, gripper pass-through, RemotePolicy obs-time chunk base). Runs without torch (stubbed). |
 | `tests/test_migration_euler_delta.py` | Migration round-trip on synthetic v2.x/v3.0 datasets (rotations, state rebuild, lookahead episode boundaries, stats incl. quantiles, byte-identical videos, guards). |
+| `tests/test_target_joint_source.py` | `robot.target_joint` source (float32 cast, explicit-shape requirement) + `umi_robot_full_record.yaml` carrying BOTH commanded targets with neither leaking into `observation.state`. Numpy-only. |
+| `crisp_gym/scripts/train_absolute_next_pose.py` | ABSOLUTE-pose training launcher: runs `lerobot-train` with NO obs/action transform (action = recorded `next_tcp_pose`), stamping `action_repr.json` (absolute). Counterpart to `lerobot_relative_pose.py`. GPU-PC, crisp-import-free. |
+| `crisp_gym/scripts/train_action_from_target_cartesian.py` | Training launcher that swaps the ARM dims of `action` for `extra.target_cartesian` (commanded pose), keeping the gripper; injects the target into `delta_indices` so it windows like `action`, recomputes action stats (no-video guard), stamps `action_repr.json`. REFUSES when `target_cartesian` is constant per episode (FACTR/JIC dead-column). GPU-PC, crisp-import-free. |
+| `tests/test_action_swap.py` | Action-swap wrapper: arm←target / gripper kept, `delta_indices` injection (incl. lazy-populate re-query), constant-column refusal, window-shape-mismatch guard, action-stats recompute. torch stubbed, numpy-only. |
+| `crisp_gym/scripts/swap_action_offline.py` | OFFLINE fallback for the action swap: rewrites the on-disk `action` column (arm ← `extra.target_cartesian`, gripper kept, same-frame), copies videos byte-identical, recomputes action stats (reuses migrate's stats helpers), refuses on constant `target_cartesian`. For lerobot versions that fix the windowed-key set at dataset construction, where the online wrapper cannot window a non-policy key. Train the copy with `train_absolute_next_pose.py`. |
+| `tests/test_swap_action_offline.py` | Offline swap core: `swap_arm` (arm←target, gripper kept, no input mutation) + feature guard. pandas/migrate stubbed, numpy-only. |
 
 LeRobot version target: **0.4.4** (module path `lerobot.datasets.lerobot_dataset`;
 train entry `lerobot.scripts.lerobot_train`; diffusion defaults n_obs_steps=2,
@@ -208,6 +225,14 @@ norm ~1.0 and dot ~0.0 (they are rows of a real rotation matrix).
    to `meta/record_config.json` when recording and gate dataset mixing with
    `RecordConfig.contracts_compatible`. UMI robot recording = `umi_robot_record.yaml`
    + any drive_fn (drive_fn computes commands only, never steps the env).
+   COMMANDED-TARGET SOURCES: `robot.target_pose` and `robot.target_joint` are
+   NOT interchangeable and neither is universally valid — crisp_py writes
+   `_target_pose` only from `set_target()`/`move_to()` and `_target_joint` only
+   from `set_target_joint()`, so under the mismatched control mode the column is
+   a constant (for the pose: the measured pose re-seeded after each `home()`)
+   that reads as plausible data. `umi_robot_full_record.yaml` records both so
+   one config serves the Cartesian (streamed -> CIC) and joint (FACTR -> JIC)
+   rigs; when analyzing a dataset, pick the one matching how it was driven.
    Integration DONE: record_umi_handheld.py uses RecordConfig by default;
    record_lerobot_format_leader_follower.py gains --record-config (legacy
    behavior when omitted); both stamp meta/record_config.json. Legacy fns:
@@ -261,3 +286,148 @@ norm ~1.0 and dot ~0.0 (they are rows of a real rotation matrix).
 - The user typically records on a ROS2 Humble/Python 3.11 machine and trains on
   a separate GPU PC with lerobot 0.4.4 — keep the training/inference files free
   of crisp/ROS imports.
+
+---
+
+## 6. Controller config resolution & JIC nullspace gains
+
+### 6.1 Config shadowing (`find_config`)
+
+`CRISP_CONFIG_PATHS` defaults to `[crisp_py/config, crisp_gym/config]` and
+`find_config` returns the FIRST match, so a filename present in both packages
+resolves to **crisp_py's** copy and crisp_gym's is silently ignored. Note
+crisp_py has TWO config trees and only one is packaged:
+
+| tree | packaged? | note |
+|---|---|---|
+| `crisp_py/config/` (repo root) | NO — `pyproject.toml` `exclude = ["config", ...]` | dev/reference only; edits here have NO runtime effect |
+| `crisp_py/crisp_py/config/` | YES — `include = ["crisp_py*"]` | this is what `files("crisp_py")` resolves to |
+
+`find_config` now warns once per filename when a name exists in >1 path,
+naming the winner and the ignored copies. Resolution is unchanged (first match).
+
+Setting `CRISP_CONFIG_PATH` **reverses the whole list** (`config/path.py`),
+including the two built-in defaults — so the crisp_py/crisp_gym precedence
+flips depending on whether an unrelated env var is set. Do not rely on it.
+
+**FIXED (this branch):** `control/joint_control.yaml` existed in both packages
+with DIFFERENT joint names — crisp_py's packaged copy uses `right_fr3_joint*`
+(upstream dual-arm rig), crisp_gym's uses `fr3_joint*`. crisp_py won, so env
+init pushed `nullspace.weights.right_fr3_joint*` at a controller that only
+declares `fr3_joint*`, and `set_parameters` raised
+`ValueError: One of the passed elements ... does not exist`. crisp_gym's copy
+is now `control/fr3_joint_control.yaml` (matching the existing
+`ur_joint_control.yaml` convention) so the name cannot collide.
+
+**STILL SHADOWED — crisp_py's packaged copy wins:**
+- `control/default_cartesian_impedance.yaml` — crisp_gym's copy sets
+  `nullspace.projector_type: none`, `nullspace.damping: 0.0`,
+  `nullspace.max_tau: 0.0`; crisp_py's lacks all three, so the controller
+  defaults apply instead (`kinematic`, `-1.0` → `2√K`, `5.0`). Loaded by
+  `factr_franka_robotiq.yaml`. Applying crisp_gym's values would zero the
+  nullspace torque in Cartesian mode — verify on hardware before changing.
+- `cameras/wrist_camera.yaml` — crisp_py 640×480 / `camera/wrist_camera/...` /
+  frame `wrist_link`; crisp_gym 256×256 / `camera/camera/...` / `camera_link`.
+- `control/gravity_compensation_on_plane.yaml` — `task.d_*` +1.0 vs −1.0 (sign).
+- `control/joint_velocity_control.yaml` — same `right_fr3_*` vs `fr3_*`
+  mismatch as joint_control had; currently unreferenced, so dormant, but it
+  will fail the same way if anything starts loading it.
+
+### 6.2 How JIC actually works (verified against `learnsyslab/crisp_controllers`)
+
+There is no separate joint-impedance controller — it is `cartesian_controller`
+with all task gains set to 0 and `nullspace.projector_type: none`
+(`nullspace_projection = Identity`), so `tau_nullspace = tau_secondary` and the
+"nullspace" PD IS the entire joint control law.
+
+`nullspace.weights` is a `__map_joints` map keyed by the CONTROLLER's own
+`joints` list (default 1.0). The controller reads it as
+`weights[i] = ...weights.joints_map.at(params_.joints.at(i)).value` — a key
+under any other joint name is never consulted. Weights are a diagonal scaling
+on stiffness AND damping, not a weighted pseudo-inverse:
+
+    nullspace_stiffness.diagonal() = nullspace.stiffness * weights
+    nullspace_damping.diagonal()   = nullspace.damping   * weights   (if damping > 0)
+                                   = 2 * sqrt(stiffness_diag)        (if damping <= 0)
+    tau_secondary  = K(q_ref - q) + D(dq_ref - dq)
+    tau_nullspace  = clamp(projector * tau_secondary, ±nullspace.max_tau)
+
+With `fr3_joint_control.yaml` (`stiffness 5.0`, `damping 1.0`, `max_tau 5.0`):
+
+| joint | w | K = 5·w | D = 1·w | τ saturates at | D / 2√K |
+|---|---|---|---|---|---|
+| fr3_joint1/2 | 15 | 75 | 15 | 0.067 rad (3.8°) | 0.87 |
+| fr3_joint3/4/5 | 8 | 40 | 8 | 0.125 rad (7.2°) | 0.63 |
+| fr3_joint6/7 | 5 | 25 | 5 | 0.200 rad (11.5°) | 0.50 |
+
+Two consequences worth knowing before retuning:
+
+- **`max_tau: 5.0` clips the weights' effect to a narrow error band.** Past
+  ~3.8° of error on joint1 every joint delivers the same 5 N·m regardless of
+  weight; the 15/8/5 taper only shapes small-error behavior. `max_delta_tau:
+  0.5` additionally rate-limits.
+- **Because `damping: 1.0 > 0`, damping is scaled by weight, not by `2√K`.**
+  Measured against the controller's own critical-damping fallback, the distal
+  joints run at roughly half the reference damping (joint7: D=5 vs 2√25=10), so
+  they are the oscillatory ones. Setting `nullspace.damping: -1.0` switches all
+  seven to the `2√K` rule. NOT DONE — these are tuned teleop values and the
+  change alters feel; test on hardware first. (True ζ depends on real joint
+  inertia; `2√K` is the controller's unit-inertia heuristic.)
+
+### 6.3 FACTR Franka teleop commands ABSOLUTE joints (not deltas)
+
+`ManipulatorJointEnv.step` now honours `config.use_relative_actions`, mirroring
+what `ManipulatorCartesianEnv.step` already did — previously the joint env
+ignored the flag and ALWAYS accumulated deltas onto `robot.target_joint`.
+Default is still `True`, so examples 01/02/03, `09_factr_ur7e_teleop.py` (left
+on deltas deliberately, pending FR3 validation) and the leader/follower record
+script are unchanged.
+
+`config/envs/factr_franka_robotiq.yaml` sets `use_relative_actions: false`.
+Motivation — two failure modes of the delta scheme:
+- **Startup offset frozen in**: `robot._target_joint` is seeded from the
+  follower's measured position exactly ONCE (`crisp_py robot.py`, when it is
+  still None) and thereafter only ever has leader deltas added. Any
+  leader/follower mismatch at t=0 persisted for the whole episode and was never
+  re-synced.
+- **Wind-up**: a blocked follower did not stop the target integrating, so it
+  ran away from the arm and lunged on release. The controller cannot help here
+  — `limit_error`/`task.error_clip` are Cartesian-only and `max_tau` bounds
+  torque, not target divergence.
+
+Commanding the leader's absolute pose removes both, but makes the leader
+authoritative. Two guards, both in `ManipulatorJointEnv`:
+- `max_startup_joint_offset` (rad, default 0.15) — on the FIRST step after
+  reset in absolute mode, raises if any joint is further than this from the
+  measured pose, naming the offending joints. Only the first step is checked;
+  afterwards a large difference is a real command, not a startup mismatch.
+  `None` disables. Re-armed by `ManipulatorJointEnv.reset`.
+- `max_joint_speed` (rad/s, default None = off; 0.5 in the FACTR config) —
+  clamps the per-step target change to `max_joint_speed / control_frequency`.
+  Applies in BOTH modes. Bounds a leader dropout/reconnect delivering one huge
+  jump, and ramps rather than lunges toward a mismatch. Deriving the bound from
+  the configured frequency fails safe: a slower loop tightens it, never loosens.
+
+**INVARIANT — the drive_fn convention must match the env.** Feeding deltas to
+an absolute-mode env commands near-zero joint angles (a delta of ~0.001 rad read
+as an absolute target); the reverse creeps. `make_factr_drive_fn(factr, env)`
+therefore reads `env.config.use_relative_actions` and emits the matching
+convention; `env=None` keeps the historical delta behaviour. The call site in
+`scripts/record_lerobot_format_leader_follower.py` passes `env`. Do not
+reintroduce a drive_fn that assumes a convention.
+
+Side effect, in the right direction: under `action.definition: command` the
+recorded FACTR action is now ABSOLUTE joint positions, consistent with §1.2
+("never store relative poses in the dataset") instead of contradicting it.
+
+ASSUMPTION: the FACTR leader is a joint-for-joint replica of the FR3 (same
+joint order, zeros, directions). If a fixed calibration offset exists, it must
+be added to the leader positions before stepping — there is currently no config
+field for one. NOT YET VALIDATED ON HARDWARE.
+
+### 6.4 `parameters_client.set_parameters` existence guard
+
+The guard works: `get_parameters` maps `PARAMETER_NOT_SET` → `None` via
+`parameter_value_to_python`, so `if None in current_parameters` correctly
+catches undeclared names and raises before anything is applied. That is what
+surfaced the `right_fr3_*` mismatch above rather than failing silently.
