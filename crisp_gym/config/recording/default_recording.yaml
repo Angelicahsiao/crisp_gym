@@ -48,9 +48,19 @@ image_writer_threads: 4
 #   video_gop null keeps lerobot's g=2 (near all-intra), which is what makes
 #     random-access seeking fast in the training dataloader. Hardware encoders
 #     handle it easily; only raise it if you are stuck on a software encoder.
+#   video_preset is codec-specific (libx264 ultrafast..veryslow, nvenc p1..p7);
+#     lerobot only defaults it for libsvtav1, so software h264 otherwise runs
+#     at "medium". null = leave the codec's own default.
+#   video_extra_options are raw codec options merged last. NVENC needs
+#     gop_size > b_frames + 1 and its presets enable B-frames, so lerobot's g=2
+#     cannot open ("Gop Length should be greater than number of B frames + 1")
+#     unless B-frames are off. bf=0 is applied AUTOMATICALLY for NVENC at small
+#     GOPs — set this only to override that.
 vcodec: "auto"
 video_crf: 21
 video_gop: null
+video_preset: null
+video_extra_options: null
 encoder_threads: null
 
 # Instrumentation (measurement only, see crisp_gym/util/loop_timing.py).

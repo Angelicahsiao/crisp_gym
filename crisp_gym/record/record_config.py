@@ -408,10 +408,14 @@ class RecordConfig:
                     "dtype": "video" if use_video else "image",
                     "shape": shape,
                     "names": ["height", "width", "channels"],
+                    # lerobot reads only `is_depth_map` from this block
+                    # (dataset_metadata.py); the real codec/pix_fmt land in the
+                    # feature's `info` block, probed from the encoded file by
+                    # update_video_info. A hardcoded codec here was simply
+                    # WRONG once the recording codec became configurable
+                    # (vcodec in the recording config), so it is not declared.
                     **({"video_info": {
                         "video.fps": self.rate_hz,
-                        "video.codec": "av1",
-                        "video.pix_fmt": "yuv420p",
                         "video.is_depth_map": False,
                         "has_audio": False,
                     }} if use_video else {}),

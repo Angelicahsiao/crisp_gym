@@ -369,6 +369,33 @@ feed_frame` DROPS frames when its queue fills while `add_frame` still appends a
 parquet row — desynchronising rows from video frames, silently. Incompatible
 with DATASET FIRST unless a hard failure on `_dropped_frames` is added first.
 
+**HARDWARE ENCODING GOTCHA (found on the owner's RTX 5090, driver 575.64):**
+`h264_nvenc` opens fine bare but FAILS with lerobot's own options —
+`InitializeEncoder failed: invalid param (8): Gop Length should be greater
+than number of B frames + 1`. NVENC's presets enable B-frames and it requires
+`gop_size > b_frames + 1`, so lerobot's `g=2` is unopenable. Bisected: `g=2`
+alone fails; `rc=0` and `qp=21` are each fine; `g=2 + bf=0` opens. crisp_gym
+now forces `bf=0` for NVENC at GOP <= `NVENC_BF0_MAX_GOP` (4) rather than
+raising the GOP, which would cost the training dataloader's seek performance.
+`video_extra_options` overrides it.
+
+Two lessons baked in as code:
+* `detect_available_encoders_pyav` (what `vcodec: "auto"` uses) only checks the
+  encoder is COMPILED IN, never that it OPENS. Do not treat a positive probe as
+  a working encoder.
+* `_preflight_encoder` opens the encoder at dataset creation, at the declared
+  image size. Before it, the first open happened inside `save_episode` — after
+  a full episode of teleop, and after `_save_episode_data` had already written
+  the parquet rows but before `meta.save_episode`, leaving the dataset
+  inconsistent (rows on disk, no episode in metadata, no video). It refuses
+  rather than substituting a codec, because the codec constrains later merges.
+
+Also FIXED here: `RecordConfig.to_features()` hardcoded
+`video_info["video.codec"] = "av1"`, which became simply wrong once the codec
+was configurable. lerobot reads only `is_depth_map` from that block (the real
+codec lands in the feature's `info`, probed from the encoded file), so the key
+is no longer declared.
+
 **STILL NOT DONE:**
 1. The writer is `fork()`ed from a live multithreaded ROS2/DDS process
    (`policy/relative_lerobot_policy.py:434` already uses
@@ -379,8 +406,16 @@ with DATASET FIRST unless a hard failure on `_dropped_frames` is added first.
    camera per frame whenever env `resolution` != record `shape`.
 3. If the rate still misses after the above, the remaining in-process CPU hog is
    crisp_py's camera thread JPEG-decoding ~1 MP per frame. Decoupling that is a
-   bigger change.
-4. Episodes recorded BEFORE this branch, while the `put` warnings were firing,
+   bigger change. FIELD STATUS: after the writer fix the rate went 12.29 ->
+   14.46 FPS with the queue never filling, but 11 pacer resyncs and a 201 ms
+   max oversleep remain — discrete stalls, not drift.
+4. `WriterTimingRecorder`'s per-frame number UNDER-REPORTS once
+   `image_writer_threads > 0`: `_save_image` then only enqueues, so the PNG
+   encode leaves the measured path (it resurfaces inside `save_episode`, which
+   calls `_wait_image_writer`). The field run read 0.5 ms/frame and "66.2 ms of
+   headroom", which is not the real writer cost. Queue depth and `put` are the
+   trustworthy signals. Measuring the AsyncImageWriter queue would fix it.
+5. Episodes recorded BEFORE this branch, while the `put` warnings were firing,
    have a wrong time base (ep1 of the field run encodes ~3.2x the motion its
    timestamps claim). Drop or re-record them.
 

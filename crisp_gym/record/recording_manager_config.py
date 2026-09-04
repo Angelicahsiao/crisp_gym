@@ -71,9 +71,22 @@ class RecordingManagerConfig:
     # video_gop: keyframe interval. lerobot defaults to 2 (near all-intra) to
     #   keep random-access seeking fast in the training dataloader. Only worth
     #   raising if you are stuck on a software encoder. None = keep the default.
+    # video_preset: speed/quality preset, codec-specific (libx264: ultrafast..
+    #   veryslow; nvenc: p1..p7). lerobot only defaults this for libsvtav1, so
+    #   software h264 otherwise runs at its "medium" default.
+    # video_extra_options: raw codec options merged last by lerobot (never
+    #   overriding the structured fields above). Needed for constraints lerobot
+    #   has no field for — notably `bf` on NVENC: its presets enable B-frames,
+    #   and NVENC requires gop_size > b_frames + 1, so lerobot's g=2 fails to
+    #   open with "Gop Length should be greater than number of B frames + 1"
+    #   unless B-frames are disabled. `bf: 0` is applied automatically for
+    #   NVENC at small GOPs (see RecordingManager._rgb_encoder); set this
+    #   explicitly to override.
     vcodec: str | None = None
     video_crf: int | None = None
     video_gop: int | None = None
+    video_preset: str | int | None = None
+    video_extra_options: Dict[str, Any] | None = None
     encoder_threads: int | None = None
 
     # Instrumentation (measurement only — never changes what is recorded).

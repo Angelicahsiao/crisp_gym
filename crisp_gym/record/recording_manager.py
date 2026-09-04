@@ -39,6 +39,17 @@ from crisp_gym.util.loop_timing import (
 
 logger = logging.getLogger(__name__)
 
+#: Sentinel for the memoized encoder — None is a valid cached result.
+_UNSET = object()
+
+#: NVENC rejects a GOP that is not larger than its B-frame count ("Gop Length
+#: should be greater than number of B frames + 1"), and its presets enable
+#: B-frames. lerobot's g=2 — near all-intra, chosen to keep random-access
+#: seeking fast in the training dataloader — therefore cannot open at all
+#: unless B-frames are disabled. At or below this GOP we force bf=0 rather than
+#: raise the GOP, which would trade away that seek performance.
+NVENC_BF0_MAX_GOP = 4
+
 _ADD_FRAME_HAS_TASK = "task" in signature(LeRobotDataset.add_frame).parameters
 
 
@@ -256,16 +267,32 @@ class RecordingManager(ABC):
         return kwargs
 
     def _rgb_encoder(self):  # noqa: ANN202 — lerobot RGBEncoderConfig, imported lazily
-        """Build lerobot's RGBEncoderConfig, or None to keep its defaults."""
-        if self.config.vcodec is None and self.config.video_crf is None and self.config.video_gop is None:
+        """Build lerobot's RGBEncoderConfig, or None to keep its defaults.
+
+        Memoized: the preflight and the writer kwargs both need it, and
+        resolving `vcodec: auto` probes PyAV and logs the winner.
+        """
+        cached = getattr(self, "_rgb_encoder_cached", _UNSET)
+        if cached is not _UNSET:
+            return cached
+        configured = (
+            self.config.vcodec,
+            self.config.video_crf,
+            self.config.video_gop,
+            self.config.video_preset,
+            self.config.video_extra_options,
+        )
+        if all(value is None for value in configured):
+            self._rgb_encoder_cached = None
             return None
         try:
             from lerobot.configs import RGBEncoderConfig
         except ImportError:
             logger.warning(
                 "lerobot.configs.RGBEncoderConfig is unavailable (pre-0.6 "
-                "lerobot) — vcodec/video_crf/video_gop are ignored."
+                "lerobot) — the video encoder settings are ignored."
             )
+            self._rgb_encoder_cached = None
             return None
 
         fields: dict = {}
@@ -275,17 +302,101 @@ class RecordingManager(ABC):
             fields["crf"] = self.config.video_crf
         if self.config.video_gop is not None:
             fields["g"] = self.config.video_gop
+        if self.config.video_preset is not None:
+            fields["preset"] = self.config.video_preset
+        if self.config.video_extra_options is not None:
+            fields["extra_options"] = dict(self.config.video_extra_options)
+
         # __post_init__ resolves "auto" against the encoders PyAV actually has
-        # and logs the winner (or warns and falls back to libsvtav1).
+        # and logs the winner (or warns and falls back to libsvtav1). Only then
+        # do we know whether the NVENC B-frame constraint applies.
         encoder = RGBEncoderConfig(**fields)
+
+        if (
+            encoder.vcodec.endswith("_nvenc")
+            and encoder.g is not None
+            and encoder.g <= NVENC_BF0_MAX_GOP
+        ):
+            extra = dict(encoder.extra_options or {})
+            if "bf" not in extra:
+                extra["bf"] = 0
+                encoder.extra_options = extra
+                logger.info(
+                    f"{encoder.vcodec} with g={encoder.g}: forcing bf=0. NVENC "
+                    "requires the GOP to exceed its B-frame count, and its "
+                    "presets enable B-frames, so this combination otherwise "
+                    "fails to open. Set video_extra_options to override."
+                )
+
         logger.info(
-            f"Video encoder: vcodec={encoder.vcodec} crf/qp={encoder.crf} g={encoder.g}"
+            f"Video encoder: vcodec={encoder.vcodec} crf/qp={encoder.crf} "
+            f"g={encoder.g} preset={encoder.preset} "
+            f"extra={encoder.extra_options or {}}"
         )
+        self._rgb_encoder_cached = encoder
         return encoder
+
+    def _preflight_encoder(self, encoder) -> None:  # noqa: ANN001
+        """Open the video encoder once, before any frame is recorded.
+
+        The encoder is otherwise first opened inside `save_episode` — i.e. AFTER
+        a full episode has been teleoperated and the operator pressed save. A
+        rejected option combination then fails halfway through save_episode,
+        which has already written the parquet rows but not the video or the
+        episode metadata, leaving the dataset inconsistent. Opening it here
+        turns that into an immediate, actionable startup error.
+
+        Deliberately does NOT fall back to another codec: the codec is stamped
+        into the dataset and constrains later merges (see USAGE.md 13), so a
+        silent substitution would be worse than refusing.
+        """
+        if encoder is None:
+            return
+        try:
+            from fractions import Fraction
+
+            import av
+        except ImportError:
+            logger.debug("PyAV unavailable — skipping the encoder preflight.")
+            return
+
+        shapes = {
+            tuple(spec["shape"][:2])
+            for spec in self.config.features.values()
+            if spec.get("dtype") in ("video", "image") and len(spec.get("shape", ())) >= 2
+        }
+        if not shapes:
+            return
+
+        options = {k: str(v) for k, v in encoder.get_codec_options().items()}
+        for height, width in sorted(shapes):
+            try:
+                ctx = av.CodecContext.create(encoder.vcodec, "w")
+                ctx.width, ctx.height = int(width), int(height)
+                ctx.pix_fmt = encoder.pix_fmt
+                ctx.time_base = Fraction(1, int(self.config.fps))
+                ctx.options = options
+                ctx.open()
+                del ctx  # release the encoder session immediately
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Video encoder '{encoder.vcodec}' cannot be opened for "
+                    f"{width}x{height} with options {options}: {exc}\n"
+                    "Recording is refused now rather than failing part-way "
+                    "through the first save_episode. Fix the encoder settings "
+                    "in the recording config (vcodec / video_crf / video_gop / "
+                    "video_preset / video_extra_options), or set "
+                    'vcodec: "h264" to use the software encoder.'
+                ) from exc
+        logger.info(
+            f"Encoder preflight OK: {encoder.vcodec} opens for "
+            f"{sorted((w, h) for h, w in shapes)} with {options}."
+        )
 
     def _create_dataset(self) -> LeRobotDataset:
         """Factory function to create a dataset object."""
         logger.debug("Creating dataset object.")
+        self._preflight_encoder(self._rgb_encoder())
         if self.config.resume:
             logger.info(f"Resuming recording from existing dataset: {self.config.repo_id}")
             # v0.5.1+ uses LeRobotDataset.resume(); older versions use the

@@ -176,6 +176,70 @@ def _load_recording_manager():
     return rm
 
 
+class _FakeEncoder:
+    """Stand-in for lerobot's RGBEncoderConfig in the preflight tests."""
+
+    vcodec = "h264_nvenc"
+    pix_fmt = "yuv420p"
+
+    def get_codec_options(self):
+        return {"g": 2, "rc": 0, "qp": 21, "bf": 0}
+
+
+def _install_rgb_encoder_stub(resolved_vcodec: str = "h264_nvenc"):
+    """Stub lerobot.configs.RGBEncoderConfig.
+
+    `resolved_vcodec` stands in for what the real __post_init__ resolves
+    `vcodec: "auto"` to after probing PyAV — the crisp_gym side can only apply
+    the NVENC B-frame workaround AFTER that resolution, which is exactly what
+    these tests pin.
+    """
+    captured: dict = {"build_count": 0}
+
+    class _RGBEncoderConfig:
+        def __init__(self, **kw):
+            captured.update(kw)
+            captured["build_count"] = captured.get("build_count", 0) + 1
+            self.vcodec = kw.get("vcodec", "libsvtav1")
+            if self.vcodec == "auto":
+                self.vcodec = resolved_vcodec
+            self.crf = kw.get("crf", 30)
+            self.g = kw.get("g", 2)
+            self.preset = kw.get("preset")
+            self.extra_options = kw.get("extra_options")
+
+    configs = sys.modules.setdefault("lerobot.configs", types.ModuleType("lerobot.configs"))
+    configs.RGBEncoderConfig = _RGBEncoderConfig
+    return captured
+
+
+def _install_av_stub(open_ok: bool):
+    """Stub PyAV so the preflight can be exercised without a GPU or codec."""
+    opened: dict = {"sizes": [], "options": None}
+
+    class _Ctx:
+        def __init__(self):
+            self.width = self.height = 0
+            self.pix_fmt = None
+            self.time_base = None
+            self.options = None
+
+        def open(self):
+            if not open_ok:
+                raise ValueError("[Errno 22] Invalid argument: 'avcodec_open2'")
+            opened["sizes"].append((self.width, self.height))
+            opened["options"] = dict(self.options or {})
+
+    class _CodecContext:
+        @staticmethod
+        def create(name, mode):
+            return _Ctx()
+
+    av_mod = sys.modules.setdefault("av", types.ModuleType("av"))
+    av_mod.CodecContext = _CodecContext
+    return opened
+
+
 def test_writer_kwargs_are_filtered_to_what_this_lerobot_accepts():
     """Passing an unknown kwarg would TypeError inside the writer subprocess,
     surfacing in the parent only as a misleading startup timeout."""
@@ -220,25 +284,113 @@ def test_rgb_encoder_is_none_when_nothing_is_configured():
 
 def test_rgb_encoder_passes_crf_and_gop_through():
     rm = _load_recording_manager()
-    captured = {}
-
-    class _RGBEncoderConfig:
-        def __init__(self, **kw):
-            captured.update(kw)
-            self.vcodec = kw.get("vcodec", "libsvtav1")
-            self.crf = kw.get("crf", 30)
-            self.g = kw.get("g", 2)
-
-    configs = sys.modules.setdefault("lerobot.configs", types.ModuleType("lerobot.configs"))
-    configs.RGBEncoderConfig = _RGBEncoderConfig
+    captured = _install_rgb_encoder_stub("libsvtav1")
 
     fake_self = types.SimpleNamespace(config=_config(vcodec="auto", video_crf=21))
     encoder = rm.RecordingManager._rgb_encoder(fake_self)
     assert encoder is not None
-    assert captured == {"vcodec": "auto", "crf": 21}, captured
+    assert captured["vcodec"] == "auto" and captured["crf"] == 21
     # video_gop left None must NOT be forced — lerobot's g=2 keeps the training
     # dataloader's random-access seeking fast.
     assert "g" not in captured
+
+
+def test_nvenc_gets_bf0_at_small_gop():
+    """Regression: NVENC requires gop_size > b_frames + 1 and its presets
+    enable B-frames, so lerobot's g=2 fails to open with
+    "Gop Length should be greater than number of B frames + 1". Verified on an
+    RTX 5090: {g:2, rc:0, qp:21} FAILS, the same set + bf=0 OPENS OK.
+    """
+    rm = _load_recording_manager()
+    captured = _install_rgb_encoder_stub("h264_nvenc")
+
+    fake_self = types.SimpleNamespace(config=_config(vcodec="auto", video_crf=21))
+    encoder = rm.RecordingManager._rgb_encoder(fake_self)
+    assert encoder.extra_options.get("bf") == 0, encoder.extra_options
+    assert captured["crf"] == 21
+
+
+def test_bf0_is_not_forced_on_software_codecs():
+    rm = _load_recording_manager()
+    _install_rgb_encoder_stub("h264")
+    fake_self = types.SimpleNamespace(config=_config(vcodec="h264", video_crf=21))
+    encoder = rm.RecordingManager._rgb_encoder(fake_self)
+    assert not (encoder.extra_options or {}).get("bf")
+
+
+def test_bf0_is_not_forced_at_a_large_gop():
+    """A big GOP satisfies the constraint on its own; B-frames stay available."""
+    rm = _load_recording_manager()
+    _install_rgb_encoder_stub("h264_nvenc")
+    fake_self = types.SimpleNamespace(config=_config(vcodec="auto", video_crf=21, video_gop=60))
+    encoder = rm.RecordingManager._rgb_encoder(fake_self)
+    assert not (encoder.extra_options or {}).get("bf")
+
+
+def test_explicit_extra_options_win_over_the_bf0_default():
+    rm = _load_recording_manager()
+    _install_rgb_encoder_stub("h264_nvenc")
+    fake_self = types.SimpleNamespace(
+        config=_config(vcodec="auto", video_crf=21, video_extra_options={"bf": 2})
+    )
+    encoder = rm.RecordingManager._rgb_encoder(fake_self)
+    assert encoder.extra_options["bf"] == 2
+
+
+def test_rgb_encoder_is_memoized():
+    """Resolving vcodec:auto probes PyAV and logs; preflight + writer kwargs
+    both need the encoder, so it must be built once."""
+    rm = _load_recording_manager()
+    captured = _install_rgb_encoder_stub("h264_nvenc")
+    fake_self = types.SimpleNamespace(config=_config(vcodec="auto"))
+    first = rm.RecordingManager._rgb_encoder(fake_self)
+    second = rm.RecordingManager._rgb_encoder(fake_self)
+    assert first is second
+    assert captured["build_count"] == 1
+
+
+def test_preflight_raises_before_any_frame_is_recorded():
+    """The encoder used to be first opened inside save_episode — after a whole
+    episode was teleoperated, and halfway through a write that had already
+    committed the parquet rows."""
+    rm = _load_recording_manager()
+    _install_av_stub(open_ok=False)
+    fake_self = types.SimpleNamespace(
+        config=_config(
+            fps=15,
+            features={"observation.images.primary": {"dtype": "video", "shape": (800, 1280, 3)}},
+        )
+    )
+    encoder = _FakeEncoder()
+    try:
+        rm.RecordingManager._preflight_encoder(fake_self, encoder)
+        raise AssertionError("a codec that cannot open must be refused")
+    except RuntimeError as exc:
+        assert "cannot be opened" in str(exc)
+        assert "1280x800" in str(exc), str(exc)
+        assert 'vcodec: "h264"' in str(exc), "must name the software fallback"
+
+
+def test_preflight_opens_at_the_declared_image_size():
+    rm = _load_recording_manager()
+    opened = _install_av_stub(open_ok=True)
+    fake_self = types.SimpleNamespace(
+        config=_config(
+            fps=15,
+            features={
+                "observation.images.primary": {"dtype": "video", "shape": (800, 1280, 3)},
+                "observation.state.cartesian": {"dtype": "float32", "shape": (9,)},
+            },
+        )
+    )
+    rm.RecordingManager._preflight_encoder(fake_self, _FakeEncoder())
+    assert opened["sizes"] == [(1280, 800)], opened["sizes"]
+    assert opened["options"] == {"g": "2", "rc": "0", "qp": "21", "bf": "0"}
+
+
+def test_preflight_is_a_no_op_without_an_encoder():
+    rm = _load_recording_manager()
+    rm.RecordingManager._preflight_encoder(types.SimpleNamespace(config=_config()), None)
 
 
 def _writer_that_dies_immediately():

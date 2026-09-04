@@ -703,6 +703,32 @@ and a visibly lossy h264 one, so set it explicitly whenever you change
 should stay null: lerobot's `g=2` is what keeps random-access seeking fast in
 the training dataloader, and hardware encoders handle it easily.
 
+**NVENC needs `bf=0`, and gets it automatically.** NVENC requires
+`gop_size > b_frames + 1` and its presets enable B-frames, so lerobot's `g=2`
+cannot open at all — it fails with *"Gop Length should be greater than number
+of B frames + 1"*. `bf: 0` is applied for you whenever the resolved codec is an
+NVENC one and the GOP is small; `video_extra_options` overrides it. Disabling
+B-frames is the right trade here: raising the GOP instead would cost the
+dataloader's seek performance, and B-frames buy nothing at `g=2`.
+
+**The encoder is preflighted at startup.** It used to be opened first inside
+`save_episode` — i.e. after a whole episode had been teleoperated and saved,
+and part-way through a write that had already committed the parquet rows,
+leaving the dataset inconsistent. It is now opened once when the dataset is
+created, at the image size your record config declares, and recording is
+refused with an actionable message if it will not open. There is deliberately
+no automatic fallback to another codec: the codec is stamped into the dataset
+and constrains later merges, so a silent substitution would be worse.
+
+Note the encoder availability probe (`detect_available_encoders_pyav`, which
+`vcodec: "auto"` uses) only checks the encoder is COMPILED INTO your FFmpeg —
+not that it can be opened with a given set of options. The preflight is what
+covers the second half.
+
+`video_preset` is codec-specific (`ultrafast`..`veryslow` for libx264,
+`p1`..`p7` for NVENC). lerobot only defaults it for libsvtav1, so software
+h264 otherwise runs at its "medium" default.
+
 **Queue slack.** Size it to cover one `save_episode`, since the loop blocks on
 anything longer. Each queued frame holds its raw uint8 images (~3.1 MB for one
 800x1280 RGB camera), so the RAM cost is real:
