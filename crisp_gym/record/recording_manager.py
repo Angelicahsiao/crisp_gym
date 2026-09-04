@@ -344,6 +344,20 @@ class RecordingManager(ABC):
         # do we know whether the NVENC B-frame constraint applies.
         encoder = RGBEncoderConfig(**fields)
 
+        if self.config.video_preset is not None and self.config.vcodec == "auto":
+            # Preset vocabularies are per-codec — libx264 wants veryfast,
+            # NVENC p1..p7, libsvtav1 an integer 0..13 — and "auto" means the
+            # codec is not known until it has been probed, so a preset chosen
+            # for one is rejected by another.
+            logger.warning(
+                f"video_preset={self.config.video_preset!r} is set together "
+                f'with vcodec: "auto", which resolved to {encoder.vcodec}. '
+                "Preset names are codec-specific (libx264: ultrafast..veryslow, "
+                "NVENC: p1..p7, libsvtav1: 0..13), so this will be rejected "
+                "unless it happens to be valid for the resolved codec. Set a "
+                "preset only alongside an explicit vcodec, or leave it null."
+            )
+
         if (
             encoder.vcodec.endswith("_nvenc")
             and encoder.g is not None

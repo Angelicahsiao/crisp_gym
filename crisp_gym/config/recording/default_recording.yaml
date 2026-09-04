@@ -58,9 +58,12 @@ image_writer_threads: 4
 #   video_gop null keeps lerobot's g=2 (near all-intra), which is what makes
 #     random-access seeking fast in the training dataloader. Hardware encoders
 #     handle it easily; only raise it if you are stuck on a software encoder.
-#   video_preset is codec-specific (libx264 ultrafast..veryslow, nvenc p1..p7);
-#     lerobot only defaults it for libsvtav1, so software h264 otherwise runs
-#     at "medium". null = leave the codec's own default.
+#   video_preset is CODEC-SPECIFIC (libx264 ultrafast..veryslow, NVENC p1..p7,
+#     libsvtav1 0..13), so do NOT set it alongside vcodec: "auto" — you do not
+#     know which codec you will get, and a preset valid for one is rejected by
+#     another. Set it only with an explicit vcodec. lerobot defaults a preset
+#     for libsvtav1 only, so software h264 otherwise runs at "medium".
+#     null = leave the codec's own default.
 #   video_extra_options are raw codec options merged last. NVENC needs
 #     gop_size > b_frames + 1 and its presets enable B-frames, so lerobot's g=2
 #     cannot open ("Gop Length should be greater than number of B frames + 1")

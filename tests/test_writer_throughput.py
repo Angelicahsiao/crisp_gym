@@ -324,6 +324,50 @@ def test_nvenc_gets_bf0_at_small_gop():
     assert captured["crf"] == 21
 
 
+def test_preset_with_auto_vcodec_warns():
+    """Preset vocabularies are per-codec (libx264 veryfast, NVENC p1..p7,
+    libsvtav1 0..13) and "auto" does not know which codec it will get, so the
+    combination is a trap worth naming before the preflight rejects it."""
+    import io
+    import logging as _logging
+
+    rm = _load_recording_manager()
+    _install_rgb_encoder_stub("h264_nvenc")
+    fake_self = types.SimpleNamespace(config=_config(vcodec="auto", video_preset="veryfast"))
+
+    stream = io.StringIO()
+    handler = _logging.StreamHandler(stream)
+    rm.logger.addHandler(handler)
+    rm.logger.setLevel(_logging.WARNING)
+    try:
+        rm.RecordingManager._rgb_encoder(fake_self)
+    finally:
+        rm.logger.removeHandler(handler)
+    out = stream.getvalue()
+    assert "veryfast" in out and "h264_nvenc" in out, out
+    assert "codec-specific" in out
+
+
+def test_preset_with_an_explicit_vcodec_does_not_warn():
+    import io
+    import logging as _logging
+
+    rm = _load_recording_manager()
+    _install_rgb_encoder_stub("h264")
+    fake_self = types.SimpleNamespace(config=_config(vcodec="h264", video_preset="veryfast"))
+
+    stream = io.StringIO()
+    handler = _logging.StreamHandler(stream)
+    rm.logger.addHandler(handler)
+    rm.logger.setLevel(_logging.WARNING)
+    try:
+        encoder = rm.RecordingManager._rgb_encoder(fake_self)
+    finally:
+        rm.logger.removeHandler(handler)
+    assert "codec-specific" not in stream.getvalue()
+    assert encoder.preset == "veryfast"
+
+
 def test_bf0_is_not_forced_on_software_codecs():
     rm = _load_recording_manager()
     _install_rgb_encoder_stub("h264")
