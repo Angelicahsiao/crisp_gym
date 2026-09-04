@@ -319,28 +319,70 @@ in `record_episode` / `_writer_proc`, `timing_report` / `timing_csv_dir` in
 per-phase `.timing` published by `make_record_fn`. USAGE.md §12 explains how to
 read the output. Nothing about recorded data changed.
 
-**NOT DONE — agreed follow-ups, do not re-litigate the diagnosis:**
-0. FIRST, cheapest, and it fixes both failure modes at once: record at the size
-   you train on (224/256), not at the camera's native resolution — `resolution`
-   in the env config and `shape` on the record config's image entries.
-1. Decouple the writer: pass `image_writer_processes`/`image_writer_threads`, or
-   `streaming_encoding=True` + `encoder_queue_maxsize` (skips the PNG round-trip
-   AND the stats re-read); consider `batch_encoding_size > 1` with a shutdown
-   flush.
-2. Back-pressure policy. The owner's constraint is DATASET FIRST: teleop may
-   stall, frames may not be dropped (dropping breaks LeRobot's fixed-fps
-   timestamps). So: bounded put with a timeout + `writer.is_alive()` check that
-   RAISES, rather than a silent forever-block.
-3. Robustness: the writer is `fork()`ed from a live multithreaded ROS2/DDS
-   process (`policy/relative_lerobot_policy.py:434` already uses
-   `mp.get_context("spawn")` for this reason); `dataset.finalize()` is never
-   called (only `DatasetWriter.__del__` as a net, skipped under the
-   `writer_timeout=10 s` `terminate()` in `__exit__`) so a backlog at shutdown
-   can truncate the parquet footer.
-4. Producer waste: `env.step()` builds a full observation
+**RESOLUTION DECISION (owner, do not revisit):** recording stays at the
+camera's native 800x1280. Downscaling to a SQUARE target would have cost 37% of
+the horizontal FOV — crisp_py's `_resize_with_aspect_ratio` scales to cover and
+then CENTER-CROPS to reach the target aspect — and an aspect-preserving 320x512
+(full FOV, 6.2x fewer pixels) was declined. The pipeline is tuned for
+full-resolution recording instead.
+
+**LANDED (Phase 1, this branch):**
+1. Writer throughput: `image_writer_processes`/`image_writer_threads` plumbed
+   through `RecordingManagerConfig` into BOTH `LeRobotDataset.create` and
+   `.resume`, filtered against each callable's signature (`_writer_kwargs`) so
+   an older lerobot degrades to a warning instead of a TypeError inside the
+   writer subprocess — which surfaces in the parent only as a misleading
+   startup timeout. Default 4 threads: PIL releases the GIL during PNG encode,
+   measured 4.6x at 4 threads on 800x1280 (62 -> ~14 ms of a 66.7 ms budget).
+2. Video encoding: `vcodec`/`video_crf`/`video_gop`/`encoder_threads` build a
+   lerobot `RGBEncoderConfig`. Default `vcodec: auto` -> `h264_nvenc` on the
+   owner's box (confirmed present in their PyAV — lerobot probes THROUGH PyAV,
+   so owning the GPU is not sufficient). `video_crf: 21` is set EXPLICITLY
+   because lerobot feeds crf to libsvtav1 as CRF but to NVENC as constant QP
+   (`rc=0, qp=crf`): its default 30 is a good AV1 point and a visibly lossy
+   h264 one, so a codec switch alone would silently degrade the training
+   images. `video_gop` stays null — lerobot's `g=2` is what makes random-access
+   seeking fast in the training dataloader, and hardware encoders eat it.
+3. `queue_seconds` (default 6.0) supersedes the magic `queue_size: 64`. Sized to
+   cover one `save_episode`, which is NOT bounded by the queue. RAM is real:
+   ~3.1 MB per queued frame for one 800x1280 camera.
+4. Deadline pacing (`util/loop_timing.DeadlinePacer`) replaces
+   `sleep(period - work)`. Fixes the 12.29-of-15 FPS drift, which was a DATA
+   bug rather than a comfort one: LeRobot stamps `timestamp = frame_index / fps`
+   and cannot be told the real capture time. Falling more than one period behind
+   rebases rather than firing a catch-up burst; resyncs are reported.
+5. Shutdown integrity: the writer now calls `dataset.finalize()` on SHUTDOWN (it
+   writes the parquet footer; `DatasetWriter.__del__` is only a net and never
+   runs under `terminate()`), and `__exit__` drains under a separate
+   `shutdown_drain_timeout` (300 s) instead of the 10 s `writer_timeout`, which
+   was shorter than one save_episode.
+6. `_put_blocking` replaces the bare `queue.put`: still blocks under
+   back-pressure (DATASET FIRST — dropping a frame would silently corrupt the
+   fixed-fps timestamps) but RAISES when the writer is gone instead of wedging
+   forever, since `writer_error` only covers exceptions the writer CATCHES. On
+   the shutdown path it takes `required=False` and only logs — raising there
+   would mask the exception being handled and skip the terminate/join cleanup.
+
+**Deliberately NOT used: `streaming_encoding=True`.** It removes the PNG
+round-trip and makes save_episode near-instant, but `StreamingVideoEncoder.
+feed_frame` DROPS frames when its queue fills while `add_frame` still appends a
+parquet row — desynchronising rows from video frames, silently. Incompatible
+with DATASET FIRST unless a hard failure on `_dropped_frames` is added first.
+
+**STILL NOT DONE:**
+1. The writer is `fork()`ed from a live multithreaded ROS2/DDS process
+   (`policy/relative_lerobot_policy.py:434` already uses
+   `mp.get_context("spawn")` for exactly this reason).
+2. Producer waste: `env.step()` builds a full observation
    (`manipulator_env.py:831`/`:1042`) that `make_record_fn` discards before
    `_collect_obs()` re-reads everything; `_resize_image` runs `cv2.resize` per
    camera per frame whenever env `resolution` != record `shape`.
+3. If the rate still misses after the above, the remaining in-process CPU hog is
+   crisp_py's camera thread JPEG-decoding ~1 MP per frame. Decoupling that is a
+   bigger change.
+4. Episodes recorded BEFORE this branch, while the `put` warnings were firing,
+   have a wrong time base (ep1 of the field run encodes ~3.2x the motion its
+   timestamps claim). Drop or re-record them.
 
 Unrelated landmine noticed while reading: `concatenate_state_features` builds
 `observation.state` from `obs` DICT INSERTION ORDER, not the declared feature
