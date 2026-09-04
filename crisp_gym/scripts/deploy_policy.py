@@ -142,6 +142,17 @@ def main():
         "lerobot policies only.)",
     )
 
+    parser.add_argument(
+        "--timing-csv-dir",
+        type=str,
+        default=None,
+        help=(
+            "Directory for a per-frame loop-timing CSV (one file per episode). "
+            "The per-episode phase summary is logged either way; this adds the "
+            "raw trace for offline analysis. Default: off."
+        ),
+    )
+
     args = parser.parse_args()
     logger = logging.getLogger(__name__)
     setup_logging(level=args.log_level)
@@ -236,6 +247,7 @@ def main():
             num_episodes=args.num_episodes,
             fps=args.fps,
             resume=args.resume,
+            timing_csv_dir=args.timing_csv_dir,
         )
         recording_manager.wait_until_ready()
 

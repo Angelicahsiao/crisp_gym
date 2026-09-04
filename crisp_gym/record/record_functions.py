@@ -6,6 +6,7 @@ This module should be used in conjunction with the `RecordingManager` class.
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Callable
 
 import numpy as np
@@ -53,14 +54,24 @@ def _leader_gripper_to_action(
 def _drive_fn_to_teleop_fn(env, drive_fn: Callable) -> Callable:
     """Wrap a drive-fn (command computation only) into a legacy teleop fn that
     also steps the env and returns (obs, action) for RecordingManager."""
+    timing = {"drive": 0.0, "step": 0.0, "collect": 0.0, "action": 0.0}
 
     def _fn() -> tuple:
+        t0 = time.perf_counter()
         action = drive_fn()
+        t1 = time.perf_counter()
+        timing["drive"] = t1 - t0
         if action is None:  # warm-up tick (no previous pose to diff against)
+            timing["step"] = timing["collect"] = timing["action"] = 0.0
             return None, None
         obs, *_ = env.step(action, block=False)
+        # env.step builds the observation itself here, so it is charged to
+        # "step" rather than "collect" on this legacy path.
+        timing["step"] = time.perf_counter() - t1
+        timing["collect"] = timing["action"] = 0.0
         return obs, action
 
+    _fn.timing = timing  # read per-frame by RecordingManager.record_episode
     return _fn
 
 
@@ -142,14 +153,28 @@ def make_record_fn(
             )
         return np.concatenate(parts).astype(np.float32)
 
+    # Per-phase durations of the LAST call, published as `_fn.timing` so the
+    # recording loop can attribute a slow frame without wrapping this function.
+    # Measurement only — nothing here changes what is recorded.
+    timing = {"drive": 0.0, "step": 0.0, "collect": 0.0, "action": 0.0}
+
     def _fn() -> tuple:
+        t0 = time.perf_counter()
         cmd = drive_fn() if drive_fn is not None else None
+        t1 = time.perf_counter()
+        timing["drive"] = t1 - t0
         if drive_fn is not None and cmd is None:
             # Drive warm-up tick (e.g. teleop needs a previous pose to diff).
+            timing["step"] = timing["collect"] = timing["action"] = 0.0
             return None, None
         env.step(cmd, block=False)
+        t2 = time.perf_counter()
+        timing["step"] = t2 - t1
 
         obs = _collect_obs()
+        t3 = time.perf_counter()
+        timing["collect"] = t3 - t2
+        timing["action"] = 0.0
 
         if act_cfg.definition == "command":
             if cmd is None:
@@ -163,8 +188,11 @@ def make_record_fn(
         obs_buffer.append(obs)
         if len(obs_buffer) <= lookahead:
             return None, None
-        return obs_buffer[0], _action_value()
+        action = _action_value()
+        timing["action"] = time.perf_counter() - t3
+        return obs_buffer[0], action
 
+    _fn.timing = timing  # read per-frame by RecordingManager.record_episode
     return _fn
 
 

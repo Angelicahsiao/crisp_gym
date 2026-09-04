@@ -114,6 +114,17 @@ def main():
         ),
     )
 
+    parser.add_argument(
+        "--timing-csv-dir",
+        type=str,
+        default=None,
+        help=(
+            "Directory for a per-frame loop-timing CSV (one file per episode). "
+            "The per-episode phase summary is logged either way; this adds the "
+            "raw trace for offline analysis. Default: off."
+        ),
+    )
+
     args = parser.parse_args()
     logger = logging.getLogger(__name__)
     setup_logging(level=args.log_level)
@@ -176,6 +187,7 @@ def main():
             fps=args.fps,
             resume=args.resume,
             push_to_hub=args.push_to_hub,
+            timing_csv_dir=args.timing_csv_dir,
         )
         recording_manager.wait_until_ready()
         logger.info("Recording manager is ready.")

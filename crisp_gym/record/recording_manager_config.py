@@ -32,6 +32,16 @@ class RecordingManagerConfig:
     queue_size: int = 16
     writer_timeout: float = 10.0
 
+    # Instrumentation (measurement only — never changes what is recorded).
+    # timing_report: log a per-episode phase breakdown of the recording loop
+    #   (data_fn / queue.put / sleep) and of the writer process, so a dropped
+    #   control rate can be attributed to producer work vs. writer
+    #   back-pressure. See util/loop_timing.py.
+    # timing_csv_dir: directory for a per-frame CSV trace (one file per
+    #   episode, written at episode end). None = no CSV.
+    timing_report: bool = True
+    timing_csv_dir: str | None = None
+
     @classmethod
     def from_yaml(cls, yaml_path: Path | str, **overrides) -> "RecordingManagerConfig":  # noqa: ANN003
         """Create a RecordingManagerConfig from a YAML file.

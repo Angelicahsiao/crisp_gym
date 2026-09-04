@@ -164,6 +164,8 @@ Repos involved (same owner, branch conventions apply to all):
 | `tests/test_action_swap.py` | Action-swap wrapper: arm←target / gripper kept, `delta_indices` injection (incl. lazy-populate re-query), constant-column refusal, window-shape-mismatch guard, action-stats recompute. torch stubbed, numpy-only. |
 | `crisp_gym/scripts/swap_action_offline.py` | OFFLINE fallback for the action swap: rewrites the on-disk `action` column (arm ← `extra.target_cartesian`, gripper kept, same-frame), copies videos byte-identical, recomputes action stats (reuses migrate's stats helpers), refuses on constant `target_cartesian`. For lerobot versions that fix the windowed-key set at dataset construction, where the online wrapper cannot window a non-policy key. Train the copy with `train_absolute_next_pose.py`. |
 | `tests/test_swap_action_offline.py` | Offline swap core: `swap_arm` (arm←target, gripper kept, no input mutation) + feature guard. pandas/migrate stubbed, numpy-only. |
+| `crisp_gym/util/loop_timing.py` | Phase timing for the record/deploy loop (`LoopTimingRecorder` producer side, `WriterTimingRecorder` consumer side). Attributes a dropped control rate to `data` (producer) vs `put` (writer back-pressure) vs `sleep`. Stdlib only — no ROS/numpy/lerobot, so the writer subprocess can import it. MEASUREMENT ONLY: no control flow depends on it. USAGE.md §12. |
+| `tests/test_loop_timing.py` | Pins the attribution in all three regimes against a REAL `mp.JoinableQueue` with a slow consumer, plus `make_record_fn`'s `.timing` publication. Stdlib + numpy; stubs `crisp_py.utils.geometry`. |
 
 LeRobot version target: **0.4.4** (module path `lerobot.datasets.lerobot_dataset`;
 train entry `lerobot.scripts.lerobot_train`; diffusion defaults n_obs_steps=2,
@@ -262,6 +264,64 @@ norm ~1.0 and dot ~0.0 (they are rows of a real rotation matrix).
      `controller_name_for()` / `required_controllers` on the env;
      crisp_py `home_controller_name`). `ControlType.controller_name()` is
      legacy — do not reintroduce call sites.
+
+---
+
+## 4b. Recording/deploy loop back-pressure (diagnosed; only Phase 0 landed)
+
+`RecordingManager.record_episode` is ONE thread: `drive_fn` -> `env.step` ->
+observation collection -> `queue.put` -> `sleep`. The teleop command rate IS
+this loop's rate, and `deploy_policy.py` runs the same loop with
+`policy.make_data_fn()`, so any stall degrades teleop recording AND policy
+control identically.
+
+`queue.put` (`recording_manager.py`) is the only blocking call in the loop: a
+bounded `mp.JoinableQueue(queue_size)` with no timeout, no depth reporting and
+no writer-liveness check. Once the writer falls behind, the queue absorbs
+`queue_size / fps` seconds (64 frames = 4.3 s at 15 Hz) and then the loop runs
+at the WRITER's throughput. Symptom seen in the field: a gradual rate slide
+within an episode under FACTR and streamed teleop.
+
+Why the writer falls behind (lerobot 0.6.1): `LeRobotDataset.create()` is called
+without `image_writer_processes` / `image_writer_threads` /
+`streaming_encoding` / `batch_encoding_size`, so
+  * `add_frame` PNG-encodes every camera frame SYNCHRONOUSLY
+    (measured with PIL at lerobot's `compress_level=1`: 224² ≈ 0.9–6.8 ms,
+    256² ≈ 1.0–8.6 ms, 480×640 ≈ 4.5–40.6 ms depending on texture), and
+  * `save_episode` re-decodes ~100 sampled PNGs per camera for
+    `compute_episode_stats`, then ffmpeg-encodes, then writes parquet — seconds,
+    on the same single writer thread as `FRAME`.
+
+**LANDED (Phase 0, measurement only):** `util/loop_timing.py` + instrumentation
+in `record_episode` / `_writer_proc`, `timing_report` / `timing_csv_dir` in
+`RecordingManagerConfig`, `--timing-csv-dir` on the three entry points, and
+per-phase `.timing` published by `make_record_fn`. USAGE.md §12 explains how to
+read the output. Nothing about recorded data changed.
+
+**NOT DONE — agreed follow-ups, do not re-litigate the diagnosis:**
+1. Decouple the writer: pass `image_writer_processes`/`image_writer_threads`, or
+   `streaming_encoding=True` + `encoder_queue_maxsize` (skips the PNG round-trip
+   AND the stats re-read); consider `batch_encoding_size > 1` with a shutdown
+   flush.
+2. Back-pressure policy. The owner's constraint is DATASET FIRST: teleop may
+   stall, frames may not be dropped (dropping breaks LeRobot's fixed-fps
+   timestamps). So: bounded put with a timeout + `writer.is_alive()` check that
+   RAISES, rather than a silent forever-block.
+3. Robustness: the writer is `fork()`ed from a live multithreaded ROS2/DDS
+   process (`policy/relative_lerobot_policy.py:434` already uses
+   `mp.get_context("spawn")` for this reason); `dataset.finalize()` is never
+   called (only `DatasetWriter.__del__` as a net, skipped under the
+   `writer_timeout=10 s` `terminate()` in `__exit__`) so a backlog at shutdown
+   can truncate the parquet footer.
+4. Producer waste: `env.step()` builds a full observation
+   (`manipulator_env.py:831`/`:1042`) that `make_record_fn` discards before
+   `_collect_obs()` re-reads everything; `_resize_image` runs `cv2.resize` per
+   camera per frame whenever env `resolution` != record `shape`.
+
+Unrelated landmine noticed while reading: `concatenate_state_features` builds
+`observation.state` from `obs` DICT INSERTION ORDER, not the declared feature
+order. It matches today only because `_collect_obs` iterates
+`record_config.observations` in order.
 
 ---
 

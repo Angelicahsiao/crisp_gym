@@ -548,3 +548,77 @@ absolute-on-disk rot6d dataset — train it with
 `lerobot_relative_pose.py` exactly as in [§8](#8-train-lerobot-044-umi-style-relative-pose),
 and (if needed) mix it with other UMI-contract datasets via the alignment
 script ([§6](#6-post-process-align-datasets-for-mixed-training)).
+
+---
+
+## 12. Diagnose a dropped control rate (loop timing)
+
+`RecordingManager.record_episode` is a single thread that calls the teleop
+`drive_fn`, steps the env, collects the observation, hands the frame to the
+dataset-writer process and sleeps to hold the rate. **The teleop command rate
+is therefore identical to this loop's rate** — and `deploy_policy.py` runs the
+same loop with `policy.make_data_fn()`, so the same stall degrades policy
+control.
+
+When the rate drops, the time went to exactly one of three places, and the loop
+now says which:
+
+| phase | meaning |
+|---|---|
+| `data` | producer work — `drive_fn` + `env.step` + observation collection |
+| `put`  | **back-pressure** — the bounded queue to the writer is full, so `queue.put()` blocks until the writer drains a slot |
+| `sleep`| healthy idling to hold the rate |
+
+Nothing needs enabling; every episode ends with a summary (`timing_report: true`
+in `config/recording/default_recording.yaml`):
+
+```
+[timing] episode_0003: 412 frames (2 skipped) in 31.2 s -> 13.20 FPS (target 15.00, budget 66.7 ms/frame)
+[timing]   phase        mean     p50     p95     max    share
+[timing]   data             8.1     7.9    11.2    24.3   10.7%
+[timing]     drive          0.4     0.4     0.6     1.9    0.5%
+[timing]     step           3.6     3.5     4.8    12.1    4.8%
+[timing]     collect        4.0     3.9     5.6    11.7    5.3%
+[timing]   put             41.7     0.1    68.0    91.4   55.1%
+[timing]   sleep           16.4    18.2    31.0    41.3   21.7%
+[timing]   writer queue depth: mean 51.3 max 64/64 — full on 388/412 frames (94%)
+[timing]   late frames: 301/412 (73%), total overrun 12.4 s
+[timing]   VERDICT: WRITER-BOUND — ...
+[timing]   writer: alive
+[timing/writer] episode with 412 frames — per-frame (build + add_frame) mean 71.2 / p50 68.9 / p95 96.0 / max 180.3 ms (budget 66.7 ms) -> sustained 14.05 FPS; idle waiting for frames 3% (SATURATED — the writer is the bottleneck)
+[timing/writer] save_episode took 8.42 s (...)
+```
+
+How to read it:
+
+- **`put` dominant + queue depth pinned at capacity** → writer-bound. The loop
+  runs at the writer's throughput, not at `fps`. The writer's own line names the
+  cost: `per-frame` is the synchronous PNG encode per camera inside
+  `dataset.add_frame`, `save_episode` is the episode's stats + video encode.
+- **`data` dominant + queue depth ~0** → producer-bound. The `drive` / `step` /
+  `collect` sub-rows say whether it is the leader read, `env.step`, or reading
+  the cameras.
+- **Writer `idle` near 0%** → the writer never waits for work, i.e. it is the
+  bottleneck. Near 100% → the writer is starved and the producer sets the pace.
+- **A gradual slide within one episode** with the queue depth climbing means the
+  writer is only *marginally* slower than `fps`: the queue absorbs the
+  difference until it is full (`queue_size / fps` seconds of slack), after which
+  the loop locks to the writer's rate.
+
+The individual late-frame warnings now name the dominant phase and the queue
+depth the frame met, instead of only "consider decreasing the FPS".
+
+For a per-frame trace (one CSV per episode: `data_ms`, `put_ms`, `sleep_ms`,
+`queue_depth`, plus the sub-phases), pass `--timing-csv-dir`:
+
+```bash
+python -m crisp_gym.scripts.record_lerobot_format_leader_follower \
+    ... \
+    --timing-csv-dir ~/loop_timing
+```
+
+The flag exists on `record_lerobot_format_leader_follower.py`,
+`record_umi_handheld.py` and `deploy_policy.py`. Set `timing_report: false` in
+the recording config to silence the summaries.
+
+This is instrumentation only — it changes nothing about what is recorded.

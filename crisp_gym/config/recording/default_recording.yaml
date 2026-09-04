@@ -13,3 +13,9 @@ push_to_hub: false
 use_sound: true
 queue_size: 64
 writer_timeout: 10.0
+
+# Instrumentation (measurement only, see crisp_gym/util/loop_timing.py).
+# timing_report logs a per-episode phase breakdown of the record/deploy loop.
+# timing_csv_dir writes a per-frame CSV trace per episode; null = off.
+timing_report: true
+timing_csv_dir: null

@@ -30,6 +30,7 @@ from crisp_gym.config.path import find_config
 from crisp_gym.policy.policy import Action, Observation
 from crisp_gym.record.recording_manager_config import RecordingManagerConfig
 from crisp_gym.util.lerobot_features import concatenate_state_features
+from crisp_gym.util.loop_timing import LoopTimingRecorder, WriterTimingRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,23 @@ class RecordingManager(ABC):
     def num_episodes(self) -> int:
         """Return the number of episodes to record."""
         return self.config.num_episodes
+
+    def queue_depth(self) -> int:
+        """Frames currently queued for the writer process, or -1 if unknown.
+
+        `mp.Queue.qsize()` reads the underlying semaphore; it is unimplemented
+        on platforms without `sem_getvalue` (macOS), hence the guard.
+        """
+        try:
+            return self.queue.qsize()
+        except (NotImplementedError, OSError):
+            return -1
+
+    def writer_status(self) -> str:
+        """One-line liveness description of the writer process, for logs."""
+        if self.writer.is_alive():
+            return "writer: alive"
+        return f"writer: DEAD (exitcode={self.writer.exitcode})"
 
     def wait_until_ready(self, timeout: float | None = None) -> None:
         """Wait until the dataset writer is ready."""
@@ -208,9 +226,21 @@ class RecordingManager(ABC):
         self.dataset_ready.set()
         logger.debug(f"Dataset features: {list(self.config.features.keys())}")
 
+        # Consumer-side instrumentation. `idle` (time blocked in queue.get())
+        # is the decisive number: near 0% means the writer never runs out of
+        # work, i.e. it — not the recording loop — sets the achievable rate.
+        writer_timing = WriterTimingRecorder(
+            budget_s=1.0 / self.config.fps,
+            enabled=self.config.timing_report,
+        )
+        frames_in_episode = 0
+
         while True:
+            idle_start = time.perf_counter()
             msg = self.queue.get()
+            writer_timing.add_idle(time.perf_counter() - idle_start)
             logger.debug(f"Received message: {msg['type']}")
+            handler_start = time.perf_counter()
             try:
                 mtype = msg["type"]
 
@@ -246,6 +276,8 @@ class RecordingManager(ABC):
                     else:  # For older lerobot versions without `task` parameter (< v3.0)
                         frame["task"] = task
                         dataset.add_frame(frame)
+                    writer_timing.add_frame(time.perf_counter() - handler_start)
+                    frames_in_episode += 1
 
                 elif mtype == "SAVE_EPISODE":
                     if self.config.use_sound:
@@ -265,7 +297,20 @@ class RecordingManager(ABC):
 
                     logger.info("Saving current episode to dataset.")
 
+                    writer_timing.log_summary(f"episode with {frames_in_episode} frames")
+                    save_start = time.perf_counter()
                     dataset.save_episode()
+                    if self.config.timing_report:
+                        logger.info(
+                            "[timing/writer] save_episode took "
+                            f"{time.perf_counter() - save_start:.2f} s "
+                            "(stats over sampled frames + video encoding + "
+                            "parquet). The recording loop only has "
+                            f"{self.config.queue_size} frames "
+                            f"({self.config.queue_size / self.config.fps:.1f} s "
+                            "at this fps) of slack before it blocks on this."
+                        )
+                    frames_in_episode = 0
 
                 elif mtype == "DELETE_EPISODE":
                     if self.config.use_sound:
@@ -283,6 +328,10 @@ class RecordingManager(ABC):
                                 f"Failed to play sound for episode deletion: {e}",
                             )
 
+                    writer_timing.log_summary(
+                        f"discarded episode with {frames_in_episode} frames"
+                    )
+                    frames_in_episode = 0
                     dataset.clear_episode_buffer()
 
                 elif mtype == "PUSH_TO_HUB":
@@ -299,6 +348,9 @@ class RecordingManager(ABC):
                         )
                 elif mtype == "SHUTDOWN":
                     logger.info("Shutting down writer process.")
+                    writer_timing.log_summary(
+                        f"at shutdown, {frames_in_episode} unsaved frames"
+                    )
                     break
             except Exception as e:
                 logger.exception("Error occurred: %s", e)
@@ -341,17 +393,47 @@ class RecordingManager(ABC):
 
         logger.info("Started recording episode.")
 
+        # Phase timing for THIS episode. The loop below is also the deployment
+        # loop (deploy_policy.py hands it policy.make_data_fn()), so these
+        # numbers describe policy control as well as teleop recording.
+        # Measurement only: no branch below depends on `timing`.
+        budget_s = 1.0 / self.config.fps
+        timing = LoopTimingRecorder(
+            label=f"episode_{self.episode_count:04d}",
+            budget_s=budget_s,
+            queue_capacity=self.config.queue_size,
+            enabled=self.config.timing_report,
+            csv_dir=self.config.timing_csv_dir,
+        )
+        # Sub-phase breakdown of data_fn (drive / step / collect / action) when
+        # the data function publishes one — see record_functions.make_record_fn.
+        sub_timing = getattr(data_fn, "timing", None)
+
         while self.state == "recording":
             frame_start = time.time()
+            t_frame = time.perf_counter()
 
+            t_mark = time.perf_counter()
             obs, action = data_fn()
+            data_s = time.perf_counter() - t_mark
 
             if obs is None or action is None:
                 logger.debug("Data function returned None, skipping frame.")
                 # If the data function returns None, skip this frame
                 sleep_time = 1 / self.config.fps - (time.time() - frame_start)
+                t_mark = time.perf_counter()
                 if sleep_time > 0:
                     time.sleep(sleep_time)
+                sleep_s = time.perf_counter() - t_mark
+                timing.add_frame(
+                    data_s=data_s,
+                    put_s=0.0,
+                    sleep_s=sleep_s,
+                    total_s=time.perf_counter() - t_frame,
+                    queue_depth=self.queue_depth(),
+                    sub_timing=sub_timing,
+                    skipped=True,
+                )
                 continue
 
             if self.writer_error.is_set():
@@ -360,19 +442,42 @@ class RecordingManager(ABC):
                     "current episode is not being persisted. Aborting recording."
                 )
 
+            # Sampled BEFORE the put: the depth the frame actually met. At
+            # capacity, the put below blocks until the writer drains a slot,
+            # and that block is what shows up as a dropped teleop rate.
+            queue_depth = self.queue_depth()
+            t_mark = time.perf_counter()
             self.queue.put({"type": "FRAME", "data": (obs, action, task)})
+            put_s = time.perf_counter() - t_mark
 
             sleep_time = 1 / self.config.fps - (time.time() - frame_start)
+            t_mark = time.perf_counter()
             if sleep_time > 0:
                 time.sleep(sleep_time)
+                sleep_s = time.perf_counter() - t_mark
             else:
+                sleep_s = 0.0
+                blocked = "queue.put (writer back-pressure)" if put_s > data_s else "data_fn"
                 logger.warning(
                     f"Frame processing took too long: {time.time() - frame_start - 1.0 / self.config.fps:.3f} seconds too long i.e. {1.0 / (time.time() - frame_start):.2f} FPS. "
-                    "Consider decreasing the FPS or optimizing the data function."
+                    f"Dominant phase: {blocked} — data_fn {1e3 * data_s:.1f} ms, "
+                    f"queue.put {1e3 * put_s:.1f} ms, writer queue "
+                    f"{queue_depth}/{self.config.queue_size} on entry."
                 )
             logger.debug(f"Finished sleeping for {sleep_time:.3f} seconds.")
 
+            timing.add_frame(
+                data_s=data_s,
+                put_s=put_s,
+                sleep_s=sleep_s,
+                total_s=time.perf_counter() - t_frame,
+                queue_depth=queue_depth,
+                sub_timing=sub_timing,
+            )
+
         logger.debug("Finished recording...")
+
+        timing.log_summary(extra=self.writer_status())
 
         if on_end:
             on_end()
