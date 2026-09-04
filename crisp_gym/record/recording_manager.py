@@ -297,7 +297,7 @@ class RecordingManager(ABC):
 
                     logger.info("Saving current episode to dataset.")
 
-                    writer_timing.log_summary(f"episode with {frames_in_episode} frames")
+                    writer_timing.log_summary("episode")
                     save_start = time.perf_counter()
                     dataset.save_episode()
                     if self.config.timing_report:
@@ -328,9 +328,7 @@ class RecordingManager(ABC):
                                 f"Failed to play sound for episode deletion: {e}",
                             )
 
-                    writer_timing.log_summary(
-                        f"discarded episode with {frames_in_episode} frames"
-                    )
+                    writer_timing.log_summary("discarded episode")
                     frames_in_episode = 0
                     dataset.clear_episode_buffer()
 
@@ -349,7 +347,7 @@ class RecordingManager(ABC):
                 elif mtype == "SHUTDOWN":
                     logger.info("Shutting down writer process.")
                     writer_timing.log_summary(
-                        f"at shutdown, {frames_in_episode} unsaved frames"
+                        f"at shutdown ({frames_in_episode} unsaved frames)"
                     )
                     break
             except Exception as e:
@@ -431,6 +429,7 @@ class RecordingManager(ABC):
                     sleep_s=sleep_s,
                     total_s=time.perf_counter() - t_frame,
                     queue_depth=self.queue_depth(),
+                    sleep_requested_s=max(0.0, sleep_time),
                     sub_timing=sub_timing,
                     skipped=True,
                 )
@@ -472,6 +471,7 @@ class RecordingManager(ABC):
                 sleep_s=sleep_s,
                 total_s=time.perf_counter() - t_frame,
                 queue_depth=queue_depth,
+                sleep_requested_s=max(0.0, sleep_time),
                 sub_timing=sub_timing,
             )
 

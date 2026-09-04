@@ -115,6 +115,57 @@ def test_producer_bound_loop_is_not_blamed_on_the_queue():
     assert "PRODUCER-BOUND" in rec.verdict()
 
 
+def test_rate_miss_is_not_reported_as_healthy():
+    """Regression: episode_0000 of the field run delivered 12.29 of 15 FPS with
+    ZERO late frames and an empty queue — time.sleep() simply returned ~14 ms
+    late every frame. The old verdict called that HEALTHY and hid a 2.7 FPS
+    loss. A rate miss must be named, and must name oversleep as the cause.
+    """
+    rec = LoopTimingRecorder(label="rate_miss", budget_s=1 / 15, queue_capacity=64)
+    rec.wall_start = time.perf_counter() - 60.9  # 748 frames took 60.9 s
+    for _ in range(748):
+        rec.add_frame(
+            data_s=0.0017,
+            put_s=0.0,
+            sleep_s=0.0795,  # measured
+            total_s=0.0812,
+            queue_depth=0,
+            sleep_requested_s=0.0650,  # asked for
+        )
+    assert rec.late_frames == 0, "no frame overran its budget"
+    assert rec.queue_full_frames == 0, "the queue never filled"
+    assert 12.0 < rec.effective_fps() < 12.6
+    assert "RATE MISS" in rec.verdict(), rec.verdict()
+    assert "sleep" in rec.verdict()
+    oversleep = rec.phases["oversleep"].summary_ms()
+    assert 14.0 < oversleep["mean"] < 15.0, oversleep
+
+
+def test_oversleep_is_not_charged_when_no_sleep_was_requested():
+    """A late frame sleeps zero; that is an overrun, not an overshoot."""
+    rec = LoopTimingRecorder(label="no_sleep", budget_s=1 / 15, queue_capacity=64)
+    rec.add_frame(
+        data_s=0.001, put_s=0.150, sleep_s=0.0, total_s=0.151, queue_depth=64, sleep_requested_s=0.0
+    )
+    assert rec.phases["oversleep"].samples == []
+
+
+def test_writer_bound_wins_over_rate_miss():
+    """Back-pressure must be reported even though the rate is also missed."""
+    rec = LoopTimingRecorder(label="both", budget_s=1 / 15, queue_capacity=64)
+    rec.wall_start = time.perf_counter() - 24.2
+    for _ in range(112):
+        rec.add_frame(
+            data_s=0.0017,
+            put_s=0.1611,
+            sleep_s=0.0474,
+            total_s=0.2102,
+            queue_depth=64,
+            sleep_requested_s=0.0,
+        )
+    assert "WRITER-BOUND" in rec.verdict(), rec.verdict()
+
+
 def test_healthy_loop_reports_healthy():
     rec = _run_loop("healthy", fps=15, writer_per_frame_s=0.005, data_per_frame_s=0.005, n=20)
     assert rec.late_frames == 0
@@ -179,6 +230,65 @@ def test_csv_trace_has_one_row_per_frame(tmp_path=None):
 
 
 # ── writer-side recorder ─────────────────────────────────────────────────────
+
+
+def test_writer_idle_before_the_first_frame_is_not_counted():
+    """Regression: the writer idles while the operator decides when to press
+    `r`. Folding that into the window reported "sustained 9.04 FPS / 44% idle
+    / has headroom" for a writer that actually needed 62 of its 67 ms budget.
+    """
+    rec = WriterTimingRecorder(budget_s=1 / 15)
+    rec.add_idle(8.0)  # operator has not pressed `r` yet
+    assert rec.idle.samples == [], "pre-episode wait must not enter the window"
+    rec.add_frame(0.0623)
+    rec.add_idle(0.004)  # a real between-frames wait
+    assert rec.idle.samples == [0.004]
+
+
+def test_writer_near_budget_is_reported_as_tight_not_as_headroom():
+    """62.3 ms of a 66.7 ms budget is 4.4 ms of slack, not 'has headroom'."""
+    import io
+    import logging as _logging
+
+    from crisp_gym.util import loop_timing as lt
+
+    rec = WriterTimingRecorder(budget_s=1 / 15)
+    for _ in range(748):
+        rec.add_frame(0.0623)
+        rec.add_idle(0.048)  # 44% idle, as in the field run
+
+    stream = io.StringIO()
+    handler = _logging.StreamHandler(stream)
+    lt.logger.addHandler(handler)
+    lt.logger.setLevel(_logging.INFO)
+    try:
+        rec.log_summary("episode")
+    finally:
+        lt.logger.removeHandler(handler)
+    out = stream.getvalue()
+    assert "TIGHT" in out, out
+    assert "has headroom" not in out and "ms of headroom per frame)" not in out
+
+
+def test_writer_over_budget_is_called_out():
+    rec = WriterTimingRecorder(budget_s=1 / 15)
+    for _ in range(112):
+        rec.add_frame(0.0936)  # episode_0001 of the field run
+        rec.add_idle(0.001)
+    import io
+    import logging as _logging
+
+    from crisp_gym.util import loop_timing as lt
+
+    stream = io.StringIO()
+    handler = _logging.StreamHandler(stream)
+    lt.logger.addHandler(handler)
+    lt.logger.setLevel(_logging.INFO)
+    try:
+        rec.log_summary("episode")
+    finally:
+        lt.logger.removeHandler(handler)
+    assert "OVER BUDGET" in stream.getvalue(), stream.getvalue()
 
 
 def test_saturated_writer_reports_low_idle():

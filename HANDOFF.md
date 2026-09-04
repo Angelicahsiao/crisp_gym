@@ -292,6 +292,27 @@ without `image_writer_processes` / `image_writer_threads` /
     `compute_episode_stats`, then ffmpeg-encodes, then writes parquet — seconds,
     on the same single writer thread as `FRAME`.
 
+### Field measurement (Franka + FACTR, 2 RealSense, 15 Hz, 800x1280 stored)
+
+First run with the instrumentation, two consecutive episodes:
+
+* ep0: 748 frames in 60.9 s = **12.29 of 15 FPS**, ZERO late frames, queue max
+  1/64. All of the loss is `sleep` overshoot: 79.5 ms actual for ~65.0 ms
+  requested, **+14.5 ms per frame** (p95 164 ms, max 238 ms). This is CPU/GIL
+  contention in the recording process, NOT the writer — a second, independent
+  failure mode that the first version of the verdict wrongly called HEALTHY.
+* ep0 writer: **62.3 ms per frame against a 66.7 ms budget** — 4.4 ms of slack.
+  `save_episode` then took **42.2 s** (SVT-AV1 at 800x1280 + stats + parquet).
+* ep1, recorded while that encode was still running: the queue filled, one
+  `queue.put` blocked **14.2 s**, and the episode delivered **4.63 FPS**. Writer
+  per-frame rose to 93.6 ms — over budget on its own.
+
+Conclusion: the stored image size (800x1280 = 20x a 256x256 frame) is the
+dominant term in BOTH failure modes. It puts `add_frame`'s synchronous PNG
+encode at ~93% of the frame budget, and the camera-side decode/resize of the
+same frames is what starves the loop thread of CPU between sleeps. No shipped
+env config uses that size — every bundled one is 224 or 256.
+
 **LANDED (Phase 0, measurement only):** `util/loop_timing.py` + instrumentation
 in `record_episode` / `_writer_proc`, `timing_report` / `timing_csv_dir` in
 `RecordingManagerConfig`, `--timing-csv-dir` on the three entry points, and
@@ -299,6 +320,9 @@ per-phase `.timing` published by `make_record_fn`. USAGE.md §12 explains how to
 read the output. Nothing about recorded data changed.
 
 **NOT DONE — agreed follow-ups, do not re-litigate the diagnosis:**
+0. FIRST, cheapest, and it fixes both failure modes at once: record at the size
+   you train on (224/256), not at the camera's native resolution — `resolution`
+   in the env config and `shape` on the record config's image entries.
 1. Decouple the writer: pass `image_writer_processes`/`image_writer_threads`, or
    `streaming_encoding=True` + `encoder_queue_maxsize` (skips the PNG round-trip
    AND the stats re-read); consider `batch_encoding_size > 1` with a shutdown

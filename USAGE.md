@@ -598,12 +598,50 @@ How to read it:
 - **`data` dominant + queue depth ~0** → producer-bound. The `drive` / `step` /
   `collect` sub-rows say whether it is the leader read, `env.step`, or reading
   the cameras.
-- **Writer `idle` near 0%** → the writer never waits for work, i.e. it is the
-  bottleneck. Near 100% → the writer is starved and the producer sets the pace.
+- **`RATE MISS`** → every frame fit its budget and the queue never filled, yet
+  the delivered FPS is still below target. Read the indented `oversleep` row:
+  it is how late `time.sleep()` came back, i.e. how long the loop thread waited
+  to get the CPU again. Cause is contention, not the writer — the ROS executor
+  threads in this process (one node per camera / robot / gripper, each with its
+  own spin thread) plus whatever else is saturating the cores.
+- **Writer per-frame cost vs budget is the number that matters**, not the idle
+  share: a writer that idles 44% but spends 62 ms of a 66.7 ms budget has 4.4 ms
+  of slack and is reported `TIGHT` — it will block the loop on the first hiccup.
+  `OVER BUDGET` means it cannot sustain the rate at all.
 - **A gradual slide within one episode** with the queue depth climbing means the
   writer is only *marginally* slower than `fps`: the queue absorbs the
   difference until it is full (`queue_size / fps` seconds of slack), after which
   the loop locks to the writer's rate.
+- **A multi-second `queue.put` right after a `save_episode` line** is the next
+  episode's frames waiting behind the previous episode's video encode. The two
+  share one writer thread, and `save_episode` is not bounded by `queue_size`.
+
+### Image size is the dominant term
+
+The writer PNG-encodes every camera frame synchronously (lerobot only writes
+images asynchronously when `LeRobotDataset.create` is given
+`image_writer_processes` / `image_writer_threads`, which crisp_gym does not
+pass). Cost scales with pixel count, so the recorded image size sets the whole
+pipeline's ceiling. Measured with PIL at lerobot's `compress_level=1`, per
+camera per frame:
+
+| stored size | flat scene | textured scene |
+|---|---|---|
+| 224x224 | 0.9 ms | 6.8 ms |
+| 256x256 | 1.0 ms | 8.6 ms |
+| 480x640 | 4.5 ms | 40.6 ms |
+| 800x1280 | ~15 ms | ~135 ms |
+
+At 15 FPS the whole per-frame budget is 66.7 ms. Recording 800x1280 leaves no
+room; `save_episode` (SVT-AV1 over the same frames) grows the same way — a
+748-frame 800x1280 episode took 42 s to encode, during which the next episode's
+recording blocked for 14 s once the 64-frame queue filled.
+
+The stored size is `resolution` in the env config (crisp_py resizes to it on
+receipt) and `shape` on the record config's image entries. Keep them equal to
+each other and to the size you will actually train on (224 or 256 for the UMI
+pipeline) — recording larger and downscaling at train time costs rate, disk and
+encode time for nothing.
 
 The individual late-frame warnings now name the dominant phase and the queue
 depth the frame met, instead of only "consider decreasing the FPS".

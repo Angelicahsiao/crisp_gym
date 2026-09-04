@@ -104,6 +104,11 @@ class LoopTimingRecorder:
     #: exposes one (see `record/record_functions.py::make_record_fn`).
     BASE_PHASES = ("data", "put", "sleep", "total")
     SUB_PHASES = ("drive", "step", "collect", "action")
+    #: `time.sleep(x)` returning late. Non-zero here means the thread is not
+    #: getting the CPU back on time (GIL contention with the ROS executor
+    #: threads, or plain core oversubscription) — a rate loss that has nothing
+    #: to do with the writer and is invisible in the other phases.
+    EXTRA_PHASES = ("oversleep",)
 
     def __init__(
         self,
@@ -129,7 +134,8 @@ class LoopTimingRecorder:
         self.csv_dir = Path(csv_dir) if csv_dir is not None else None
 
         self.phases: Dict[str, PhaseStats] = {
-            name: PhaseStats(name) for name in (*self.BASE_PHASES, *self.SUB_PHASES)
+            name: PhaseStats(name)
+            for name in (*self.BASE_PHASES, *self.SUB_PHASES, *self.EXTRA_PHASES)
         }
         self.rows: List[Dict[str, float]] = []
         self.queue_depths: List[int] = []
@@ -148,6 +154,7 @@ class LoopTimingRecorder:
         sleep_s: float,
         total_s: float,
         queue_depth: int,
+        sleep_requested_s: float = 0.0,
         sub_timing: Dict[str, float] | None = None,
         skipped: bool = False,
     ) -> None:
@@ -170,6 +177,9 @@ class LoopTimingRecorder:
                 if name in sub_timing:
                     self.phases[name].add(sub_timing[name])
 
+        if sleep_requested_s > 0.0:
+            self.phases["oversleep"].add(max(0.0, sleep_s - sleep_requested_s))
+
         if queue_depth >= 0:
             self.queue_depths.append(queue_depth)
             if self.queue_capacity > 0 and queue_depth >= self.queue_capacity:
@@ -189,6 +199,10 @@ class LoopTimingRecorder:
             "total_ms": 1e3 * total_s,
             "queue_depth": queue_depth,
             "skipped": int(skipped),
+            "sleep_requested_ms": 1e3 * sleep_requested_s,
+            "oversleep_ms": 1e3 * max(0.0, sleep_s - sleep_requested_s)
+            if sleep_requested_s > 0.0
+            else 0.0,
         }
         for name in self.SUB_PHASES:
             row[f"{name}_ms"] = 1e3 * (sub_timing.get(name, 0.0) if sub_timing else 0.0)
@@ -201,22 +215,47 @@ class LoopTimingRecorder:
         candidates = {name: self.phases[name].total for name in ("data", "put")}
         return max(candidates, key=lambda k: candidates[k])
 
+    def effective_fps(self) -> float:
+        """Frames actually delivered per second of wall clock."""
+        return self.frames / max(time.perf_counter() - self.wall_start, 1e-9)
+
     def verdict(self) -> str:
-        """One-line diagnosis of this episode."""
-        if self.late_frames == 0 and self.queue_full_frames == 0:
-            return (
-                "HEALTHY — the loop held its rate; no frame overran the budget "
-                "and the writer queue never filled."
-            )
-        if self.dominant_phase() == "put":
+        """One-line diagnosis of this episode.
+
+        Order matters: back-pressure and slow producer work are checked first
+        because they explain late frames. A loop that misses its rate with NO
+        late frame and an empty queue is a third, distinct failure — it slept
+        too long — and must not be reported as healthy just because every
+        individual frame fit its budget.
+        """
+        if self.queue_full_frames > 0 and self.dominant_phase() == "put":
             return (
                 "WRITER-BOUND — the loop is blocked handing frames to the "
                 "dataset writer, so the teleop/policy rate is capped by writer "
                 "throughput, not by fps."
             )
+        if self.late_frames > 0:
+            return (
+                "PRODUCER-BOUND — frames overran the budget inside data_fn "
+                "(leader read / env.step / observation collection)."
+            )
+
+        target_fps = 1.0 / self.budget_s if self.budget_s > 0 else 0.0
+        achieved = self.effective_fps()
+        if target_fps > 0 and achieved < 0.95 * target_fps:
+            oversleep = self.phases["oversleep"].summary_ms()
+            return (
+                f"RATE MISS — every frame fit its budget and the writer queue "
+                f"never filled, yet only {achieved:.2f} of {target_fps:.2f} FPS "
+                f"was delivered: time.sleep() returned "
+                f"{oversleep['mean']:.1f} ms late on average "
+                f"(p95 {oversleep['p95']:.1f} ms). The loop thread is not "
+                "getting the CPU back on time — GIL contention with the ROS "
+                "executor threads in this process, or CPU oversubscription."
+            )
         return (
-            "PRODUCER-BOUND — most of the time is in data_fn (leader read / "
-            "env.step / observation collection)."
+            "HEALTHY — the loop held its rate; no frame overran the budget "
+            "and the writer queue never filled."
         )
 
     def log_summary(self, extra: str = "") -> None:
@@ -225,7 +264,9 @@ class LoopTimingRecorder:
             return
 
         elapsed = max(time.perf_counter() - self.wall_start, 1e-9)
-        effective_fps = self.frames / elapsed
+        # `oversleep` is a COMPONENT of `sleep`, so it is excluded from the
+        # share denominator (data + put + sleep == total).
+        effective_fps = self.effective_fps()
         target_fps = 1.0 / self.budget_s if self.budget_s > 0 else 0.0
         # Shares are taken against the sum of per-frame totals rather than wall
         # clock, so they add up to ~100% and stay meaningful even if the
@@ -239,12 +280,12 @@ class LoopTimingRecorder:
             f"budget {1e3 * self.budget_s:.1f} ms/frame)",
             "[timing]   phase        mean     p50     p95     max    share",
         ]
-        for name in ("data", "drive", "step", "collect", "action", "put", "sleep"):
+        for name in ("data", "drive", "step", "collect", "action", "put", "sleep", "oversleep"):
             stats = self.phases[name].summary_ms()
             if stats["count"] == 0:
                 continue
             share = 100.0 * stats["total"] / accounted_ms
-            indent = "  " if name in self.SUB_PHASES else ""
+            indent = "  " if name in (*self.SUB_PHASES, *self.EXTRA_PHASES) else ""
             lines.append(
                 f"[timing]   {indent}{name}".ljust(24)
                 + f"{stats['mean']:7.1f} {stats['p50']:7.1f} "
@@ -316,6 +357,10 @@ class WriterTimingRecorder:
         self.idle = PhaseStats("idle")
         self.window_start = time.perf_counter()
 
+    def _started(self) -> bool:
+        """True once this window has seen its first frame."""
+        return bool(self.frame.samples)
+
     def add_frame(self, seconds: float) -> None:
         """Record the writer's total cost for one frame.
 
@@ -327,8 +372,14 @@ class WriterTimingRecorder:
             self.frame.add(seconds)
 
     def add_idle(self, seconds: float) -> None:
-        """Record time the writer spent blocked in `queue.get()`."""
-        if self.enabled:
+        """Record time the writer spent blocked in `queue.get()`.
+
+        Only counted once the window has a frame: the writer idles for as long
+        as the operator takes to press `r`, and folding that wait into the
+        window would report an idle share (and a sustained FPS) that describes
+        the operator, not the writer.
+        """
+        if self.enabled and self._started():
             self.idle.add(seconds)
 
     def log_summary(self, label: str) -> None:
@@ -342,13 +393,34 @@ class WriterTimingRecorder:
         accounted = max(self.frame.total + self.idle.total, 1e-9)
         sustained = stats["count"] / accounted
         idle_share = min(100.0, 100.0 * self.idle.total / accounted)
+        budget_ms = 1e3 * self.budget_s
+
+        # The decisive comparison is per-frame COST vs budget, not idle share:
+        # a writer that idles 44% but needs 62 ms of a 67 ms budget has ~5 ms
+        # of headroom and will block the loop on the first hiccup.
+        headroom_ms = budget_ms - stats["mean"]
+        if stats["mean"] > budget_ms:
+            assessment = (
+                f"OVER BUDGET by {-headroom_ms:.1f} ms — cannot sustain "
+                f"{1.0 / self.budget_s:.1f} FPS, the loop WILL block"
+            )
+        elif headroom_ms < 0.2 * budget_ms:
+            assessment = (
+                f"TIGHT — only {headroom_ms:.1f} ms of headroom per frame; "
+                "any jitter fills the queue"
+            )
+        elif idle_share < 10:
+            assessment = "SATURATED — the writer is the bottleneck"
+        else:
+            assessment = f"{headroom_ms:.1f} ms of headroom per frame"
+
         logger.info(
             f"[timing/writer] {label}: {int(stats['count'])} frames — "
             f"per-frame (build + add_frame) mean {stats['mean']:.1f} / "
             f"p50 {stats['p50']:.1f} / "
             f"p95 {stats['p95']:.1f} / max {stats['max']:.1f} ms "
-            f"(budget {1e3 * self.budget_s:.1f} ms) -> sustained "
+            f"(budget {budget_ms:.1f} ms) -> sustained "
             f"{sustained:.2f} FPS; idle waiting for frames {idle_share:.0f}% "
-            f"({'SATURATED — the writer is the bottleneck' if idle_share < 10 else 'has headroom'})"
+            f"({assessment})"
         )
         self.reset_window()
