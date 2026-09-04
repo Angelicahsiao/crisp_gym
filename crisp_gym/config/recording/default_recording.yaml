@@ -76,6 +76,30 @@ video_preset: null
 video_extra_options: null
 encoder_threads: null
 
+# Streaming encoding: feed frames straight to a per-camera encoder thread
+# instead of writing every frame to disk as a PNG and reading them all back at
+# save_episode.
+#
+# Measured at 800x1280, one camera, 15 fps: the PNG path moved ~1.3 GB per
+# episode and cost ~49 ms/frame of save time (22-45 s per episode), of which
+# the video encode was only ~13% — hardware encoding barely dented it. That
+# disk churn also cost the recording loop ~11% of its rate: the episode
+# recorded before the first save_episode held 14.4 FPS, every one after it sat
+# at 13.2-13.5, and the recorded timestamps are wrong by that ratio because
+# LeRobot stamps frames at exactly 1/fps.
+#
+# THE RISK: lerobot's StreamingVideoEncoder DROPS a frame when its queue fills
+# and only warns, while the parquet row is still written — silently
+# desynchronising rows from video. crisp_gym therefore checks the encoder's
+# dropped-frame counters after every save_episode and FAILS the recording if
+# any are non-zero, or if it cannot read them at all. If you hit that, raise
+# encoder_queue_seconds or use a faster codec rather than ignoring it.
+#
+# encoder_queue_seconds buffers raw uint8 frames: ~3.1 MB each for one
+# 800x1280 camera, so 4 s at 15 fps is ~186 MB per camera.
+streaming_encoding: true
+encoder_queue_seconds: 4.0
+
 # Instrumentation (measurement only, see crisp_gym/util/loop_timing.py).
 # timing_report logs a per-episode phase breakdown of the record/deploy loop.
 # timing_csv_dir writes a per-frame CSV trace per episode; null = off.

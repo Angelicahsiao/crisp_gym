@@ -103,6 +103,30 @@ class RecordingManagerConfig:
     video_extra_options: Dict[str, Any] | None = None
     encoder_threads: int | None = None
 
+    # ── Streaming encoding ───────────────────────────────────────────────────
+    # Default path (False): lerobot writes every camera frame to disk as a PNG
+    # during recording, then reads them all back and decodes them at
+    # save_episode. Measured at 800x1280: ~1.3 GB written and read per episode,
+    # ~49 ms/frame of save time, and enough disk churn to cost the recording
+    # loop ~11% of its rate (an episode recorded before the first save_episode
+    # held 14.4 FPS; every one after it sat at 13.2-13.5).
+    #
+    # True: frames go straight to a per-camera encoder thread. No PNG is
+    # written or read, image stats come from the encoder, and save_episode
+    # drops to roughly its fixed cost.
+    #
+    # THE RISK, and why the guard below is not optional: lerobot's
+    # StreamingVideoEncoder.feed_frame DROPS a frame when its queue is full,
+    # while add_frame still appends a parquet row — silently desynchronising
+    # rows from video frames. RecordingManager therefore inspects the encoder's
+    # dropped-frame counters after every save_episode and fails the recording
+    # if any are non-zero (or if it cannot read them at all).
+    streaming_encoding: bool = False
+    # Seconds of per-camera buffer between the writer and its encoder thread,
+    # converted to lerobot's encoder_queue_maxsize. Raw uint8 frames, so a
+    # single 800x1280 camera costs ~3.1 MB per buffered frame.
+    encoder_queue_seconds: float = 4.0
+
     # Instrumentation (measurement only — never changes what is recorded).
     # timing_report: log a per-episode phase breakdown of the recording loop
     #   (data_fn / queue.put / sleep) and of the writer process, so a dropped
@@ -112,6 +136,10 @@ class RecordingManagerConfig:
     #   episode, written at episode end). None = no CSV.
     timing_report: bool = True
     timing_csv_dir: str | None = None
+
+    def resolved_encoder_queue_size(self) -> int:
+        """Per-camera encoder buffer in frames (lerobot's encoder_queue_maxsize)."""
+        return max(1, math.ceil(self.encoder_queue_seconds * self.fps))
 
     def resolved_queue_size(self) -> int:
         """Queue capacity in frames, honouring queue_seconds when set."""

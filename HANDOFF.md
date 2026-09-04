@@ -363,11 +363,28 @@ full-resolution recording instead.
    the shutdown path it takes `required=False` and only logs — raising there
    would mask the exception being handled and skip the terminate/join cleanup.
 
-**Deliberately NOT used: `streaming_encoding=True`.** It removes the PNG
-round-trip and makes save_episode near-instant, but `StreamingVideoEncoder.
-feed_frame` DROPS frames when its queue fills while `add_frame` still appends a
-parquet row — desynchronising rows from video frames, silently. Incompatible
-with DATASET FIRST unless a hard failure on `_dropped_frames` is added first.
+**REVERSED: `streaming_encoding` is now ON by default, WITH the guard.** It was
+rejected earlier because `StreamingVideoEncoder.feed_frame` drops frames when
+its queue fills while `add_frame` still appends a parquet row — a silent
+row/video desync, incompatible with DATASET FIRST. The condition stated then
+("unless a hard failure on `_dropped_frames` is added first") is now met:
+`RecordingManager._check_streaming_drops` runs after every `save_episode`,
+fails the recording on any non-zero counter, AND fails if it cannot read the
+counters at all — they are private to lerobot, and a guard that quietly stops
+guarding is worse than none.
+
+What changed the calculus (measured, 800x1280, one camera, 15 fps, 14 episodes):
+* The PNG path costs ~3.5 s + **49 ms/frame** of save time (22-45 s/episode)
+  and moves ~1.3 GB per episode.
+* `h264_nvenc` cut that only from 56.6 to 49.1 ms/frame — **the encode was ~13%
+  of it**, so hardware encoding did not solve the stall, exactly as predicted.
+* The disk churn also costs the LOOP ~11% of its rate: episode 0, recorded
+  before any save_episode, held 14.41 FPS with p95 oversleep 17 ms; every
+  episode after the first save sat at 13.2-13.5 FPS with p95 oversleep
+  92-110 ms. That is a dataset error, not a comfort one (§ timestamps).
+* `queue_seconds` cannot paper over it: covering a 45 s save needs ~675 queued
+  frames ~= 2.1 GB of RAM. One field episode blocked 8.5 s on a full queue when
+  the operator restarted 23 s after a 39 s save.
 
 **HARDWARE ENCODING GOTCHA (found on the owner's RTX 5090, driver 575.64):**
 `h264_nvenc` opens fine bare but FAILS with lerobot's own options —

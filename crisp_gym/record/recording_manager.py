@@ -279,6 +279,10 @@ class RecordingManager(ABC):
             "image_writer_threads": self.config.image_writer_threads,
         }
 
+        if self.config.streaming_encoding:
+            wanted["streaming_encoding"] = True
+            wanted["encoder_queue_maxsize"] = self.config.resolved_encoder_queue_size()
+
         encoder = self._rgb_encoder()
         if encoder is not None:
             wanted["rgb_encoder"] = encoder
@@ -381,6 +385,57 @@ class RecordingManager(ABC):
         )
         self._rgb_encoder_cached = encoder
         return encoder
+
+    def _check_streaming_drops(self, dataset) -> None:  # noqa: ANN001
+        """Fail the recording if the streaming encoder dropped any frame.
+
+        `StreamingVideoEncoder.feed_frame` drops a frame when its queue is full
+        and only WARNS, while `add_frame` has already appended a parquet row —
+        so a drop silently desynchronises rows from video frames, and every
+        later frame of that episode is mislabelled. Nothing downstream would
+        notice.
+
+        Called right after save_episode, which is the only window where the
+        counters are valid: `finish_episode` leaves them in place and
+        `start_episode` clears them for the next episode.
+
+        Being unable to READ the counters is treated as a failure too. The
+        attribute is private to lerobot; if it moves, this guard must break
+        loudly rather than quietly stop protecting the data.
+        """
+        if not self.config.streaming_encoding:
+            return
+
+        writer = getattr(dataset, "writer", None)
+        encoder = getattr(writer, "_streaming_encoder", None)
+        if encoder is None:
+            raise RuntimeError(
+                "streaming_encoding is on but this lerobot exposes no "
+                "streaming encoder to inspect, so dropped frames cannot be "
+                "detected — and a dropped frame silently desynchronises the "
+                "parquet rows from the video. Refusing to continue. Set "
+                "streaming_encoding: false in the recording config."
+            )
+
+        dropped = getattr(encoder, "_dropped_frames", None)
+        if dropped is None:
+            raise RuntimeError(
+                "streaming_encoding is on but the encoder's dropped-frame "
+                "counters are unavailable (lerobot renamed "
+                "StreamingVideoEncoder._dropped_frames?), so a silent "
+                "row/video desync could not be detected. Refusing to continue."
+            )
+
+        offenders = {key: count for key, count in dropped.items() if count}
+        if offenders:
+            raise RuntimeError(
+                f"The streaming video encoder dropped frames: {offenders}. The "
+                "parquet rows for this episode no longer line up with its "
+                "video, so the episode is CORRUPT — delete it. The encoder "
+                "could not keep up with the recording rate: raise "
+                "encoder_queue_seconds, use a faster codec/preset, or set "
+                "streaming_encoding: false to go back to the PNG path."
+            )
 
     def _preflight_encoder(self, encoder) -> None:  # noqa: ANN001
         """Open the video encoder once, before any frame is recorded.
@@ -603,6 +658,9 @@ class RecordingManager(ABC):
                     writer_timing.log_summary("episode")
                     save_start = time.perf_counter()
                     dataset.save_episode()
+                    # Before anything else: a dropped frame means the rows and
+                    # the video no longer line up.
+                    self._check_streaming_drops(dataset)
                     if self.config.timing_report:
                         logger.info(
                             "[timing/writer] save_episode took "

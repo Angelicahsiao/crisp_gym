@@ -729,6 +729,41 @@ covers the second half.
 `p1`..`p7` for NVENC). lerobot only defaults it for libsvtav1, so software
 h264 otherwise runs at its "medium" default.
 
+**Streaming encoding removes the PNG round-trip.** By default lerobot writes
+every camera frame to disk as a PNG during recording, then reads them all back
+and decodes them at `save_episode`. Measured at 800x1280, one camera, 15 fps:
+
+| | PNG path | streaming |
+|---|---|---|
+| disk moved per episode | ~1.3 GB | none |
+| `save_episode` | ~3.5 s + 49 ms/frame (22-45 s) | roughly the fixed cost |
+| loop rate | 13.2-13.5 FPS after the first save | — |
+
+Hardware encoding barely dented the PNG path: `h264_nvenc` cut the per-frame
+save cost from 56.6 ms to 49.1 ms, because the encode was only ~13% of it. The
+same disk churn also cost the loop ~11% of its rate — the episode recorded
+before the first `save_episode` held 14.4 FPS, every one after it sat at
+13.2-13.5 — and that rate error goes straight into the dataset, since LeRobot
+stamps frames at exactly `1/fps` regardless of when they were captured.
+
+```yaml
+streaming_encoding: true
+encoder_queue_seconds: 4.0   # ~3.1 MB per buffered frame per camera
+```
+
+**The guard is not optional.** `StreamingVideoEncoder.feed_frame` DROPS a frame
+when its queue is full and only logs a warning, while `add_frame` has already
+appended the parquet row — so a drop silently desynchronises rows from video
+frames and mislabels every later frame of the episode. crisp_gym inspects the
+encoder's dropped-frame counters after every `save_episode` and fails the
+recording if any are non-zero. It also fails if it cannot read the counters at
+all (they are private to lerobot): a guard that quietly stops guarding is worse
+than no guard. If you hit it, the episode is corrupt — delete it, then raise
+`encoder_queue_seconds` or use a faster codec.
+
+With streaming on, `image_writer_threads` no longer applies to video keys
+(nothing writes PNGs); it still matters if you turn streaming off.
+
 **Queue slack.** Size it to cover one `save_episode`, since the loop blocks on
 anything longer. Each queued frame holds its raw uint8 images (~3.1 MB for one
 800x1280 RGB camera), so the RAM cost is real:

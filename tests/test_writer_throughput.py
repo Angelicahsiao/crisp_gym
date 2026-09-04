@@ -526,6 +526,109 @@ def test_manager_state_is_picklable_for_spawn():
     assert target.config is not None
 
 
+# ── streaming encoding + the dropped-frame guard ─────────────────────────────
+
+
+def test_streaming_kwargs_reach_lerobot_when_enabled():
+    rm = _load_recording_manager()
+    _install_rgb_encoder_stub("h264_nvenc")
+    cfg = _config(fps=15, streaming_encoding=True, encoder_queue_seconds=4.0)
+    fake_self = types.SimpleNamespace(config=cfg)
+    fake_self._rgb_encoder = lambda: rm.RecordingManager._rgb_encoder(fake_self)
+
+    def create(
+        repo_id,
+        image_writer_processes=0,
+        image_writer_threads=0,
+        streaming_encoding=False,
+        encoder_queue_maxsize=30,
+        rgb_encoder=None,
+        encoder_threads=None,
+    ):
+        pass
+
+    kwargs = rm.RecordingManager._writer_kwargs(fake_self, create)
+    assert kwargs["streaming_encoding"] is True
+    assert kwargs["encoder_queue_maxsize"] == 60  # 4 s at 15 fps
+
+
+def test_streaming_kwargs_absent_when_disabled():
+    rm = _load_recording_manager()
+    _install_rgb_encoder_stub("h264")
+    fake_self = types.SimpleNamespace(config=_config(streaming_encoding=False))
+    fake_self._rgb_encoder = lambda: rm.RecordingManager._rgb_encoder(fake_self)
+
+    def create(repo_id, image_writer_threads=0, streaming_encoding=False, encoder_queue_maxsize=30):
+        pass
+
+    kwargs = rm.RecordingManager._writer_kwargs(fake_self, create)
+    assert "streaming_encoding" not in kwargs
+    assert "encoder_queue_maxsize" not in kwargs
+
+
+def _dataset_with_drops(dropped):
+    encoder = types.SimpleNamespace(_dropped_frames=dropped)
+    return types.SimpleNamespace(writer=types.SimpleNamespace(_streaming_encoder=encoder))
+
+
+def test_drop_guard_raises_on_any_dropped_frame():
+    """feed_frame drops and only WARNS while add_frame still appends a parquet
+    row — the rows and the video silently stop lining up."""
+    rm = _load_recording_manager()
+    fake_self = types.SimpleNamespace(config=_config(streaming_encoding=True))
+    dataset = _dataset_with_drops({"observation.images.primary": 3})
+    try:
+        rm.RecordingManager._check_streaming_drops(fake_self, dataset)
+        raise AssertionError("dropped frames must fail the recording")
+    except RuntimeError as exc:
+        assert "dropped frames" in str(exc)
+        assert "CORRUPT" in str(exc)
+        assert "encoder_queue_seconds" in str(exc), "must name the remedy"
+
+
+def test_drop_guard_passes_when_nothing_was_dropped():
+    rm = _load_recording_manager()
+    fake_self = types.SimpleNamespace(config=_config(streaming_encoding=True))
+    rm.RecordingManager._check_streaming_drops(
+        fake_self, _dataset_with_drops({"observation.images.primary": 0})
+    )
+
+
+def test_drop_guard_fails_loudly_if_it_cannot_read_the_counters():
+    """The counters are private to lerobot. If they move, the guard must break
+    loudly — quietly ceasing to protect the data is the worst outcome."""
+    rm = _load_recording_manager()
+    fake_self = types.SimpleNamespace(config=_config(streaming_encoding=True))
+
+    no_encoder = types.SimpleNamespace(writer=types.SimpleNamespace())
+    try:
+        rm.RecordingManager._check_streaming_drops(fake_self, no_encoder)
+        raise AssertionError("a missing encoder must fail")
+    except RuntimeError as exc:
+        assert "cannot be detected" in str(exc)
+
+    renamed = types.SimpleNamespace(
+        writer=types.SimpleNamespace(_streaming_encoder=types.SimpleNamespace())
+    )
+    try:
+        rm.RecordingManager._check_streaming_drops(fake_self, renamed)
+        raise AssertionError("missing counters must fail")
+    except RuntimeError as exc:
+        assert "counters are unavailable" in str(exc)
+
+
+def test_drop_guard_is_inert_when_streaming_is_off():
+    """The PNG path has no encoder to inspect and never drops."""
+    rm = _load_recording_manager()
+    fake_self = types.SimpleNamespace(config=_config(streaming_encoding=False))
+    rm.RecordingManager._check_streaming_drops(fake_self, types.SimpleNamespace())
+
+
+def test_encoder_queue_seconds_converts_to_frames():
+    assert _config(fps=15, encoder_queue_seconds=4.0).resolved_encoder_queue_size() == 60
+    assert _config(fps=15, encoder_queue_seconds=0.01).resolved_encoder_queue_size() == 1
+
+
 def _writer_that_dies_immediately():
     """A writer killed before it can set writer_error (OOM, SIGSEGV, ...)."""
     return
