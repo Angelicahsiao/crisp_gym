@@ -11,8 +11,47 @@ push_to_hub: false
 
 # System configuration
 use_sound: true
+
+# Slack between the recording loop and the writer process. queue_seconds wins
+# over queue_size when set: size it to cover one save_episode, because the loop
+# blocks on any writer work longer than this. RAM cost is real — each queued
+# frame holds its raw uint8 images (~3.1 MB for one 800x1280 RGB camera, so
+# 6 s at 15 fps = 90 frames = ~276 MB).
 queue_size: 64
+queue_seconds: 6.0
+
+# Idle-writer exit join. NOT the drain timeout below.
 writer_timeout: 10.0
+# Time allowed at shutdown for the writer to drain the queue, run the final
+# save_episode and finalize(). Terminating before finalize() leaves the parquet
+# footer unwritten and the dataset unreadable, so keep this well above one
+# save_episode.
+shutdown_drain_timeout: 300.0
+
+# Writer throughput. lerobot PNG-encodes every camera frame inside add_frame;
+# with 0 threads that is synchronous on the writer's only thread and caps the
+# achievable rate. PIL releases the GIL during PNG encode, so threads scale
+# nearly linearly (measured 4.6x at 4 threads on 800x1280). processes: 0 keeps
+# it threads-only, avoiding a pickle of every multi-MB image.
+image_writer_processes: 0
+image_writer_threads: 4
+
+# Video encoding for save_episode.
+#   vcodec "auto" -> first hardware encoder PyAV exposes (h264_nvenc on NVIDIA),
+#     else libsvtav1 with a warning. Check yours with:
+#       python -c "from lerobot.datasets import detect_available_encoders_pyav as d; \
+#                  print(d(['h264_nvenc','hevc_nvenc','h264_vaapi','h264_qsv']))"
+#   video_crf is CODEC-SPECIFIC: lerobot passes it to libsvtav1 as CRF but to
+#     NVENC as constant QP (rc=0, qp=crf). lerobot's default 30 is a good AV1
+#     point and a visibly lossy h264 one, so it is set explicitly here — this
+#     is training data, and a silent quality drop is invisible until much later.
+#   video_gop null keeps lerobot's g=2 (near all-intra), which is what makes
+#     random-access seeking fast in the training dataloader. Hardware encoders
+#     handle it easily; only raise it if you are stuck on a software encoder.
+vcodec: "auto"
+video_crf: 21
+video_gop: null
+encoder_threads: null
 
 # Instrumentation (measurement only, see crisp_gym/util/loop_timing.py).
 # timing_report logs a per-episode phase breakdown of the record/deploy loop.

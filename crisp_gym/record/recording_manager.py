@@ -2,6 +2,7 @@
 
 import logging
 import multiprocessing as mp
+import queue as queue_mod
 import subprocess
 import threading
 import time
@@ -30,7 +31,11 @@ from crisp_gym.config.path import find_config
 from crisp_gym.policy.policy import Action, Observation
 from crisp_gym.record.recording_manager_config import RecordingManagerConfig
 from crisp_gym.util.lerobot_features import concatenate_state_features
-from crisp_gym.util.loop_timing import LoopTimingRecorder, WriterTimingRecorder
+from crisp_gym.util.loop_timing import (
+    DeadlinePacer,
+    LoopTimingRecorder,
+    WriterTimingRecorder,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +80,15 @@ class RecordingManager(ABC):
 
         self.episode_count = 0
 
-        self.queue = mp.JoinableQueue(self.config.queue_size)
+        self.queue_capacity = self.config.resolved_queue_size()
+        if self.config.queue_seconds is not None:
+            logger.info(
+                f"Writer queue: {self.queue_capacity} frames "
+                f"({self.config.queue_seconds:.1f} s at {self.config.fps} fps). "
+                "The recording loop blocks on any writer work longer than this "
+                "— size it to cover save_episode."
+            )
+        self.queue = mp.JoinableQueue(self.queue_capacity)
         self.episode_count_queue = mp.Queue(1)
         self.dataset_ready = mp.Event()
         # Set by the writer process when a FRAME/SAVE/startup error occurs, so
@@ -130,6 +143,43 @@ class RecordingManager(ABC):
             return "writer: alive"
         return f"writer: DEAD (exitcode={self.writer.exitcode})"
 
+    def _put_blocking(self, msg: dict, poll_s: float = 1.0, required: bool = True) -> None:
+        """Enqueue `msg`, waiting as long as the writer is alive.
+
+        Frames are never dropped — a gap would silently corrupt the fixed-fps
+        timestamps LeRobot writes — so this still blocks under back-pressure.
+        What it will not do is block FOREVER: `writer_error` only covers
+        exceptions the writer catches, so a writer killed outright (OOM,
+        SIGSEGV in the encoder, an earlier terminate()) used to wedge the
+        recording loop with no diagnosis.
+
+        Args:
+            msg: The message to enqueue.
+            poll_s: How often to re-check that the writer is still alive.
+            required: Raise when the writer is gone (the caller's data would be
+                silently lost). Pass False on the shutdown path, where raising
+                would mask the exception being handled and skip the cleanup
+                that follows — there we only log.
+        """
+        while True:
+            try:
+                self.queue.put(msg, timeout=poll_s)
+                return
+            except queue_mod.Full:
+                if self.writer.is_alive():
+                    continue
+                reason = (
+                    "The dataset writer process is gone "
+                    f"(exitcode={self.writer.exitcode}) and the queue is full "
+                    f"— '{msg.get('type')}' cannot be delivered. Check the "
+                    "writer traceback above; a SIGKILL usually means the "
+                    "machine ran out of memory."
+                )
+                if required:
+                    raise RuntimeError(reason) from None
+                logger.error(reason)
+                return
+
     def wait_until_ready(self, timeout: float | None = None) -> None:
         """Wait until the dataset writer is ready."""
         if timeout is None:
@@ -170,6 +220,69 @@ class RecordingManager(ABC):
         """Return the instructions to use the recording manager."""
         raise NotImplementedError()
 
+    def _writer_kwargs(self, fn) -> dict:  # noqa: ANN001
+        """Async-image-writer + video-encoder kwargs accepted by `fn`.
+
+        Filtered against the callable's own signature because the repo targets
+        several lerobot versions: `image_writer_*` exists back to 0.4.x, while
+        `rgb_encoder` / `encoder_threads` are 0.6+. Passing an unknown kwarg
+        would be a TypeError inside the writer subprocess, which surfaces only
+        as a startup timeout in the parent.
+        """
+        import inspect
+
+        wanted: dict = {
+            "image_writer_processes": self.config.image_writer_processes,
+            "image_writer_threads": self.config.image_writer_threads,
+        }
+
+        encoder = self._rgb_encoder()
+        if encoder is not None:
+            wanted["rgb_encoder"] = encoder
+        if self.config.encoder_threads is not None:
+            wanted["encoder_threads"] = self.config.encoder_threads
+
+        try:
+            accepted = set(inspect.signature(fn).parameters)
+        except (TypeError, ValueError):
+            return {}
+
+        kwargs = {k: v for k, v in wanted.items() if k in accepted}
+        for name in wanted.keys() - kwargs.keys():
+            logger.warning(
+                f"This lerobot version does not accept '{name}' — ignoring it. "
+                "Recording still works, but the corresponding tuning has no effect."
+            )
+        return kwargs
+
+    def _rgb_encoder(self):  # noqa: ANN202 — lerobot RGBEncoderConfig, imported lazily
+        """Build lerobot's RGBEncoderConfig, or None to keep its defaults."""
+        if self.config.vcodec is None and self.config.video_crf is None and self.config.video_gop is None:
+            return None
+        try:
+            from lerobot.configs import RGBEncoderConfig
+        except ImportError:
+            logger.warning(
+                "lerobot.configs.RGBEncoderConfig is unavailable (pre-0.6 "
+                "lerobot) — vcodec/video_crf/video_gop are ignored."
+            )
+            return None
+
+        fields: dict = {}
+        if self.config.vcodec is not None:
+            fields["vcodec"] = self.config.vcodec
+        if self.config.video_crf is not None:
+            fields["crf"] = self.config.video_crf
+        if self.config.video_gop is not None:
+            fields["g"] = self.config.video_gop
+        # __post_init__ resolves "auto" against the encoders PyAV actually has
+        # and logs the winner (or warns and falls back to libsvtav1).
+        encoder = RGBEncoderConfig(**fields)
+        logger.info(
+            f"Video encoder: vcodec={encoder.vcodec} crf/qp={encoder.crf} g={encoder.g}"
+        )
+        return encoder
+
     def _create_dataset(self) -> LeRobotDataset:
         """Factory function to create a dataset object."""
         logger.debug("Creating dataset object.")
@@ -178,7 +291,10 @@ class RecordingManager(ABC):
             # v0.5.1+ uses LeRobotDataset.resume(); older versions use the
             # plain constructor (which handles resuming based on existing meta).
             if hasattr(LeRobotDataset, "resume"):
-                dataset = LeRobotDataset.resume(repo_id=self.config.repo_id)
+                dataset = LeRobotDataset.resume(
+                    repo_id=self.config.repo_id,
+                    **self._writer_kwargs(LeRobotDataset.resume),
+                )
             else:
                 dataset = LeRobotDataset(repo_id=self.config.repo_id)
             if self.config.num_episodes <= dataset.num_episodes:
@@ -211,6 +327,7 @@ class RecordingManager(ABC):
                 robot_type=self.config.robot_type,
                 features=self.config.features,
                 use_videos=True,
+                **self._writer_kwargs(LeRobotDataset.create),
             )
             logger.debug(f"Dataset created with meta: {dataset.meta}")
         return dataset
@@ -306,8 +423,8 @@ class RecordingManager(ABC):
                             f"{time.perf_counter() - save_start:.2f} s "
                             "(stats over sampled frames + video encoding + "
                             "parquet). The recording loop only has "
-                            f"{self.config.queue_size} frames "
-                            f"({self.config.queue_size / self.config.fps:.1f} s "
+                            f"{self.queue_capacity} frames "
+                            f"({self.queue_capacity / self.config.fps:.1f} s "
                             "at this fps) of slack before it blocks on this."
                         )
                     frames_in_episode = 0
@@ -349,6 +466,18 @@ class RecordingManager(ABC):
                     writer_timing.log_summary(
                         f"at shutdown ({frames_in_episode} unsaved frames)"
                     )
+                    # REQUIRED: finalize() closes the ParquetWriter and writes
+                    # the footer. Without it the last data file has no footer
+                    # and the dataset is unreadable. DatasetWriter.__del__ is
+                    # only a best-effort net and never runs if the process is
+                    # terminated, so call it explicitly here.
+                    if hasattr(dataset, "finalize"):
+                        finalize_start = time.perf_counter()
+                        dataset.finalize()
+                        logger.info(
+                            "Dataset finalized in "
+                            f"{time.perf_counter() - finalize_start:.2f} s."
+                        )
                     break
             except Exception as e:
                 logger.exception("Error occurred: %s", e)
@@ -399,7 +528,7 @@ class RecordingManager(ABC):
         timing = LoopTimingRecorder(
             label=f"episode_{self.episode_count:04d}",
             budget_s=budget_s,
-            queue_capacity=self.config.queue_size,
+            queue_capacity=self.queue_capacity,
             enabled=self.config.timing_report,
             csv_dir=self.config.timing_csv_dir,
         )
@@ -407,8 +536,18 @@ class RecordingManager(ABC):
         # the data function publishes one — see record_functions.make_record_fn.
         sub_timing = getattr(data_fn, "timing", None)
 
+        # DEADLINE pacing, not duration pacing. Sleeping for `budget - work`
+        # makes every late wake permanently shift the schedule: with time.sleep
+        # returning ~14 ms late (GIL contention with the ROS executor threads),
+        # the field run captured 748 frames at 81 ms spacing while LeRobot
+        # stamped them 66.7 ms apart — a 22% error in the dataset's time base,
+        # which is what `action[t] = pose[t+1]` is measured against.
+        # Targeting absolute deadlines instead makes the next sleep shorter by
+        # exactly however late this one woke, so jitter cancels instead of
+        # accumulating.
+        pacer = DeadlinePacer(budget_s)
+
         while self.state == "recording":
-            frame_start = time.time()
             t_frame = time.perf_counter()
 
             t_mark = time.perf_counter()
@@ -418,18 +557,14 @@ class RecordingManager(ABC):
             if obs is None or action is None:
                 logger.debug("Data function returned None, skipping frame.")
                 # If the data function returns None, skip this frame
-                sleep_time = 1 / self.config.fps - (time.time() - frame_start)
-                t_mark = time.perf_counter()
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
-                sleep_s = time.perf_counter() - t_mark
+                sleep_requested, sleep_s = pacer.wait()
                 timing.add_frame(
                     data_s=data_s,
                     put_s=0.0,
                     sleep_s=sleep_s,
                     total_s=time.perf_counter() - t_frame,
                     queue_depth=self.queue_depth(),
-                    sleep_requested_s=max(0.0, sleep_time),
+                    sleep_requested_s=sleep_requested,
                     sub_timing=sub_timing,
                     skipped=True,
                 )
@@ -446,24 +581,20 @@ class RecordingManager(ABC):
             # and that block is what shows up as a dropped teleop rate.
             queue_depth = self.queue_depth()
             t_mark = time.perf_counter()
-            self.queue.put({"type": "FRAME", "data": (obs, action, task)})
+            self._put_blocking({"type": "FRAME", "data": (obs, action, task)})
             put_s = time.perf_counter() - t_mark
 
-            sleep_time = 1 / self.config.fps - (time.time() - frame_start)
-            t_mark = time.perf_counter()
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-                sleep_s = time.perf_counter() - t_mark
-            else:
-                sleep_s = 0.0
+            work_s = time.perf_counter() - t_frame
+            sleep_requested, sleep_s = pacer.wait()
+            if work_s > budget_s:
                 blocked = "queue.put (writer back-pressure)" if put_s > data_s else "data_fn"
                 logger.warning(
-                    f"Frame processing took too long: {time.time() - frame_start - 1.0 / self.config.fps:.3f} seconds too long i.e. {1.0 / (time.time() - frame_start):.2f} FPS. "
-                    f"Dominant phase: {blocked} — data_fn {1e3 * data_s:.1f} ms, "
-                    f"queue.put {1e3 * put_s:.1f} ms, writer queue "
-                    f"{queue_depth}/{self.config.queue_size} on entry."
+                    f"Frame work took {1e3 * work_s:.1f} ms, over the "
+                    f"{1e3 * budget_s:.1f} ms budget by {1e3 * (work_s - budget_s):.1f} ms "
+                    f"(i.e. {1.0 / work_s:.2f} FPS). Dominant phase: {blocked} — "
+                    f"data_fn {1e3 * data_s:.1f} ms, queue.put {1e3 * put_s:.1f} ms, "
+                    f"writer queue {queue_depth}/{self.queue_capacity} on entry."
                 )
-            logger.debug(f"Finished sleeping for {sleep_time:.3f} seconds.")
 
             timing.add_frame(
                 data_s=data_s,
@@ -471,13 +602,19 @@ class RecordingManager(ABC):
                 sleep_s=sleep_s,
                 total_s=time.perf_counter() - t_frame,
                 queue_depth=queue_depth,
-                sleep_requested_s=max(0.0, sleep_time),
+                sleep_requested_s=sleep_requested,
                 sub_timing=sub_timing,
             )
 
         logger.debug("Finished recording...")
 
-        timing.log_summary(extra=self.writer_status())
+        extra = self.writer_status()
+        if pacer.resyncs:
+            extra += (
+                f"; pacing resynced {pacer.resyncs}x (fell more than one period "
+                "behind — those gaps are real time missing from the episode)"
+            )
+        timing.log_summary(extra=extra)
 
         if on_end:
             on_end()
@@ -501,12 +638,12 @@ class RecordingManager(ABC):
 
         if self.state == "to_be_saved":
             logger.info("Saving current episode.")
-            self.queue.put({"type": "SAVE_EPISODE"})
+            self._put_blocking({"type": "SAVE_EPISODE"})
             self.episode_count += 1
             self._set_to_wait()
         elif self.state == "to_be_deleted":
             logger.info("Deleting current episode.")
-            self.queue.put({"type": "DELETE_EPISODE"})
+            self._put_blocking({"type": "DELETE_EPISODE"})
             self._set_to_wait()
         elif self.state == "exit":
             pass
@@ -529,21 +666,47 @@ class RecordingManager(ABC):
         if not self.config.push_to_hub:
             logger.info("Not pushing dataset to Hugging Face Hub.")
         else:
-            self.queue.put({"type": "PUSH_TO_HUB"})
+            self._put_blocking({"type": "PUSH_TO_HUB"}, required=False)
         logger.info("Shutting down the record process...")
-        self.queue.put({"type": "SHUTDOWN"})
+        self._put_blocking({"type": "SHUTDOWN"}, required=False)
 
-        # Bounded join: a wedged writer (e.g. blocking push_to_hub or a hung
-        # add_frame) must not hang shutdown forever.
-        self.writer.join(timeout=self.config.writer_timeout)
+        # The writer still has to drain the queue, run the last save_episode
+        # (video encode + parquet) and finalize(). That is minutes of work on a
+        # large episode, so it gets its OWN timeout: writer_timeout (10s by
+        # default) only ever covered an idle writer exiting, and expiring it
+        # mid-encode terminates the process before finalize() writes the
+        # parquet footer — losing the episode and leaving the dataset
+        # unreadable.
+        deadline = time.perf_counter() + self.config.shutdown_drain_timeout
+        last_report = 0.0
+        while self.writer.is_alive() and time.perf_counter() < deadline:
+            self.writer.join(timeout=1.0)
+            remaining = self.queue_depth()
+            elapsed = self.config.shutdown_drain_timeout - (deadline - time.perf_counter())
+            if elapsed - last_report >= 10.0:
+                last_report = elapsed
+                logger.info(
+                    f"Waiting for the dataset writer to finish "
+                    f"({remaining if remaining >= 0 else '?'} frames still "
+                    f"queued, {elapsed:.0f}/{self.config.shutdown_drain_timeout:.0f}s). "
+                    "It is encoding video and writing parquet — do not kill it."
+                )
+
         if self.writer.is_alive():
             logger.error(
-                "Dataset writer did not shut down within "
-                f"{self.config.writer_timeout}s — terminating it. The last "
-                "episode may not be fully written."
+                "Dataset writer did not finish within "
+                f"{self.config.shutdown_drain_timeout}s — terminating it. THE "
+                "LAST EPISODE IS PROBABLY CORRUPT: finalize() never ran, so "
+                "the parquet footer may be missing. Raise "
+                "shutdown_drain_timeout above the time one save_episode takes."
             )
             self.writer.terminate()
-            self.writer.join(timeout=5.0)
+            self.writer.join(timeout=self.config.writer_timeout)
+        elif self.writer.exitcode not in (0, None):
+            logger.error(
+                f"Dataset writer exited with code {self.writer.exitcode} — the "
+                "last episode may be incomplete."
+            )
 
     def _set_to_wait(self) -> None:
         """Set to wait if possible."""

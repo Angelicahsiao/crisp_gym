@@ -44,7 +44,54 @@ from typing import Dict, List, Sequence
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["PhaseStats", "LoopTimingRecorder", "WriterTimingRecorder", "percentile"]
+__all__ = [
+    "PhaseStats",
+    "LoopTimingRecorder",
+    "WriterTimingRecorder",
+    "DeadlinePacer",
+    "percentile",
+]
+
+
+class DeadlinePacer:
+    """Hold a fixed rate by sleeping to absolute deadlines, not for durations.
+
+    `sleep(period - work)` makes every late wake permanently shift the
+    schedule. That matters here beyond comfort: LeRobot stamps
+    `timestamp = frame_index / fps` and cannot be told the real capture time,
+    so a loop that drifts to 12.3 FPS writes a dataset claiming 15 FPS — a 22%
+    error in the time base that `action[t] = pose[t+1]` is measured against,
+    which shows up at deploy as motion commanded faster than demonstrated.
+
+    Targeting absolute deadlines shortens the next sleep by exactly however
+    late this one woke, so jitter cancels instead of accumulating.
+
+    Falling more than a whole period behind is different: catching up would
+    fire a burst of zero-sleep frames, which corrupts the spacing worse than
+    the gap did. Past that threshold the pacer rebases and counts a resync.
+    """
+
+    def __init__(self, period_s: float) -> None:
+        """Args: period_s = 1 / fps."""
+        self.period_s = period_s
+        self.resyncs = 0
+        self.next_deadline = time.perf_counter() + period_s
+
+    def wait(self) -> tuple[float, float]:
+        """Sleep until the next deadline. Returns (requested_s, slept_s)."""
+        now = time.perf_counter()
+        requested = self.next_deadline - now
+        slept = 0.0
+        if requested > 0:
+            start = time.perf_counter()
+            time.sleep(requested)
+            slept = time.perf_counter() - start
+
+        self.next_deadline += self.period_s
+        if time.perf_counter() > self.next_deadline:
+            self.next_deadline = time.perf_counter() + self.period_s
+            self.resyncs += 1
+        return max(0.0, requested), slept
 
 
 def percentile(sorted_values: Sequence[float], q: float) -> float:

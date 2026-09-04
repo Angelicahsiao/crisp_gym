@@ -1,5 +1,6 @@
 """Configuration classes for recording managers."""
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict
@@ -29,8 +30,51 @@ class RecordingManagerConfig:
 
     # System configuration
     use_sound: bool = True
+    # Frames of slack between the recording loop and the writer process. Prefer
+    # queue_seconds, which expresses the same thing in units that matter (how
+    # long a writer hiccup the loop can absorb before teleop stalls).
     queue_size: int = 16
+    # When set, OVERRIDES queue_size with ceil(queue_seconds * fps). Size it to
+    # cover save_episode, which is not bounded by the queue: the loop blocks on
+    # any writer work longer than this. Costs RAM — each queued frame holds its
+    # raw uint8 images (a single 800x1280 RGB camera is ~3.1 MB/frame).
+    queue_seconds: float | None = None
+    # Bounded join for the writer at shutdown (see __exit__). Distinct from
+    # shutdown_drain_timeout: this one only covers a writer that is idle and
+    # simply has to exit.
     writer_timeout: float = 10.0
+    # How long shutdown waits for the writer to drain the queue AND finish its
+    # final save_episode (video encode + parquet) before giving up and
+    # terminating it. Terminating mid-write loses the episode and can leave the
+    # parquet footer unwritten, so this must exceed a save_episode.
+    shutdown_drain_timeout: float = 300.0
+
+    # ── Writer throughput ────────────────────────────────────────────────────
+    # lerobot PNG-encodes every camera frame inside add_frame. With 0 threads
+    # that happens synchronously on the writer's only thread and sets the
+    # achievable rate. PIL's PNG encoder releases the GIL, so threads scale
+    # nearly linearly (measured 4.6x at 4 threads on 800x1280).
+    # processes=0 means threads-only — no pickling of multi-MB images.
+    image_writer_processes: int = 0
+    image_writer_threads: int = 0
+
+    # ── Video encoding (save_episode) ────────────────────────────────────────
+    # vcodec: "auto" picks the first available hardware encoder (h264_nvenc on
+    #   NVIDIA, vaapi/qsv on Intel/AMD) and falls back to libsvtav1 with a
+    #   warning. Availability is probed through PyAV, so the wheel's bundled
+    #   ffmpeg must carry the encoder — having the GPU is not sufficient.
+    #   None = leave lerobot's default (libsvtav1).
+    # video_crf: quality. NOTE the meaning is codec-specific: lerobot feeds it
+    #   to libsvtav1 as CRF but to NVENC as constant QP (rc=0, qp=crf). The
+    #   lerobot default of 30 is a good AV1 point and a visibly lossy h264 one,
+    #   so set this explicitly whenever vcodec changes — it is training data.
+    # video_gop: keyframe interval. lerobot defaults to 2 (near all-intra) to
+    #   keep random-access seeking fast in the training dataloader. Only worth
+    #   raising if you are stuck on a software encoder. None = keep the default.
+    vcodec: str | None = None
+    video_crf: int | None = None
+    video_gop: int | None = None
+    encoder_threads: int | None = None
 
     # Instrumentation (measurement only — never changes what is recorded).
     # timing_report: log a per-episode phase breakdown of the recording loop
@@ -41,6 +85,12 @@ class RecordingManagerConfig:
     #   episode, written at episode end). None = no CSV.
     timing_report: bool = True
     timing_csv_dir: str | None = None
+
+    def resolved_queue_size(self) -> int:
+        """Queue capacity in frames, honouring queue_seconds when set."""
+        if self.queue_seconds is None:
+            return self.queue_size
+        return max(1, math.ceil(self.queue_seconds * self.fps))
 
     @classmethod
     def from_yaml(cls, yaml_path: Path | str, **overrides) -> "RecordingManagerConfig":  # noqa: ANN003

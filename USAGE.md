@@ -660,3 +660,69 @@ The flag exists on `record_lerobot_format_leader_follower.py`,
 the recording config to silence the summaries.
 
 This is instrumentation only — it changes nothing about what is recorded.
+
+---
+
+## 13. Recording at high resolution without stalling teleop
+
+Defaults live in `config/recording/default_recording.yaml`; every knob is a
+`RecordingManagerConfig` field, so a per-run override works too.
+
+**Writer throughput.** lerobot PNG-encodes every camera frame synchronously
+inside `add_frame` unless it is given writer threads. PIL releases the GIL
+during PNG encode, so threads scale nearly linearly — measured 4.6x at 4
+threads on 800x1280, taking a 62 ms/frame writer to ~14 ms against a 66.7 ms
+budget at 15 FPS:
+
+```yaml
+image_writer_processes: 0   # threads-only; avoids pickling multi-MB images
+image_writer_threads: 4
+```
+
+**Video encoding.** `save_episode` (video encode + stats + parquet) runs on the
+same single writer thread as the frames and is NOT bounded by the queue, so a
+long encode stalls the next episode. `vcodec: "auto"` picks the first hardware
+encoder PyAV exposes and falls back to `libsvtav1` with a warning. Check what
+yours has — lerobot probes through PyAV, so the wheel's bundled ffmpeg must
+carry the encoder; owning the GPU is not enough:
+
+```bash
+python -c "from lerobot.datasets import detect_available_encoders_pyav as d;            print(d(['h264_nvenc','hevc_nvenc','h264_vaapi','h264_qsv']))"
+```
+
+```yaml
+vcodec: "auto"      # -> h264_nvenc on NVIDIA
+video_crf: 21
+video_gop: null     # keep lerobot's g=2
+```
+
+`video_crf` is **codec-specific**: lerobot passes it to libsvtav1 as CRF but to
+NVENC as constant QP (`rc=0, qp=crf`). Its default of 30 is a good AV1 point
+and a visibly lossy h264 one, so set it explicitly whenever you change
+`vcodec` — this is training data, and the quality drop is silent. `video_gop`
+should stay null: lerobot's `g=2` is what keeps random-access seeking fast in
+the training dataloader, and hardware encoders handle it easily.
+
+**Queue slack.** Size it to cover one `save_episode`, since the loop blocks on
+anything longer. Each queued frame holds its raw uint8 images (~3.1 MB for one
+800x1280 RGB camera), so the RAM cost is real:
+
+```yaml
+queue_seconds: 6.0   # wins over queue_size; 6 s at 15 fps = 90 frames ~ 276 MB
+```
+
+**Shutdown.** `shutdown_drain_timeout` (default 300 s) is how long shutdown
+waits for the writer to drain, finish its last `save_episode` and call
+`finalize()`. That last call writes the parquet footer — terminating before it
+leaves the dataset unreadable — so keep this above one `save_episode`.
+`writer_timeout` now only covers an idle writer exiting.
+
+**Rate integrity.** The loop paces to absolute deadlines, so a late wake
+shortens the next sleep instead of shifting the schedule forever. This matters
+because LeRobot stamps `timestamp = frame_index / fps` and cannot be told the
+real capture time: a loop drifting to 12.3 FPS writes a dataset claiming 15,
+a 22% error in the time base that `action[t] = pose[t+1]` is measured against.
+Falling more than a whole period behind rebases instead of firing a catch-up
+burst, and the episode summary reports how often that happened. **Check every
+episode's summary reads ~15.00 FPS** — anything lower means the time base is
+off by that ratio.
