@@ -369,19 +369,41 @@ class RecordingManager(ABC):
             return
 
         options = {k: str(v) for k, v in encoder.get_codec_options().items()}
+
+        def _open(height: int, width: int) -> None:
+            ctx = av.CodecContext.create(encoder.vcodec, "w")
+            ctx.width, ctx.height = int(width), int(height)
+            ctx.pix_fmt = encoder.pix_fmt
+            ctx.time_base = Fraction(1, int(self.config.fps))
+            ctx.options = dict(options)
+            ctx.open()
+            del ctx  # release the encoder session immediately
+
         for height, width in sorted(shapes):
             try:
-                ctx = av.CodecContext.create(encoder.vcodec, "w")
-                ctx.width, ctx.height = int(width), int(height)
-                ctx.pix_fmt = encoder.pix_fmt
-                ctx.time_base = Fraction(1, int(self.config.fps))
-                ctx.options = options
-                ctx.open()
-                del ctx  # release the encoder session immediately
+                _open(height, width)
             except Exception as exc:
+                # Hardware encoders love to fail with a bare AVERROR_UNKNOWN.
+                # Retry once at VERBOSE so FFmpeg's own diagnosis ("Gop Length
+                # should be greater than...", "OpenEncodeSessionEx failed",
+                # "Cannot load libnvidia-encode") reaches the operator instead
+                # of "Unknown error occurred".
+                detail = ""
+                try:
+                    previous = av.logging.get_level()
+                    av.logging.set_level(av.logging.VERBOSE)
+                    try:
+                        _open(height, width)
+                    except Exception as verbose_exc:
+                        detail = f"\nFFmpeg detail: {verbose_exc}"
+                    finally:
+                        av.logging.set_level(previous)
+                except Exception:  # logging control is best-effort
+                    pass
+
                 raise RuntimeError(
                     f"Video encoder '{encoder.vcodec}' cannot be opened for "
-                    f"{width}x{height} with options {options}: {exc}\n"
+                    f"{width}x{height} with options {options}: {exc}{detail}\n"
                     "Recording is refused now rather than failing part-way "
                     "through the first save_episode. Fix the encoder settings "
                     "in the recording config (vcodec / video_crf / video_gop / "

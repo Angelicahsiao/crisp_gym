@@ -235,8 +235,22 @@ def _install_av_stub(open_ok: bool):
         def create(name, mode):
             return _Ctx()
 
+    class _Logging:
+        VERBOSE = 40
+        _level = 8
+
+        @classmethod
+        def get_level(cls):
+            return cls._level
+
+        @classmethod
+        def set_level(cls, level):
+            cls._level = level
+            opened.setdefault("levels", []).append(level)
+
     av_mod = sys.modules.setdefault("av", types.ModuleType("av"))
     av_mod.CodecContext = _CodecContext
+    av_mod.logging = _Logging
     return opened
 
 
@@ -369,6 +383,30 @@ def test_preflight_raises_before_any_frame_is_recorded():
         assert "cannot be opened" in str(exc)
         assert "1280x800" in str(exc), str(exc)
         assert 'vcodec: "h264"' in str(exc), "must name the software fallback"
+
+
+def test_preflight_retries_verbosely_to_capture_ffmpegs_reason():
+    """Hardware encoders fail with a bare AVERROR_UNKNOWN. Without FFmpeg's own
+    line ("Gop Length should be greater than...", "OpenEncodeSessionEx failed")
+    the operator has nothing to act on — so a failure is retried at VERBOSE and
+    the detail is folded into the raised message."""
+    rm = _load_recording_manager()
+    opened = _install_av_stub(open_ok=False)
+    fake_self = types.SimpleNamespace(
+        config=_config(
+            fps=15,
+            features={"observation.images.primary": {"dtype": "video", "shape": (800, 1280, 3)}},
+        )
+    )
+    try:
+        rm.RecordingManager._preflight_encoder(fake_self, _FakeEncoder())
+        raise AssertionError("must raise")
+    except RuntimeError as exc:
+        assert "FFmpeg detail:" in str(exc), str(exc)
+    # Verbose was turned on and then restored, not left on.
+    levels = opened.get("levels", [])
+    assert levels[0] == sys.modules["av"].logging.VERBOSE, levels
+    assert levels[-1] != sys.modules["av"].logging.VERBOSE, levels
 
 
 def test_preflight_opens_at_the_declared_image_size():
