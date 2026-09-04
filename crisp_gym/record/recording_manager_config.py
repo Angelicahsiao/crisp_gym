@@ -43,6 +43,20 @@ class RecordingManagerConfig:
     # shutdown_drain_timeout: this one only covers a writer that is idle and
     # simply has to exit.
     writer_timeout: float = 10.0
+    # Start method for the writer process. "spawn" is the default on purpose:
+    # the writer is created from a process that has ROS2/DDS threads running
+    # and (through lerobot/torch) an initialised CUDA context, and NEITHER
+    # survives fork(). Verified on the owner's box — a CUDA-initialised parent
+    # forking a child makes h264_nvenc fail with AVERROR_UNKNOWN, while spawn
+    # opens it fine; forking a live DDS/multithreaded parent can also deadlock
+    # the child on an inherited lock. Spawn costs a few seconds of writer
+    # startup (the child re-imports lerobot/torch), covered by
+    # writer_startup_timeout. Set "fork" only to reproduce the old behaviour.
+    writer_start_method: str = "spawn"
+    # Startup budget for the writer, from process creation to "dataset ready".
+    # Distinct from writer_timeout: under spawn the child re-imports lerobot
+    # and torch before it can even begin, which the old 10 s could not cover.
+    writer_startup_timeout: float = 180.0
     # How long shutdown waits for the writer to drain the queue AND finish its
     # final save_episode (video encode + parquet) before giving up and
     # terminating it. Terminating mid-write loses the episode and can leave the

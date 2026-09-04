@@ -20,8 +20,18 @@ use_sound: true
 queue_size: 64
 queue_seconds: 6.0
 
-# Idle-writer exit join. NOT the drain timeout below.
+# Idle-writer exit join. NOT the drain or startup timeouts below.
 writer_timeout: 10.0
+# Start method for the writer process. "spawn" on purpose: this process has
+# ROS2/DDS threads and, through lerobot/torch, an initialised CUDA context, and
+# neither survives fork(). A CUDA-initialised parent that forks makes
+# h264_nvenc fail with a bare AVERROR_UNKNOWN (verified), and forking a live
+# multithreaded DDS parent can deadlock the child on an inherited lock.
+# Set "fork" only to reproduce the old behaviour.
+writer_start_method: "spawn"
+# Startup budget: a spawned child re-imports lerobot and torch before it can
+# create the dataset, which the 10 s writer_timeout could not cover.
+writer_startup_timeout: 180.0
 # Time allowed at shutdown for the writer to drain the queue, run the final
 # save_episode and finalize(). Terminating before finalize() leaves the parquet
 # footer unwritten and the dataset unreadable, so keep this well above one

@@ -431,6 +431,57 @@ def test_preflight_is_a_no_op_without_an_encoder():
     rm.RecordingManager._preflight_encoder(types.SimpleNamespace(config=_config()), None)
 
 
+def test_writer_defaults_to_spawn():
+    """fork is unsafe here: the parent has ROS2/DDS threads and, via
+    lerobot/torch, an initialised CUDA context. Verified on the owner's box —
+    a CUDA-initialised parent forking a child makes h264_nvenc fail with
+    AVERROR_UNKNOWN; spawn opens it fine."""
+    cfg = _config()
+    assert cfg.writer_start_method == "spawn"
+    # Spawn re-imports lerobot/torch in the child, which the old 10 s
+    # writer_timeout could not cover.
+    assert cfg.writer_startup_timeout > cfg.writer_timeout
+
+
+def test_manager_state_is_picklable_for_spawn():
+    """ctx.Process(target=self._writer_proc) pickles the whole manager. A
+    threading.Lock and the Process's own self-reference cannot cross, and the
+    writer needs neither."""
+    import pickle
+    import threading
+
+    rm = _load_recording_manager()
+    cfg = _config(queue_seconds=6.0)
+
+    holder = types.SimpleNamespace()
+    holder.__dict__.update(
+        {
+            "_state_lock": threading.Lock(),
+            "writer": object(),  # the Process object itself
+            "_thread": threading.Thread(target=lambda: None),
+            "node": object(),  # ROSRecordingManager's rclpy node
+            "config": cfg,
+            "queue_capacity": 90,
+            "_log_level": 20,
+            "episode_count": 3,
+        }
+    )
+
+    state = rm.RecordingManager.__getstate__(holder)
+    for dropped in ("_state_lock", "writer", "_thread", "node"):
+        assert dropped not in state, dropped
+    assert state["config"] is cfg
+    assert state["queue_capacity"] == 90 and state["episode_count"] == 3
+
+    # The point of dropping them: what remains must actually pickle.
+    pickle.loads(pickle.dumps(state))
+
+    target = types.SimpleNamespace()
+    rm.RecordingManager.__setstate__(target, state)
+    assert isinstance(target._state_lock, type(threading.Lock()))
+    assert target.config is not None
+
+
 def _writer_that_dies_immediately():
     """A writer killed before it can set writer_error (OOM, SIGSEGV, ...)."""
     return

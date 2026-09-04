@@ -99,22 +99,54 @@ class RecordingManager(ABC):
                 "The recording loop blocks on any writer work longer than this "
                 "— size it to cover save_episode."
             )
-        self.queue = mp.JoinableQueue(self.queue_capacity)
-        self.episode_count_queue = mp.Queue(1)
-        self.dataset_ready = mp.Event()
+        # Every primitive comes from ONE context — mixing a default-context
+        # Queue with a spawn-context Process is unsupported.
+        ctx = mp.get_context(self.config.writer_start_method)
+        self.queue = ctx.JoinableQueue(self.queue_capacity)
+        self.episode_count_queue = ctx.Queue(1)
+        self.dataset_ready = ctx.Event()
         # Set by the writer process when a FRAME/SAVE/startup error occurs, so
         # the recording loop fails loudly instead of silently producing a
         # truncated/corrupt episode.
-        self.writer_error = mp.Event()
+        self.writer_error = ctx.Event()
+
+        # Log level to re-establish in the child: under spawn it inherits no
+        # logging configuration, so the writer would otherwise be silent.
+        self._log_level = logging.getLogger().getEffectiveLevel()
 
         # Start the writer process
-        self.writer = mp.Process(
+        self.writer = ctx.Process(
             target=self._writer_proc,
             args=(),
             name="dataset_writer",
             daemon=False,
         )
         self.writer.start()
+        if self.config.writer_start_method != "fork":
+            logger.info(
+                f"Dataset writer starting with '{self.config.writer_start_method}' "
+                "(it re-imports lerobot/torch, so give it a few seconds)."
+            )
+
+    def __getstate__(self) -> dict:
+        """Pickle support for the spawn start method.
+
+        `ctx.Process(target=self._writer_proc)` pickles `self`. Three things
+        cannot cross a process boundary and none is needed by the writer:
+        the state lock (a threading.Lock), the Process object itself (a
+        self-reference), and any listener a subclass has attached. The mp
+        Queue/Event attributes DO cross — ForkingPickler handles them because
+        they are reachable from the Process's target.
+        """
+        state = self.__dict__.copy()
+        for key in ("_state_lock", "writer", "_thread", "listener", "node", "_subscriber"):
+            state.pop(key, None)
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        """Rebuild the dropped lock in the child."""
+        self.__dict__.update(state)
+        self._state_lock = threading.Lock()
 
     @property
     def state(self) -> str:
@@ -194,7 +226,7 @@ class RecordingManager(ABC):
     def wait_until_ready(self, timeout: float | None = None) -> None:
         """Wait until the dataset writer is ready."""
         if timeout is None:
-            timeout = self.config.writer_timeout
+            timeout = self.config.writer_startup_timeout
 
         original_timeout = timeout
         while not self.dataset_ready.is_set():
@@ -467,6 +499,13 @@ class RecordingManager(ABC):
 
     def _writer_proc(self):
         """Process to write data to the dataset."""
+        if self.config.writer_start_method != "fork":
+            # A spawned child inherits no logging configuration, so without
+            # this every writer message — including the traceback that explains
+            # a startup failure — would be swallowed.
+            from crisp_gym.util.setup_logger import setup_logging
+
+            setup_logging(level=getattr(self, "_log_level", logging.INFO))
         logger.info("Starting dataset writer process.")
         try:
             dataset = self._create_dataset()

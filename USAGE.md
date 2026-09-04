@@ -737,6 +737,16 @@ anything longer. Each queued frame holds its raw uint8 images (~3.1 MB for one
 queue_seconds: 6.0   # wins over queue_size; 6 s at 15 fps = 90 frames ~ 276 MB
 ```
 
+**The writer runs under `spawn`, not `fork`.** This process has ROS2/DDS threads
+and, through lerobot/torch, an initialised CUDA context — neither survives
+`fork()`. A CUDA-initialised parent that forks makes `h264_nvenc` fail with a
+bare `AVERROR_UNKNOWN` (that is what made hardware encoding look broken), and
+forking a live multithreaded DDS parent can deadlock the child on an inherited
+lock. The cost is a few seconds of writer startup while the child re-imports
+lerobot and torch, covered by `writer_startup_timeout` (180 s) rather than the
+10 s `writer_timeout`. Set `writer_start_method: "fork"` only to reproduce the
+old behaviour.
+
 **Shutdown.** `shutdown_drain_timeout` (default 300 s) is how long shutdown
 waits for the writer to drain, finish its last `save_episode` and call
 `finalize()`. That last call writes the parquet footer — terminating before it

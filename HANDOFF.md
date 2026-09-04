@@ -396,11 +396,37 @@ was configurable. lerobot reads only `is_depth_map` from that block (the real
 codec lands in the feature's `info`, probed from the encoded file), so the key
 is no longer declared.
 
+**WRITER NOW USES SPAWN (`writer_start_method`, default "spawn").** Root-caused
+on the owner's box, and it is the reason `h264_nvenc` failed only inside the
+writer. Isolated with a fork/spawn matrix:
+
+| parent state | fork child | spawn child |
+|---|---|---|
+| has NOT touched CUDA | opens OK | opens OK |
+| CUDA initialised (torch) | **AVERROR_UNKNOWN** | opens OK |
+
+The recording process initialises CUDA through lerobot/torch before it creates
+the writer, so the forked child inherited a CUDA context it could not use and
+NVENC could not create its own. This also closes the long-standing fork hazard
+(forking a live multithreaded ROS2/DDS parent can deadlock the child on an
+inherited lock) — `policy/relative_lerobot_policy.py:434` had already gone
+spawn for the same reason.
+
+Three things spawn required, all done:
+* `RecordingManager.__getstate__`/`__setstate__` — `ctx.Process(target=self.
+  _writer_proc)` pickles the manager; the state lock, the Process's own
+  self-reference and any subclass listener are dropped (the writer needs none).
+  The mp Queue/Event attributes DO cross: ForkingPickler handles them because
+  they are reachable from the Process target.
+* All mp primitives come from ONE context — mixing a default-context Queue with
+  a spawn-context Process is unsupported.
+* `writer_startup_timeout` (180 s) separate from `writer_timeout` (10 s): a
+  spawned child re-imports lerobot and torch before it can create the dataset,
+  which 10 s could not cover. The child also re-establishes logging, which it
+  does not inherit under spawn.
+
 **STILL NOT DONE:**
-1. The writer is `fork()`ed from a live multithreaded ROS2/DDS process
-   (`policy/relative_lerobot_policy.py:434` already uses
-   `mp.get_context("spawn")` for exactly this reason).
-2. Producer waste: `env.step()` builds a full observation
+1. Producer waste: `env.step()` builds a full observation
    (`manipulator_env.py:831`/`:1042`) that `make_record_fn` discards before
    `_collect_obs()` re-reads everything; `_resize_image` runs `cv2.resize` per
    camera per frame whenever env `resolution` != record `shape`.
