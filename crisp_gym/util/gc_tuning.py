@@ -60,6 +60,12 @@ def reduced_gc_pauses(
         thresholds: gen0/gen1/gen2 thresholds to install.
     """
     if not enabled:
+        # Say so explicitly: during an A/B the absence of a line is weak
+        # evidence, and the operator needs to know which arm this episode ran.
+        logger.info(
+            f"GC left at stock settings {gc.get_threshold()} "
+            "(reduce_gc_pauses is off) — expect the ~117 ms stalls."
+        )
         yield
         return
 

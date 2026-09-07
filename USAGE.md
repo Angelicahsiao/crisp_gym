@@ -810,8 +810,36 @@ reduce_gc_pauses: true   # gc.freeze() + higher thresholds during an episode
 future collection; raised thresholds make a pass ~70x rarer. It changes only
 WHEN reference cycles are reclaimed, never whether — refcounting still frees
 the per-frame arrays immediately, and the collector runs once between episodes
-where a pause is free. Set it false to A/B against stock GC on the same build;
-compare the `oversleep` p95 and the resync count in the episode summary.
+where a pause is free.
+
+### A/B-ing it
+
+`--reduce-gc-pauses` / `--no-reduce-gc-pauses` override the config per run, so
+nothing has to be edited between arms:
+
+```bash
+python -m crisp_gym.scripts.record_lerobot_format_leader_follower ... \
+    --timing-csv-dir ~/loop_timing --reduce-gc-pauses        # arm A
+python -m crisp_gym.scripts.record_lerobot_format_leader_follower ... \
+    --timing-csv-dir ~/loop_timing --no-reduce-gc-pauses     # arm B
+```
+
+Both arms announce themselves at episode start (`GC tuned for the control
+loop: ...` or `GC left at stock settings ...`) and every episode summary ends
+with `gc_tuned=True|False`, so an arm cannot be mixed up after the fact.
+
+**Change one thing at a time.** Keep `streaming_encoding` identical across the
+two arms — verify it works on its own first, then hold it fixed while flipping
+GC. Compare, in the episode summary:
+
+| | expected if GC is the cause |
+|---|---|
+| `oversleep` p95 | ~95-110 ms -> toward the ~5 ms floor |
+| pacing resyncs | 25-35 -> single digits |
+| effective FPS | 13.2-13.5 -> toward 15.00 |
+
+The first episode of a run behaves differently from later ones, so compare
+like with like — episode 0 against episode 0, episode 1 against episode 1.
 
 **Rate integrity.** The loop paces to absolute deadlines, so a late wake
 shortens the next sleep instead of shifting the schedule forever. This matters

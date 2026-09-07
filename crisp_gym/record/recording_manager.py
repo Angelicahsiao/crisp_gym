@@ -842,7 +842,9 @@ class RecordingManager(ABC):
 
         logger.debug("Finished recording...")
 
-        extra = self.writer_status()
+        extra = (
+            f"gc_tuned={self.config.reduce_gc_pauses}; " + self.writer_status()
+        )
         if pacer.resyncs:
             extra += (
                 f"; pacing resynced {pacer.resyncs}x (fell more than one period "

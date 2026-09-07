@@ -153,6 +153,17 @@ def main():
         ),
     )
 
+    parser.add_argument(
+        "--reduce-gc-pauses",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Override the recording config's reduce_gc_pauses. Pass "
+            "--no-reduce-gc-pauses to A/B against stock GC behaviour on the "
+            "same build. Unset = whatever the config says."
+        ),
+    )
+
     args = parser.parse_args()
     logger = logging.getLogger(__name__)
     setup_logging(level=args.log_level)
@@ -248,6 +259,11 @@ def main():
             fps=args.fps,
             resume=args.resume,
             timing_csv_dir=args.timing_csv_dir,
+            **(
+                {}
+                if args.reduce_gc_pauses is None
+                else {"reduce_gc_pauses": args.reduce_gc_pauses}
+            ),
         )
         recording_manager.wait_until_ready()
 
