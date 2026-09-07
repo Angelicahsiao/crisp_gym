@@ -585,7 +585,7 @@ in `config/recording/default_recording.yaml`):
 [timing]   late frames: 301/412 (73%), total overrun 12.4 s
 [timing]   VERDICT: WRITER-BOUND — ...
 [timing]   writer: alive
-[timing/writer] episode with 412 frames — per-frame (build + add_frame) mean 71.2 / p50 68.9 / p95 96.0 / max 180.3 ms (budget 66.7 ms) -> sustained 14.05 FPS; idle waiting for frames 3% (SATURATED — the writer is the bottleneck)
+[timing/writer] episode with 412 frames — per-frame (build + add_frame) mean 71.2 / p50 68.9 / p95 96.0 / max 180.3 ms (budget 66.7 ms) -> can sustain 14.0 FPS; idle waiting for frames 3% (OVER BUDGET by 4.5 ms — cannot sustain 15.0 FPS, the loop WILL block)
 [timing/writer] save_episode took 8.42 s (...)
 ```
 
@@ -608,6 +608,14 @@ How to read it:
   share: a writer that idles 44% but spends 62 ms of a 66.7 ms budget has 4.4 ms
   of slack and is reported `TIGHT` — it will block the loop on the first hiccup.
   `OVER BUDGET` means it cannot sustain the rate at all.
+- **`can sustain N FPS` is a CEILING (`1 / mean per-frame cost`), not a
+  measured rate.** It says what the writer could hold if frames arrived
+  back-to-back, so compare it against `fps`: `can sustain 1,250.0 FPS` at a
+  target of 15 means the writer is nowhere near the constraint. It is
+  deliberately not frames/(frames + idle) — that would just re-report the
+  producer's arrival rate. `idle waiting for frames` counts only waits that
+  ended in a frame; the operator's pauses before `r` and before `s`/`d` are
+  excluded, since they describe the operator, not the writer.
 - **A gradual slide within one episode** with the queue depth climbing means the
   writer is only *marginally* slower than `fps`: the queue absorbs the
   difference until it is full (`queue_size / fps` seconds of slack), after which
@@ -788,19 +796,20 @@ waits for the writer to drain, finish its last `save_episode` and call
 leaves the dataset unreadable — so keep this above one `save_episode`.
 `writer_timeout` now only covers an idle writer exiting.
 
-**GC pauses are the remaining rate loss.** Per-frame traces (`--timing-csv-dir`)
-showed a 95-161 ms stall every ~17-20 frames, on top of a ~5 ms floor. The
-floor is exactly `sys.getswitchinterval()` — the loop thread waiting to get the
-GIL back — which identifies the mechanism: the loop is not doing work on those
-frames (`data_fn` is 1-2 ms, `queue.put` is 0.0 ms), it is waiting. The big
-stalls are generational collections, which hold the GIL whichever thread
-triggers them. A 1 Hz ROS diagnostics timer was ruled out: the interval is
-1.27-1.43 s, not 1.0 s, and it tracks allocations rather than wall time.
+**GC pauses were the residual rate loss — measured, not inferred.** Per-frame
+traces (`--timing-csv-dir`) showed a 95-161 ms stall every ~17-20 frames, on
+top of a ~5 ms floor. The floor is exactly `sys.getswitchinterval()` — the loop
+thread waiting to get the GIL back — which identifies the mechanism: the loop
+is not doing work on those frames (`data_fn` is 1-2 ms, `queue.put` is 0.0 ms),
+it is waiting. The big stalls are generational collections, which hold the GIL
+whichever thread triggers them. A 1 Hz ROS diagnostics timer was ruled out: the
+interval is 1.27-1.43 s, not 1.0 s, and it tracks allocations rather than wall
+time.
 
-Those stalls are the ENTIRE loss. Deadline pacing absorbs the 5 ms floor (the
-next sleep is shortened), but a stall longer than one frame period is real time
-gone — and 25 stalls x ~117 ms accounted for all 3.1 s missing from a 36.2 s
-episode.
+Deadline pacing absorbs the 5 ms floor (the next sleep is shortened), but a
+stall longer than one frame period is real time gone from the episode — and
+LeRobot stamps `timestamp = frame_index / fps` regardless, so it becomes an
+error in the dataset's time base.
 
 ```yaml
 reduce_gc_pauses: true   # gc.freeze() + higher thresholds during an episode
@@ -812,7 +821,41 @@ WHEN reference cycles are reclaimed, never whether — refcounting still frees
 the per-frame arrays immediately, and the collector runs once between episodes
 where a pause is free.
 
-### A/B-ing it
+### The measured result — settled, do not re-run
+
+One flag, everything else identical, streaming encoding on in both arms:
+
+| | `reduce_gc_pauses: true` | `--no-reduce-gc-pauses` |
+|---|---|---|
+| ep0 / ep1 rate | 14.84 / **14.88** FPS | 14.09 / **13.87** FPS |
+| oversleep mean | 7.6 / 5.9 ms | 10.4 / 12.3 ms |
+| oversleep MAX | 51.2 / 50.2 ms | **150.2 / 152.9 ms** |
+| pacing resyncs | 1 / 1 | **14 / 27** |
+| time-base error | **0.8%** | 7.5% |
+| verdict | HEALTHY | RATE MISS |
+
+The ~150 ms stalls come straight back with stock GC and vanish under
+`gc.freeze()`. Everything else matched across the arms (data 1.7 ms, put
+0.0 ms, queue max 1/90, `late frames: 0`, writer 0.8 ms/frame).
+
+**The stock-GC arm degrades as a session runs.** Its resyncs went 14 -> 27 and
+oversleep mean 10.4 -> 12.3 ms between two consecutive episodes, because
+collection cost scales with live heap and the heap grows monotonically while
+recording. The tuned arm stayed at 1 resync. Over a 100-episode session that
+gap widens; leave `reduce_gc_pauses` on.
+
+Splitting the total recovery, on post-save episodes:
+
+| configuration | rate |
+|---|---|
+| PNG round-trip + stock GC (original) | ~13.2-13.5 FPS |
+| streaming + stock GC | 13.87 FPS |
+| streaming + GC tuned | 14.88 FPS |
+
+Streaming bought ~+0.5 FPS of rate, GC tuning ~+1.0 FPS. Streaming's real prize
+was `save_episode`: 26.94 s -> ~1.2 s.
+
+### Re-running it on different hardware
 
 `--reduce-gc-pauses` / `--no-reduce-gc-pauses` override the config per run, so
 nothing has to be edited between arms:
@@ -830,16 +873,8 @@ with `gc_tuned=True|False`, so an arm cannot be mixed up after the fact.
 
 **Change one thing at a time.** Keep `streaming_encoding` identical across the
 two arms — verify it works on its own first, then hold it fixed while flipping
-GC. Compare, in the episode summary:
-
-| | expected if GC is the cause |
-|---|---|
-| `oversleep` p95 | ~95-110 ms -> toward the ~5 ms floor |
-| pacing resyncs | 25-35 -> single digits |
-| effective FPS | 13.2-13.5 -> toward 15.00 |
-
-The first episode of a run behaves differently from later ones, so compare
-like with like — episode 0 against episode 0, episode 1 against episode 1.
+GC. The first episode of a run behaves differently from later ones, so compare
+like with like: episode 0 against episode 0, episode 1 against episode 1.
 
 **Rate integrity.** The loop paces to absolute deadlines, so a late wake
 shortens the next sleep instead of shifting the schedule forever. This matters

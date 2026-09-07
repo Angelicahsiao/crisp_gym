@@ -442,34 +442,76 @@ Three things spawn required, all done:
   which 10 s could not cover. The child also re-establishes logging, which it
   does not inherit under spawn.
 
+**GC PAUSES WERE THE RESIDUAL RATE LOSS — CONFIRMED BY A/B, FIXED**
+(`util/gc_tuning.py`, `reduce_gc_pauses`, default on). Do not re-run this
+experiment; it is settled.
+
+Mechanism: per-frame traces show a 95-161 ms stall every ~17-20 frames on top
+of a ~5 ms floor. The floor is exactly `sys.getswitchinterval()`, which proves
+the loop is WAITING FOR THE GIL rather than working (data_fn 1-2 ms, put 0.0 ms
+on those frames). The stalls are generational collections — they hold the GIL
+whichever thread triggers them. A 1 Hz ROS diagnostics timer is ruled out
+(interval 1.27-1.43 s, not 1.0), and the interval tracks ALLOCATIONS: the
+episode doing more work per frame had a 12% shorter interval in frames.
+
+Confirmed on the owner's box with one flag as the only difference, streaming
+encoding on in both arms (`test3` vs `test4`):
+
+| | `reduce_gc_pauses: true` | `--no-reduce-gc-pauses` |
+|---|---|---|
+| ep0 / ep1 rate | 14.84 / **14.88** FPS | 14.09 / **13.87** FPS |
+| oversleep mean | 7.6 / 5.9 ms | 10.4 / 12.3 ms |
+| oversleep MAX | 51.2 / 50.2 ms | **150.2 / 152.9 ms** |
+| pacing resyncs | 1 / 1 | **14 / 27** |
+| verdict | HEALTHY | RATE MISS |
+
+Everything else was identical across the arms (data 1.7 ms, put 0.0 ms, queue
+max 1/90, `late frames: 0`, writer 0.8 ms/frame), so nothing else can account
+for it. Two details make the result stronger than the headline: the tuned arm's
+episodes were LONGER (561/704 frames vs 424/622) and still faster, so the
+confound runs against the result; and the stock-GC arm DEGRADED within the
+session (resyncs 14 -> 27, oversleep mean 10.4 -> 12.3 ms between its two
+episodes), which is the GC signature exactly — collection cost scales with live
+heap, and the heap grows monotonically while recording. A 100-episode session
+gets steadily worse under stock GC; under `gc.freeze()` it stays flat.
+
+Attribution of the total recovery, post-save episodes (the fair comparison,
+since ep0 has no prior `save_episode`):
+
+| configuration | rate |
+|---|---|
+| PNG round-trip + stock GC (original) | ~13.2-13.5 FPS |
+| streaming + stock GC | 13.87 FPS |
+| streaming + GC tuned | 14.88 FPS |
+
+So streaming bought ~+0.5 FPS of RATE and GC tuning ~+1.0 FPS: the earlier
+disk-churn theory was not wrong, it was the minority term. Streaming's real
+prize was elsewhere — `save_episode` 26.94 s -> ~1.2 s. Residual time-base
+error is now 0.8% (was ~11%, and 7.5% under stock GC with streaming on).
+
 **STILL NOT DONE:**
 1. Producer waste: `env.step()` builds a full observation
    (`manipulator_env.py:831`/`:1042`) that `make_record_fn` discards before
    `_collect_obs()` re-reads everything; `_resize_image` runs `cv2.resize` per
    camera per frame whenever env `resolution` != record `shape`.
-3. ROOT-CAUSED (util/gc_tuning.py, `reduce_gc_pauses`, default on): the
-   remaining rate loss is CPython's GC, not I/O and not the camera decode.
-   Per-frame traces show a 95-161 ms stall every ~17-20 frames plus a ~5 ms
-   floor. The floor is exactly `sys.getswitchinterval()`, which proves the loop
-   is WAITING FOR THE GIL rather than working (data_fn 1-2 ms, put 0.0 ms on
-   those frames). The stalls are generational collections — they hold the GIL
-   whichever thread triggers them. A 1 Hz ROS diagnostics timer is ruled out
-   (interval 1.27-1.43 s, not 1.0), and the interval tracks ALLOCATIONS: the
-   episode doing more work per frame had a 12% shorter interval in frames.
-   These stalls are the whole loss — 25 x ~117 ms = 2.9 s of the 3.1 s missing
-   from a 36.2 s episode; deadline pacing already absorbs the 5 ms floor.
-   OLDER FIELD STATUS (superseded, the disk-churn theory was wrong): after the writer fix the rate went 12.29 ->
-   14.46 FPS with the queue never filling, but 11 pacer resyncs and a 201 ms
-   max oversleep remain — discrete stalls, not drift.
-4. `WriterTimingRecorder`'s per-frame number UNDER-REPORTS once
-   `image_writer_threads > 0`: `_save_image` then only enqueues, so the PNG
-   encode leaves the measured path (it resurfaces inside `save_episode`, which
-   calls `_wait_image_writer`). The field run read 0.5 ms/frame and "66.2 ms of
-   headroom", which is not the real writer cost. Queue depth and `put` are the
-   trustworthy signals. Measuring the AsyncImageWriter queue would fix it.
-5. Episodes recorded BEFORE this branch, while the `put` warnings were firing,
+2. `WriterTimingRecorder`'s per-frame number still UNDER-REPORTS on the
+   NON-streaming path once `image_writer_threads > 0`: `_save_image` then only
+   enqueues, so the PNG encode leaves the measured path (it resurfaces inside
+   `save_episode`, which calls `_wait_image_writer`). Under `streaming_encoding:
+   true` there is no PNG encode at all, so the 0.8 ms/frame it reports today IS
+   the real cost. Queue depth and `put` are trustworthy either way. Measuring
+   the AsyncImageWriter queue would close it for the PNG path.
+   FIXED here, separately: the recorder folded the operator's save/delete pause
+   into `idle` (the wait before a SAVE message, not a FRAME) and derived its
+   headline rate from frames/(frames+idle) — the arrival rate, not a capacity.
+   A 0.8 ms/frame writer read "sustained 11.90 FPS". It now excludes idle that
+   did not end in a FRAME and reports `can sustain 1/mean` (~1250 FPS).
+3. Episodes recorded BEFORE this branch, while the `put` warnings were firing,
    have a wrong time base (ep1 of the field run encodes ~3.2x the motion its
    timestamps claim). Drop or re-record them.
+4. `data_fn` returns `None` exactly twice per episode (`recording_manager.py`
+   `skipped=True` path) — reproducible across every field run, not yet
+   investigated. No row is written, so no desync.
 
 Unrelated landmine noticed while reading: `concatenate_state_features` builds
 `observation.state` from `obs` DICT INSERTION ORDER, not the declared feature

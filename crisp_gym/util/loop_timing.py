@@ -418,15 +418,17 @@ class WriterTimingRecorder:
         if self.enabled:
             self.frame.add(seconds)
 
-    def add_idle(self, seconds: float) -> None:
+    def add_idle(self, seconds: float, *, for_frame: bool = True) -> None:
         """Record time the writer spent blocked in `queue.get()`.
 
-        Only counted once the window has a frame: the writer idles for as long
-        as the operator takes to press `r`, and folding that wait into the
-        window would report an idle share (and a sustained FPS) that describes
-        the operator, not the writer.
+        Counted only for a wait that ENDED IN A FRAME, and only once the window
+        already has one. The writer waits on the operator at both ends of an
+        episode — before `r` to start it, and between the last frame and `s`/
+        `d` to save or discard it — and neither wait describes the writer.
+        Folding either one in inflates the idle share and drags down every rate
+        derived from it.
         """
-        if self.enabled and self._started():
+        if self.enabled and for_frame and self._started():
             self.idle.add(seconds)
 
     def log_summary(self, label: str) -> None:
@@ -434,11 +436,15 @@ class WriterTimingRecorder:
         if not self.enabled or not self.frame.samples:
             return
         stats = self.frame.summary_ms()
-        # Denominator = the writer's own accounted time (draining frames plus
-        # waiting for them). Wall clock would also include save_episode, which
-        # runs BETWEEN episodes and would understate per-frame throughput.
+        # CAPACITY, not arrival rate: 1 / mean per-frame cost is what the writer
+        # could hold if frames arrived back-to-back, which is the only number
+        # that answers "can it keep up?". Dividing the frame count by (frames +
+        # idle) instead just re-reports the PRODUCER's rate, and any operator
+        # pause leaking into `idle` drags it below even that — a 0.8 ms/frame
+        # writer with ~1200 FPS of real capacity was reported as "sustained
+        # 11.90 FPS" because one save/delete decision landed in the denominator.
+        capacity = stats["count"] / max(self.frame.total, 1e-9)
         accounted = max(self.frame.total + self.idle.total, 1e-9)
-        sustained = stats["count"] / accounted
         idle_share = min(100.0, 100.0 * self.idle.total / accounted)
         budget_ms = 1e3 * self.budget_s
 
@@ -466,8 +472,8 @@ class WriterTimingRecorder:
             f"per-frame (build + add_frame) mean {stats['mean']:.1f} / "
             f"p50 {stats['p50']:.1f} / "
             f"p95 {stats['p95']:.1f} / max {stats['max']:.1f} ms "
-            f"(budget {budget_ms:.1f} ms) -> sustained "
-            f"{sustained:.2f} FPS; idle waiting for frames {idle_share:.0f}% "
+            f"(budget {budget_ms:.1f} ms) -> can sustain "
+            f"{capacity:,.1f} FPS; idle waiting for frames {idle_share:.0f}% "
             f"({assessment})"
         )
         self.reset_window()

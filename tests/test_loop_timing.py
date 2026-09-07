@@ -245,6 +245,53 @@ def test_writer_idle_before_the_first_frame_is_not_counted():
     assert rec.idle.samples == [0.004]
 
 
+def test_writer_idle_after_the_last_frame_is_not_counted():
+    """The operator's save/delete pause must stay out of the window.
+
+    The writer also idles AFTER an episode's last frame, while the operator
+    decides `s` or `d`. That wait ends in a SAVE message, not a FRAME, and
+    folding it in put a ~5 s sample in the denominator.
+    """
+    rec = WriterTimingRecorder(budget_s=1 / 15)
+    rec.add_frame(0.0008)
+    rec.add_idle(0.0659)  # a real between-frames wait
+    rec.add_frame(0.0008)
+    rec.add_idle(5.0, for_frame=False)  # operator deciding save/delete
+    assert rec.idle.samples == [0.0659], "post-episode wait must not enter the window"
+
+
+def test_writer_reports_its_capacity_not_the_arrival_rate():
+    """The headline rate must be the writer's ceiling, not what it was fed.
+
+    A 0.8 ms/frame writer fed at 15 fps was reported as "sustained 11.90 FPS",
+    which reads as the writer topping out just under the target. Its real
+    ceiling is ~1250 FPS; the arrival rate is the producer's number and belongs
+    in the loop summary, not here.
+    """
+    import io
+    import logging as _logging
+
+    from crisp_gym.util import loop_timing as lt
+
+    rec = WriterTimingRecorder(budget_s=1 / 15)
+    for _ in range(424):  # test4 episode_0000
+        rec.add_frame(0.0008)
+        rec.add_idle(0.0659)
+    rec.add_idle(5.0, for_frame=False)
+
+    stream = io.StringIO()
+    handler = _logging.StreamHandler(stream)
+    lt.logger.addHandler(handler)
+    lt.logger.setLevel(_logging.INFO)
+    try:
+        rec.log_summary("episode")
+    finally:
+        lt.logger.removeHandler(handler)
+    out = stream.getvalue()
+    assert "can sustain 1,250.0 FPS" in out, out
+    assert "idle waiting for frames 99%" in out, out
+
+
 def test_writer_near_budget_is_reported_as_tight_not_as_headroom():
     """62.3 ms of a 66.7 ms budget is 4.4 ms of slack, not 'has headroom'."""
     import io

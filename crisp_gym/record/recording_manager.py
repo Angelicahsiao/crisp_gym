@@ -639,7 +639,14 @@ class RecordingManager(ABC):
         while True:
             idle_start = time.perf_counter()
             msg = self.queue.get()
-            writer_timing.add_idle(time.perf_counter() - idle_start)
+            # Only a wait that ended in a FRAME is the writer waiting on the
+            # producer. The wait before SAVE/STOP/SHUTDOWN is the operator
+            # deciding what to do with the episode, and counting it would make
+            # the writer's idle share describe the operator instead.
+            writer_timing.add_idle(
+                time.perf_counter() - idle_start,
+                for_frame=msg.get("type") == "FRAME",
+            )
             logger.debug(f"Received message: {msg['type']}")
             handler_start = time.perf_counter()
             try:
