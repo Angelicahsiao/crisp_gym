@@ -105,3 +105,16 @@ encoder_queue_seconds: 4.0
 # timing_csv_dir writes a per-frame CSV trace per episode; null = off.
 timing_report: true
 timing_csv_dir: null
+
+# Keep CPython's GC out of the control loop while an episode records.
+# Per-frame traces showed a 95-161 ms stall every ~17-20 frames on top of a
+# ~5 ms floor. The floor is exactly sys.getswitchinterval() — the loop thread
+# waiting to get the GIL back — and the big stalls are generational
+# collections, which hold the GIL whichever thread triggers them. They are the
+# WHOLE rate loss: deadline pacing absorbs the 5 ms floor, but a stall longer
+# than one frame period is real time gone from the episode, and LeRobot stamps
+# timestamps at exactly 1/fps regardless.
+# gc.freeze() takes the settled heap (env, ROS nodes, lerobot) out of every
+# future collection, and higher thresholds make a pass ~70x rarer.
+# Set false to A/B against stock GC on the same build.
+reduce_gc_pauses: true

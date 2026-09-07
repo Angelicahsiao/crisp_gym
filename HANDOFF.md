@@ -447,9 +447,18 @@ Three things spawn required, all done:
    (`manipulator_env.py:831`/`:1042`) that `make_record_fn` discards before
    `_collect_obs()` re-reads everything; `_resize_image` runs `cv2.resize` per
    camera per frame whenever env `resolution` != record `shape`.
-3. If the rate still misses after the above, the remaining in-process CPU hog is
-   crisp_py's camera thread JPEG-decoding ~1 MP per frame. Decoupling that is a
-   bigger change. FIELD STATUS: after the writer fix the rate went 12.29 ->
+3. ROOT-CAUSED (util/gc_tuning.py, `reduce_gc_pauses`, default on): the
+   remaining rate loss is CPython's GC, not I/O and not the camera decode.
+   Per-frame traces show a 95-161 ms stall every ~17-20 frames plus a ~5 ms
+   floor. The floor is exactly `sys.getswitchinterval()`, which proves the loop
+   is WAITING FOR THE GIL rather than working (data_fn 1-2 ms, put 0.0 ms on
+   those frames). The stalls are generational collections — they hold the GIL
+   whichever thread triggers them. A 1 Hz ROS diagnostics timer is ruled out
+   (interval 1.27-1.43 s, not 1.0), and the interval tracks ALLOCATIONS: the
+   episode doing more work per frame had a 12% shorter interval in frames.
+   These stalls are the whole loss — 25 x ~117 ms = 2.9 s of the 3.1 s missing
+   from a 36.2 s episode; deadline pacing already absorbs the 5 ms floor.
+   OLDER FIELD STATUS (superseded, the disk-churn theory was wrong): after the writer fix the rate went 12.29 ->
    14.46 FPS with the queue never filling, but 11 pacer resyncs and a 201 ms
    max oversleep remain — discrete stalls, not drift.
 4. `WriterTimingRecorder`'s per-frame number UNDER-REPORTS once

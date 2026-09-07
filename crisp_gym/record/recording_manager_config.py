@@ -137,6 +137,15 @@ class RecordingManagerConfig:
     timing_report: bool = True
     timing_csv_dir: str | None = None
 
+    # Freeze the existing heap and defer GC while an episode records. Per-frame
+    # traces show a 95-161 ms stall every ~17-20 frames — a generational
+    # collection, which holds the GIL whichever thread triggers it and lands on
+    # the loop as oversleep. Those stalls are the ENTIRE rate loss: the deadline
+    # pacer absorbs the ~5 ms GIL-switch floor on ordinary frames, but a stall
+    # longer than one period is real time gone. See util/gc_tuning.py.
+    # Set false to A/B against stock GC behaviour on the same build.
+    reduce_gc_pauses: bool = True
+
     def resolved_encoder_queue_size(self) -> int:
         """Per-camera encoder buffer in frames (lerobot's encoder_queue_maxsize)."""
         return max(1, math.ceil(self.encoder_queue_seconds * self.fps))

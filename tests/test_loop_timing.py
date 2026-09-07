@@ -440,6 +440,56 @@ def test_make_record_fn_publishes_per_phase_timing():
     assert fn.timing["step"] >= 0.004, "env.step should be charged to step"
 
 
+# ── GC pause reduction ───────────────────────────────────────────────────────
+
+
+def test_reduced_gc_pauses_freezes_and_restores():
+    """The measured stalls (95-161 ms every ~17-20 frames) are generational
+    collections, which hold the GIL whichever thread triggers them. Freezing
+    the settled heap makes a pass cheap; raising the thresholds makes it rare.
+    """
+    import gc
+
+    from crisp_gym.util.gc_tuning import DEFAULT_THRESHOLDS, reduced_gc_pauses
+
+    before = gc.get_threshold()
+    frozen_before = gc.get_freeze_count()
+    with reduced_gc_pauses():
+        assert gc.get_threshold() == DEFAULT_THRESHOLDS
+        assert gc.get_freeze_count() > frozen_before, "heap should be frozen"
+    assert gc.get_threshold() == before, "thresholds must be restored"
+    assert gc.get_freeze_count() == frozen_before, "heap must be unfrozen"
+
+
+def test_reduced_gc_pauses_can_be_disabled_for_an_ab_test():
+    import gc
+
+    from crisp_gym.util.gc_tuning import reduced_gc_pauses
+
+    before = gc.get_threshold()
+    with reduced_gc_pauses(enabled=False):
+        assert gc.get_threshold() == before
+    assert gc.get_threshold() == before
+
+
+def test_reduced_gc_pauses_restores_on_an_exception():
+    """A failed episode must not leave the process with a frozen heap and
+    deferred collection for the rest of the session."""
+    import gc
+
+    from crisp_gym.util.gc_tuning import reduced_gc_pauses
+
+    before = gc.get_threshold()
+    frozen_before = gc.get_freeze_count()
+    try:
+        with reduced_gc_pauses():
+            raise RuntimeError("writer died mid-episode")
+    except RuntimeError:
+        pass
+    assert gc.get_threshold() == before
+    assert gc.get_freeze_count() == frozen_before
+
+
 if __name__ == "__main__":
     failures = 0
     for name, fn in sorted(globals().items()):

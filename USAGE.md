@@ -788,6 +788,31 @@ waits for the writer to drain, finish its last `save_episode` and call
 leaves the dataset unreadable — so keep this above one `save_episode`.
 `writer_timeout` now only covers an idle writer exiting.
 
+**GC pauses are the remaining rate loss.** Per-frame traces (`--timing-csv-dir`)
+showed a 95-161 ms stall every ~17-20 frames, on top of a ~5 ms floor. The
+floor is exactly `sys.getswitchinterval()` — the loop thread waiting to get the
+GIL back — which identifies the mechanism: the loop is not doing work on those
+frames (`data_fn` is 1-2 ms, `queue.put` is 0.0 ms), it is waiting. The big
+stalls are generational collections, which hold the GIL whichever thread
+triggers them. A 1 Hz ROS diagnostics timer was ruled out: the interval is
+1.27-1.43 s, not 1.0 s, and it tracks allocations rather than wall time.
+
+Those stalls are the ENTIRE loss. Deadline pacing absorbs the 5 ms floor (the
+next sleep is shortened), but a stall longer than one frame period is real time
+gone — and 25 stalls x ~117 ms accounted for all 3.1 s missing from a 36.2 s
+episode.
+
+```yaml
+reduce_gc_pauses: true   # gc.freeze() + higher thresholds during an episode
+```
+
+`gc.freeze()` takes the settled heap (env, ROS nodes, lerobot) out of every
+future collection; raised thresholds make a pass ~70x rarer. It changes only
+WHEN reference cycles are reclaimed, never whether — refcounting still frees
+the per-frame arrays immediately, and the collector runs once between episodes
+where a pause is free. Set it false to A/B against stock GC on the same build;
+compare the `oversleep` p95 and the resync count in the episode summary.
+
 **Rate integrity.** The loop paces to absolute deadlines, so a late wake
 shortens the next sleep instead of shifting the schedule forever. This matters
 because LeRobot stamps `timestamp = frame_index / fps` and cannot be told the

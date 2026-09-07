@@ -4,17 +4,17 @@ import logging
 import multiprocessing as mp
 import queue as queue_mod
 import subprocess
+import sys
 import threading
 import time
 from abc import ABC, abstractmethod
 from inspect import signature
 from pathlib import Path
 from typing import Callable, Literal
-from typing_extensions import override
 
-import sys
 import numpy as np
 import rclpy
+from typing_extensions import override
 
 # TODO: make this optional, we do not want to depend on lerobot
 try:
@@ -30,6 +30,7 @@ from std_msgs.msg import String
 from crisp_gym.config.path import find_config
 from crisp_gym.policy.policy import Action, Observation
 from crisp_gym.record.recording_manager_config import RecordingManagerConfig
+from crisp_gym.util.gc_tuning import reduced_gc_pauses
 from crisp_gym.util.lerobot_features import concatenate_state_features
 from crisp_gym.util.loop_timing import (
     DeadlinePacer,
@@ -833,6 +834,37 @@ class RecordingManager(ABC):
         # accumulating.
         pacer = DeadlinePacer(budget_s)
 
+        # The GC is entered here, AFTER on_start() has homed the robot and reset
+        # the env, so the freeze captures a settled heap and its own collect
+        # lands outside the measured episode.
+        with reduced_gc_pauses(enabled=self.config.reduce_gc_pauses):
+            self._record_frames(data_fn, task, timing, pacer, sub_timing, budget_s)
+
+        logger.debug("Finished recording...")
+
+        extra = self.writer_status()
+        if pacer.resyncs:
+            extra += (
+                f"; pacing resynced {pacer.resyncs}x (fell more than one period "
+                "behind — those gaps are real time missing from the episode)"
+            )
+        timing.log_summary(extra=extra)
+
+        if on_end:
+            on_end()
+
+        self._handle_post_episode()
+
+    def _record_frames(
+        self,
+        data_fn: Callable[[], tuple[Observation, Action]],
+        task: str,
+        timing: LoopTimingRecorder,
+        pacer: DeadlinePacer,
+        sub_timing: dict | None,
+        budget_s: float,
+    ) -> None:
+        """The frame loop itself. Split out so the GC context wraps exactly it."""
         while self.state == "recording":
             t_frame = time.perf_counter()
 
@@ -891,21 +923,6 @@ class RecordingManager(ABC):
                 sleep_requested_s=sleep_requested,
                 sub_timing=sub_timing,
             )
-
-        logger.debug("Finished recording...")
-
-        extra = self.writer_status()
-        if pacer.resyncs:
-            extra += (
-                f"; pacing resynced {pacer.resyncs}x (fell more than one period "
-                "behind — those gaps are real time missing from the episode)"
-            )
-        timing.log_summary(extra=extra)
-
-        if on_end:
-            on_end()
-
-        self._handle_post_episode()
 
     def _wait_for_start_signal(self) -> None:
         """Wait until the recording state is set to 'recording'."""
