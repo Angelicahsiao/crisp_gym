@@ -266,7 +266,7 @@ def test_writer_kwargs_are_filtered_to_what_this_lerobot_accepts():
         video_crf=None,
         video_gop=None,
     )
-    fake_self = types.SimpleNamespace(config=cfg)
+    fake_self = types.SimpleNamespace(config=cfg, queue_capacity=90)
     fake_self._rgb_encoder = lambda: rm.RecordingManager._rgb_encoder(fake_self)
 
     def modern(
@@ -533,7 +533,7 @@ def test_streaming_kwargs_reach_lerobot_when_enabled():
     rm = _load_recording_manager()
     _install_rgb_encoder_stub("h264_nvenc")
     cfg = _config(fps=15, streaming_encoding=True, encoder_queue_seconds=4.0)
-    fake_self = types.SimpleNamespace(config=cfg)
+    fake_self = types.SimpleNamespace(config=cfg, queue_capacity=90)
     fake_self._rgb_encoder = lambda: rm.RecordingManager._rgb_encoder(fake_self)
 
     def create(
@@ -555,7 +555,7 @@ def test_streaming_kwargs_reach_lerobot_when_enabled():
 def test_streaming_kwargs_absent_when_disabled():
     rm = _load_recording_manager()
     _install_rgb_encoder_stub("h264")
-    fake_self = types.SimpleNamespace(config=_config(streaming_encoding=False))
+    fake_self = types.SimpleNamespace(config=_config(streaming_encoding=False), queue_capacity=90)
     fake_self._rgb_encoder = lambda: rm.RecordingManager._rgb_encoder(fake_self)
 
     def create(repo_id, image_writer_threads=0, streaming_encoding=False, encoder_queue_maxsize=30):
@@ -564,6 +564,71 @@ def test_streaming_kwargs_absent_when_disabled():
     kwargs = rm.RecordingManager._writer_kwargs(fake_self, create)
     assert "streaming_encoding" not in kwargs
     assert "encoder_queue_maxsize" not in kwargs
+
+
+def test_streaming_attach_is_verified_at_dataset_creation():
+    """Asking for streaming is not the same as getting it: an older lerobot
+    drops the kwarg silently, and create only builds the encoder when the
+    dataset has video keys. A whole session then runs on the PNG path while
+    the config claims otherwise — which is exactly what happened in the field.
+    """
+    rm = _load_recording_manager()
+    fake_self = types.SimpleNamespace(config=_config(streaming_encoding=True))
+
+    missing = types.SimpleNamespace(writer=types.SimpleNamespace())
+    try:
+        rm.RecordingManager._verify_streaming_attached(fake_self, missing)
+        raise AssertionError("a missing streaming encoder must be refused")
+    except RuntimeError as exc:
+        assert "no streaming encoder was attached" in str(exc)
+        assert "streaming_encoding: false" in str(exc), "must name the opt-out"
+
+    attached = types.SimpleNamespace(writer=types.SimpleNamespace(_streaming_encoder=object()))
+    rm.RecordingManager._verify_streaming_attached(fake_self, attached)
+
+
+def test_streaming_attach_check_is_inert_when_disabled():
+    rm = _load_recording_manager()
+    fake_self = types.SimpleNamespace(config=_config(streaming_encoding=False))
+    rm.RecordingManager._verify_streaming_attached(fake_self, types.SimpleNamespace())
+
+
+def test_writer_kwargs_are_logged_so_a_stale_config_is_visible():
+    """A stale or shadowed default_recording.yaml is indistinguishable from a
+    working one in the log unless the effective values are printed."""
+    import io
+    import logging as _logging
+
+    rm = _load_recording_manager()
+    _install_rgb_encoder_stub("h264_nvenc")
+    cfg = _config(
+        fps=15, streaming_encoding=True, encoder_queue_seconds=4.0, image_writer_threads=4
+    )
+    fake_self = types.SimpleNamespace(config=cfg, queue_capacity=90)
+    fake_self._rgb_encoder = lambda: rm.RecordingManager._rgb_encoder(fake_self)
+
+    def create(
+        repo_id,
+        image_writer_processes=0,
+        image_writer_threads=0,
+        streaming_encoding=False,
+        encoder_queue_maxsize=30,
+        rgb_encoder=None,
+        encoder_threads=None,
+    ):
+        pass
+
+    stream = io.StringIO()
+    handler = _logging.StreamHandler(stream)
+    rm.logger.addHandler(handler)
+    rm.logger.setLevel(_logging.INFO)
+    try:
+        rm.RecordingManager._writer_kwargs(fake_self, create)
+    finally:
+        rm.logger.removeHandler(handler)
+    out = stream.getvalue()
+    assert "streaming_encoding=True" in out, out
+    assert "60 frames" in out and "threads=4" in out and "90 frames" in out
 
 
 def _dataset_with_drops(dropped):

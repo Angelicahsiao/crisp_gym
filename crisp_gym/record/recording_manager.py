@@ -300,6 +300,24 @@ class RecordingManager(ABC):
                 f"This lerobot version does not accept '{name}' — ignoring it. "
                 "Recording still works, but the corresponding tuning has no effect."
             )
+
+        # State plainly what the writer actually got. Without this there is no
+        # way to tell from the log whether a config edit took effect — a
+        # stale/shadowed default_recording.yaml looks identical to a working
+        # one until you notice save_episode is still slow.
+        logger.info(
+            "Writer config in effect: streaming_encoding="
+            f"{kwargs.get('streaming_encoding', False)}"
+            + (
+                f" (encoder queue {kwargs['encoder_queue_maxsize']} frames/"
+                f"{self.config.encoder_queue_seconds:.1f} s per camera)"
+                if "encoder_queue_maxsize" in kwargs
+                else ""
+            )
+            + f" | image_writer processes={kwargs.get('image_writer_processes', 0)}"
+            f" threads={kwargs.get('image_writer_threads', 0)}"
+            f" | frame queue {self.queue_capacity} frames"
+        )
         return kwargs
 
     def _rgb_encoder(self):  # noqa: ANN202 — lerobot RGBEncoderConfig, imported lazily
@@ -385,6 +403,29 @@ class RecordingManager(ABC):
         )
         self._rgb_encoder_cached = encoder
         return encoder
+
+    def _verify_streaming_attached(self, dataset) -> None:  # noqa: ANN001
+        """Confirm the streaming encoder is really in place when configured.
+
+        Asking for it is not the same as getting it: an older lerobot silently
+        drops the kwarg, and `create` only builds the encoder when the dataset
+        actually has video keys. Checking here fails at startup instead of
+        letting a whole session run on the PNG path while the log claims
+        otherwise.
+        """
+        if not self.config.streaming_encoding:
+            return
+        encoder = getattr(getattr(dataset, "writer", None), "_streaming_encoder", None)
+        if encoder is None:
+            raise RuntimeError(
+                "streaming_encoding is enabled but no streaming encoder was "
+                "attached to the dataset. Either this lerobot does not support "
+                "it (check the 'does not accept' warning above) or the dataset "
+                "declares no video keys. Recording would silently fall back to "
+                "the PNG path — which is what streaming exists to avoid — so "
+                "it is refused. Set streaming_encoding: false to accept that."
+            )
+        logger.info("Streaming video encoder attached — no PNG round-trip.")
 
     def _check_streaming_drops(self, dataset) -> None:  # noqa: ANN001
         """Fail the recording if the streaming encoder dropped any frame.
@@ -564,6 +605,7 @@ class RecordingManager(ABC):
                 **self._writer_kwargs(LeRobotDataset.create),
             )
             logger.debug(f"Dataset created with meta: {dataset.meta}")
+        self._verify_streaming_attached(dataset)
         return dataset
 
     def _writer_proc(self):
