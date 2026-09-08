@@ -123,6 +123,21 @@ def dataset_columns(dataset_dir: Path) -> set[str]:
     return set(pd.read_parquet(episode_files(dataset_dir)[0]).columns)
 
 
+def dataset_labels(dataset_dirs: list[Path]) -> dict[Path, str]:
+    """Shortest per-dataset label that is unambiguous across this run.
+
+    Datasets are commonly laid out as ``<name>/lerobot``, so ``d.name`` is
+    "lerobot" for every one of them and the log becomes unreadable — two
+    identical lines whose only difference is which columns they drop. Widen the
+    label by one path component at a time until the set is distinct.
+    """
+    for depth in range(1, 6):
+        labels = {d: "/".join(d.parts[-depth:]) for d in dataset_dirs}
+        if len(set(labels.values())) == len(dataset_dirs):
+            return labels
+    return {d: str(d) for d in dataset_dirs}
+
+
 def load_info_robot_type(dataset_dir: Path) -> str | None:
     """The dataset's original robot_type, read before any rewrite."""
     info_path = dataset_dir / "meta" / "info.json"
@@ -175,6 +190,8 @@ def align(
     robot_type: str | None = None,
     skip_contract_check: bool = False,
 ) -> None:
+    labels = dataset_labels(dataset_dirs)
+
     # ── 1. contract verification (single source: RecordConfig) ──────────────
     contracts = {d: load_contract(d, required=not skip_contract_check) for d in dataset_dirs}
     missing = [d for d, meta in contracts.items() if meta is None]
@@ -187,7 +204,7 @@ def align(
             "definition, lookahead and rotation representation — live only in that "
             "file. If these datasets were recorded to different action conventions, "
             "merging them produces silently wrong training data.",
-            ", ".join(d.name for d in missing),
+            ", ".join(labels[d] for d in missing),
         )
     verifiable = {d: meta for d, meta in contracts.items() if meta is not None}
     if len(verifiable) >= 2:
@@ -195,8 +212,8 @@ def align(
         for d, meta in verifiable.items():
             if not RecordConfig.contracts_compatible(ref_meta, meta):
                 raise SystemExit(
-                    f"Datasets are not mixable: contracts of {ref_dir.name} and "
-                    f"{d.name} differ (see above). This cannot be fixed by "
+                    f"Datasets are not mixable: contracts of {labels[ref_dir]} "
+                    f"and {labels[d]} differ (see above). This cannot be fixed by "
                     "post-processing — the recorded action semantics/rates/"
                     "policy-inputs are different data."
                 )
@@ -228,7 +245,7 @@ def align(
         for name in sorted(conflicting):
             logger.info(
                 f"  shape conflict on '{name}': "
-                + ", ".join(f"{d.name}={sig_sets[d].get(name)}" for d in dataset_dirs)
+                + ", ".join(f"{labels[d]}={sig_sets[d].get(name)}" for d in dataset_dirs)
             )
         logger.info(
             f"Dropping {len(conflicting)} column(s) present in every dataset but "
@@ -239,7 +256,7 @@ def align(
     if promote:
         # Promoted columns must exist everywhere (a policy input cannot be
         # missing in part of the training data) and must not be stripped.
-        missing = {d.name: sorted(set(promote) - col_sets[d]) for d in dataset_dirs
+        missing = {labels[d]: sorted(set(promote) - col_sets[d]) for d in dataset_dirs
                    if set(promote) - col_sets[d]}
         if missing:
             raise SystemExit(
@@ -258,7 +275,7 @@ def align(
     for d, cols in col_sets.items():
         extras = sorted(c for c in cols - shared if not is_internal(c))
         if extras:
-            logger.info(f"{d.name}: stripping non-shared columns: {extras}")
+            logger.info(f"{labels[d]}: stripping non-shared columns: {extras}")
 
     # ── 3. per-dataset rewrite ───────────────────────────────────────────────
     for d in dataset_dirs:
@@ -266,7 +283,7 @@ def align(
         drop = sorted(c for c in col_sets[d] - shared if not is_internal(c))
 
         if dry_run:
-            logger.info(f"[DRY RUN] {d.name} -> {out.name}: drop {drop or 'nothing'}"
+            logger.info(f"[DRY RUN] {labels[d]} -> {out}: drop {drop or 'nothing'}"
                         + (f", rescale gripper x{rescale_gripper[0]/rescale_gripper[1]:.4f}"
                            if rescale_gripper else "")
                         + (f", robot_type {load_info_robot_type(d)!r} -> {robot_type!r}"
@@ -335,9 +352,9 @@ def align(
         meta = contracts[d]
         if meta is None:
             logger.info(
-                f"  {out.name}: no record_config.json to rewrite (it had none)."
+                f"  {labels[d]}: no record_config.json to rewrite (it had none)."
             )
-            logger.info(f"  ✓ {out.name} written ({len(episode_files(out))} data files)")
+            logger.info(f"  ✓ {out} written ({len(episode_files(out))} data files)")
             continue
         rc_path = out / "meta" / "record_config.json"
         meta["observations"] = [
@@ -362,7 +379,7 @@ def align(
         with open(rc_path, "w") as f:
             json.dump(meta, f, indent=4)
 
-        logger.info(f"  ✓ {out.name} written ({len(episode_files(out))} data files)")
+        logger.info(f"  ✓ {out} written ({len(episode_files(out))} data files)")
 
     if not dry_run:
         logger.info("Done. Aligned datasets are schema-identical and mixable.")

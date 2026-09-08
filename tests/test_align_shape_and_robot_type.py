@@ -216,6 +216,50 @@ def test_original_robot_type_is_kept_as_provenance(ur_and_franka):
         assert contract["robot_type"] == "ur+franka"
 
 
+# ── labels must distinguish the datasets ────────────────────────────────────
+
+
+def test_labels_widen_when_directory_names_collide():
+    """Datasets laid out as <name>/lerobot all have d.name == 'lerobot'.
+
+    Reporting them by bare name produced two identical log lines whose only
+    difference was which columns they dropped.
+    """
+    dirs = [Path("/data/ur_electricbox/lerobot"), Path("/data/franka_electricbox/lerobot")]
+    labels = align_mod.dataset_labels(dirs)
+    assert labels[dirs[0]] == "ur_electricbox/lerobot"
+    assert labels[dirs[1]] == "franka_electricbox/lerobot"
+
+
+def test_labels_stay_short_when_names_are_already_distinct():
+    dirs = [Path("/data/ur"), Path("/data/franka")]
+    labels = align_mod.dataset_labels(dirs)
+    assert set(labels.values()) == {"ur", "franka"}
+
+
+def test_labels_are_unique_even_when_deeply_similar():
+    dirs = [Path("/a/x/lerobot"), Path("/b/x/lerobot")]
+    labels = align_mod.dataset_labels(dirs)
+    assert len(set(labels.values())) == 2
+
+
+def test_dry_run_names_each_dataset_distinctly(tmp_path, caplog):
+    """The end-to-end symptom: two <name>/lerobot datasets in one run."""
+    ur = _make_dataset(tmp_path / "ur_electricbox" / "lerobot", "ur", 6, ext_torque=False)
+    franka = _make_dataset(
+        tmp_path / "franka_electricbox" / "lerobot", "franka", 7, ext_torque=True
+    )
+    with caplog.at_level("INFO"):
+        align_mod.align([ur, franka], "_aligned", None, [], dry_run=True,
+                        robot_type="ur+franka")
+    text = caplog.text
+    assert "ur_electricbox/lerobot" in text
+    assert "franka_electricbox/lerobot" in text
+    # and the per-dataset robot_type must not be conflated
+    assert "robot_type 'ur' -> 'ur+franka'" in text
+    assert "robot_type 'franka' -> 'ur+franka'" in text
+
+
 # ── datasets whose contract was stripped by a lerobot merge ─────────────────
 
 
