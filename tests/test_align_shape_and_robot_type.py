@@ -216,6 +216,67 @@ def test_original_robot_type_is_kept_as_provenance(ur_and_franka):
         assert contract["robot_type"] == "ur+franka"
 
 
+# ── datasets whose contract was stripped by a lerobot merge ─────────────────
+
+
+def _strip_contract(root: Path) -> Path:
+    """Reproduce what aggregate_datasets leaves behind.
+
+    It writes only info.json, tasks.parquet, stats.json and the episodes
+    parquet, so a merged dataset has no crisp_gym record_config.json even
+    though every source had one.
+    """
+    (root / "meta" / "record_config.json").unlink()
+    return root
+
+
+def test_missing_contract_is_refused_by_default(ur_and_franka):
+    """The refusal is the point: unverified action semantics corrupt training."""
+    ur, franka = ur_and_franka
+    _strip_contract(franka)
+    with pytest.raises(FileNotFoundError, match="aggregate_datasets"):
+        align_mod.align([ur, franka], "_aligned", None, [], dry_run=False)
+
+
+def test_missing_contract_is_allowed_with_the_flag(ur_and_franka):
+    ur, franka = ur_and_franka
+    _strip_contract(franka)
+    align_mod.align(
+        [ur, franka], "_aligned", None, [], dry_run=False,
+        robot_type="ur+franka", skip_contract_check=True,
+    )
+    assert _aligned_info(ur)["features"] == _aligned_info(franka)["features"]
+    assert _aligned_info(franka)["robot_type"] == "ur+franka"
+
+
+def test_contractless_output_simply_has_no_record_config(ur_and_franka):
+    """Nothing to rewrite must not mean a crash or a fabricated contract."""
+    ur, franka = ur_and_franka
+    _strip_contract(franka)
+    align_mod.align(
+        [ur, franka], "_aligned", None, [], dry_run=False, skip_contract_check=True
+    )
+    assert not (franka.parent / "franka_aligned" / "meta" / "record_config.json").exists()
+    # the dataset that HAD one still gets it rewritten
+    assert (ur.parent / "ur_aligned" / "meta" / "record_config.json").exists()
+
+
+def test_the_flag_does_not_abandon_checks_it_can_still_make(ur_and_franka, tmp_path):
+    """Two datasets that DO carry contracts are still compared to each other."""
+    ur, franka = ur_and_franka
+    third = _make_dataset(tmp_path / "other", "ur", 6, ext_torque=False)
+    contract = json.loads((third / "meta" / "record_config.json").read_text())
+    contract["rate_hz"] = 30.0  # a real, unfixable contract difference
+    (third / "meta" / "record_config.json").write_text(json.dumps(contract, indent=4))
+    _strip_contract(franka)
+
+    with pytest.raises(SystemExit, match="not mixable"):
+        align_mod.align(
+            [ur, franka, third], "_aligned", None, [], dry_run=False,
+            skip_contract_check=True,
+        )
+
+
 def test_dry_run_writes_nothing(ur_and_franka):
     ur, franka = ur_and_franka
     align_mod.align([ur, franka], "_aligned", None, [], dry_run=True, robot_type="ur+franka")

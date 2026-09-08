@@ -81,13 +81,26 @@ LEROBOT_INTERNAL_EXACT = {
 LEROBOT_INTERNAL_PREFIXES = ("next.",)
 
 
-def load_contract(dataset_dir: Path) -> dict:
+def load_contract(dataset_dir: Path, required: bool = True) -> dict | None:
+    """Read meta/record_config.json, or None when it is absent and optional.
+
+    A dataset can legitimately lack one: LeRobot's ``aggregate_datasets`` writes
+    only info.json, tasks.parquet, stats.json and the episodes parquet, so a
+    dataset produced by a merge has had its crisp_gym contract stripped even
+    though its sources all had one.
+    """
     path = dataset_dir / "meta" / "record_config.json"
     if not path.exists():
-        raise FileNotFoundError(
-            f"{dataset_dir} has no meta/record_config.json — it was not recorded "
-            "with the config-driven recorder. Cannot verify mixability."
-        )
+        if required:
+            raise FileNotFoundError(
+                f"{dataset_dir} has no meta/record_config.json, so its action "
+                "semantics cannot be verified. Either it was not recorded with "
+                "the config-driven recorder, or it came out of LeRobot's "
+                "aggregate_datasets, which does not copy that file. Restore it "
+                "from a source dataset, or pass --skip-contract-check to "
+                "proceed without the verification."
+            )
+        return None
     with open(path) as f:
         return json.load(f)
 
@@ -160,19 +173,41 @@ def align(
     promote: list[str],
     dry_run: bool,
     robot_type: str | None = None,
+    skip_contract_check: bool = False,
 ) -> None:
     # ── 1. contract verification (single source: RecordConfig) ──────────────
-    contracts = {d: load_contract(d) for d in dataset_dirs}
-    ref_dir, ref_meta = next(iter(contracts.items()))
-    for d, meta in contracts.items():
-        if not RecordConfig.contracts_compatible(ref_meta, meta):
-            raise SystemExit(
-                f"Datasets are not mixable: contracts of {ref_dir.name} and "
-                f"{d.name} differ (see above). This cannot be fixed by "
-                "post-processing — the recorded action semantics/rates/"
-                "policy-inputs are different data."
-            )
-    logger.info("✓ Core contracts match across all datasets.")
+    contracts = {d: load_contract(d, required=not skip_contract_check) for d in dataset_dirs}
+    missing = [d for d, meta in contracts.items() if meta is None]
+    if missing:
+        # Verify what is still verifiable rather than abandoning the check
+        # wholesale, and say exactly what went unverified.
+        logger.warning(
+            "NOT verifying the record contract of: %s (no meta/record_config.json). "
+            "fps and feature shapes are still compared, but the ACTION SEMANTICS — "
+            "definition, lookahead and rotation representation — live only in that "
+            "file. If these datasets were recorded to different action conventions, "
+            "merging them produces silently wrong training data.",
+            ", ".join(d.name for d in missing),
+        )
+    verifiable = {d: meta for d, meta in contracts.items() if meta is not None}
+    if len(verifiable) >= 2:
+        ref_dir, ref_meta = next(iter(verifiable.items()))
+        for d, meta in verifiable.items():
+            if not RecordConfig.contracts_compatible(ref_meta, meta):
+                raise SystemExit(
+                    f"Datasets are not mixable: contracts of {ref_dir.name} and "
+                    f"{d.name} differ (see above). This cannot be fixed by "
+                    "post-processing — the recorded action semantics/rates/"
+                    "policy-inputs are different data."
+                )
+        logger.info(f"✓ Core contracts match across {len(verifiable)} dataset(s).")
+    elif not missing:
+        logger.info("✓ Core contracts match across all datasets.")
+    else:
+        logger.warning(
+            "Only %d dataset(s) carry a contract — nothing to compare against.",
+            len(verifiable),
+        )
 
     # ── 2. shared column set ─────────────────────────────────────────────────
     col_sets = {d: dataset_columns(d) for d in dataset_dirs}
@@ -297,8 +332,14 @@ def align(
             with open(info_path, "w") as f:
                 json.dump(info, f, indent=4)
 
-        rc_path = out / "meta" / "record_config.json"
         meta = contracts[d]
+        if meta is None:
+            logger.info(
+                f"  {out.name}: no record_config.json to rewrite (it had none)."
+            )
+            logger.info(f"  ✓ {out.name} written ({len(episode_files(out))} data files)")
+            continue
+        rc_path = out / "meta" / "record_config.json"
         meta["observations"] = [
             o for o in meta.get("observations", []) if o["key"] in shared
         ]
@@ -350,6 +391,12 @@ def main():
                              "robot_type differs, so mixing arms needs one "
                              "shared label (e.g. 'ur+franka'). The original is "
                              "kept in record_config.json as source_robot_type.")
+    parser.add_argument("--skip-contract-check", action="store_true",
+                        help="Allow datasets with no meta/record_config.json "
+                             "(e.g. one produced by LeRobot's aggregate_datasets, "
+                             "which does not copy that file). Their ACTION "
+                             "SEMANTICS then go unverified — only use this when "
+                             "you know the datasets share a record config.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Report what would change without writing anything.")
     parser.add_argument("--log-level", type=str, default="INFO",
@@ -370,7 +417,7 @@ def main():
 
     align(dirs, args.output_suffix,
           tuple(args.rescale_gripper) if args.rescale_gripper else None,
-          args.promote, args.dry_run, args.robot_type)
+          args.promote, args.dry_run, args.robot_type, args.skip_contract_check)
 
 
 if __name__ == "__main__":
