@@ -235,6 +235,114 @@ def test_missing_dataset_is_reported_by_path(tmp_path):
         reencode.resolve_root(str(tmp_path / "nope"), None)
 
 
+# ── mergeability report: it must name EVERY gate, not just the video one ────
+
+
+def _summary(robot_type="franka", fps=15, signatures=None, codec="h264"):
+    return {
+        "robot_type": robot_type,
+        "fps": fps,
+        "signatures": signatures
+        if signatures is not None
+        else {"action": ("float32", (10,))},
+        "video": {
+            "cam": {
+                "declared": {
+                    "video.codec": codec,
+                    "video.pix_fmt": "yuv420p",
+                    "video.width": 1280,
+                    "video.height": 800,
+                    "video.fps": 15,
+                },
+                "actual": None,
+                "files": 1,
+            }
+        },
+    }
+
+
+def _report(a, b):
+    import io
+    import logging as _logging
+
+    stream = io.StringIO()
+    handler = _logging.StreamHandler(stream)
+    reencode.logger.addHandler(handler)
+    reencode.logger.setLevel(_logging.INFO)
+    try:
+        reencode.report_mergeability([("A", a), ("B", b)])
+    finally:
+        reencode.logger.removeHandler(handler)
+    return stream.getvalue()
+
+
+def test_matching_datasets_report_no_blocker():
+    out = _report(_summary(), _summary())
+    assert "should accept these" in out, out
+
+
+def test_robot_type_mismatch_is_reported():
+    """A robot_type mismatch must be named.
+
+    validate_all_metadata refuses it before reading a single feature, so a
+    report covering only video sends you into a pointless transcode.
+    """
+    out = _report(_summary(robot_type="ur"), _summary(robot_type="franka"))
+    assert "robot_type" in out and "Would NOT merge" in out, out
+
+
+def test_fps_mismatch_is_reported():
+    out = _report(_summary(fps=15), _summary(fps=30))
+    assert "fps" in out and "Would NOT merge" in out, out
+
+
+def test_feature_shape_mismatch_is_reported():
+    """A same-name, different-shape feature must be named.
+
+    extra.joints is (6,) on a UR and (7,) on a Franka, and the align script's
+    name-only intersection used to keep it.
+    """
+    out = _report(
+        _summary(signatures={"extra.joints": ("float32", (6,))}),
+        _summary(signatures={"extra.joints": ("float32", (7,))}),
+    )
+    assert "extra.joints" in out and "Would NOT merge" in out, out
+
+
+def test_feature_present_on_only_one_side_is_reported():
+    out = _report(
+        _summary(signatures={"action": ("float32", (10,))}),
+        _summary(
+            signatures={
+                "action": ("float32", (10,)),
+                "extra.ext_torque": ("float32", (7,)),
+            }
+        ),
+    )
+    assert "extra.ext_torque" in out and "feature keys differ" in out, out
+
+
+def test_codec_mismatch_is_still_reported():
+    out = _report(_summary(codec="av1"), _summary(codec="h264"))
+    assert "video.codec" in out and "Would NOT merge" in out, out
+
+
+def test_every_blocker_is_listed_in_one_pass():
+    """One run must name every blocker at once.
+
+    Otherwise each is only discovered after the previous one is fixed.
+    """
+    out = _report(
+        _summary(robot_type="ur", signatures={"extra.joints": ("float32", (6,))}, codec="av1"),
+        _summary(
+            robot_type="franka", signatures={"extra.joints": ("float32", (7,))}, codec="h264"
+        ),
+    )
+    assert "robot_type" in out
+    assert "extra.joints" in out
+    assert "video.codec" in out
+
+
 def test_video_keys_selects_only_video_features():
     info = {
         "features": {

@@ -375,14 +375,41 @@ def sample_frame_diff(old: Path, new: Path, count: int, total: int) -> float:
     )
 
 
-def describe(root: Path, label: str) -> dict[str, dict]:
-    """Log what a dataset's videos actually are, and return it per key."""
+def feature_signatures(info: dict) -> dict[str, tuple]:
+    """``{feature key: (dtype, shape)}`` — what lerobot compares for non-video keys.
+
+    ``features_equal_for_merge`` tests the whole feature dict for anything that
+    is not a video, so a differing shape blocks the merge even when the name
+    matches on both sides.
+    """
+    return {
+        key: (spec.get("dtype"), tuple(spec.get("shape") or ()))
+        for key, spec in (info.get("features") or {}).items()
+    }
+
+
+def describe(root: Path, label: str) -> dict:
+    """Log everything lerobot checks before it will aggregate, and return it.
+
+    Covers all three gates, in the order aggregate_datasets applies them:
+    ``fps`` and ``robot_type`` (validate_all_metadata, which fires first),
+    the feature dicts (features_equal_for_merge), and the video stream
+    parameters (concatenate_video_files' compatibility_check).
+    """
     info = load_info(root)
     keys = video_keys(info)
     logger.info("%s (%s)", label, root)
+    logger.info("  robot_type=%s fps=%s", info.get("robot_type"), info.get("fps"))
+
+    result: dict = {
+        "robot_type": info.get("robot_type"),
+        "fps": info.get("fps"),
+        "signatures": feature_signatures(info),
+        "video": {},
+    }
     if not keys:
         logger.info("  no video features")
-        return {}
+        return result
 
     summary: dict[str, dict] = {}
     for key in keys:
@@ -420,44 +447,85 @@ def describe(root: Path, label: str) -> dict[str, dict]:
                 mismatched,
             )
         summary[key] = {"declared": declared, "actual": actual, "files": len(files)}
-    return summary
+    result["video"] = summary
+    return result
 
 
-def report_mergeability(summaries: list[tuple[str, dict[str, dict]]]) -> None:
-    """Say whether these datasets would aggregate as they stand, and why not."""
+def report_mergeability(summaries: list[tuple[str, dict]]) -> None:
+    """Name EVERY blocker between these datasets, in the order lerobot hits them.
+
+    aggregate_datasets applies three gates and stops at the first: fps and
+    robot_type (validate_all_metadata), then the full feature dicts
+    (features_equal_for_merge), then the video streams themselves
+    (concatenate_video_files, which concatenates by stream copy). Reporting
+    only the video gate — as this did originally — gives a true but incomplete
+    answer and costs a transcode before the next blocker surfaces.
+    """
     if len(summaries) < 2:
         return
     logger.info("--- mergeability ---")
-    (ref_label, ref) = summaries[0]
+    ref_label, ref = summaries[0]
     blocked = False
+
     for label, other in summaries[1:]:
-        if set(ref) != set(other):
-            logger.error(
-                "%s and %s declare different video keys (%s vs %s) — that is a "
-                "schema difference this script does not fix.",
-                ref_label,
-                label,
-                sorted(ref),
-                sorted(other),
-            )
+        # Gate 1: validate_all_metadata, before it looks at anything else.
+        if ref["fps"] != other["fps"]:
             blocked = True
-            continue
-        for key in ref:
+            logger.error("fps: %s=%s vs %s=%s", ref_label, ref["fps"], label, other["fps"])
+        if ref["robot_type"] != other["robot_type"]:
+            blocked = True
+            logger.error(
+                "robot_type: %s=%r vs %s=%r — validate_all_metadata refuses this "
+                "before it reads a single feature.",
+                ref_label,
+                ref["robot_type"],
+                label,
+                other["robot_type"],
+            )
+
+        # Gate 2: features_equal_for_merge — the key SET first, then each dict.
+        ref_sig, other_sig = ref["signatures"], other["signatures"]
+        only_ref = sorted(set(ref_sig) - set(other_sig))
+        only_other = sorted(set(other_sig) - set(ref_sig))
+        if only_ref or only_other:
+            blocked = True
+            logger.error(
+                "feature keys differ: only in %s: %s | only in %s: %s",
+                ref_label,
+                only_ref or "-",
+                label,
+                only_other or "-",
+            )
+        conflicting = {
+            name: (ref_sig[name], other_sig[name])
+            for name in sorted(set(ref_sig) & set(other_sig))
+            if ref_sig[name] != other_sig[name] and ref_sig[name][0] != "video"
+        }
+        if conflicting:
+            blocked = True
+            for name, (a, b) in conflicting.items():
+                logger.error("feature %s: %s=%s vs %s=%s", name, ref_label, a, label, b)
+
+        # Gate 3: the video streams. Only reached once the first two pass.
+        for key in sorted(set(ref["video"]) & set(other["video"])):
             diffs = {
-                k: (ref[key]["declared"][k], other[key]["declared"][k])
+                k: (ref["video"][key]["declared"][k], other["video"][key]["declared"][k])
                 for k in COMPAT_KEYS
-                if ref[key]["declared"][k] != other[key]["declared"][k]
+                if ref["video"][key]["declared"][k] != other["video"][key]["declared"][k]
             }
             if diffs:
                 blocked = True
-                logger.error("%s vs %s, %s: %s", ref_label, label, key, diffs)
+                logger.error("video %s: %s", key, diffs)
+
     if blocked:
         logger.error(
-            "Would NOT merge. Re-encode one side to match the other "
-            "(--match <reference>)."
+            "Would NOT merge. Video parameters are fixed by re-encoding "
+            "(--match <reference>); differing feature shapes and robot_type are "
+            "not — see crisp_gym/scripts/postprocess_align_datasets.py."
         )
     else:
-        logger.info("Video parameters match — aggregate_datasets should accept these.")
+        logger.info("fps, robot_type, features and video all match — "
+                    "aggregate_datasets should accept these.")
 
 
 def copy_without_videos(src: Path, dst: Path) -> None:

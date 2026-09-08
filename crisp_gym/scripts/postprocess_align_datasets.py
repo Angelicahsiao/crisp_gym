@@ -11,11 +11,22 @@ LeRobot can concatenate them. This script:
    data — the script refuses (no silent corruption).
 2. Computes the shared column set and strips non-shared columns from the
    Parquet files (extras like observation.state.joint_efforts are dropped in
-   the aligned copy; originals are untouched).
+   the aligned copy; originals are untouched). A column present in every
+   dataset but with a DIFFERENT dtype/shape is dropped too — LeRobot compares
+   whole feature dicts, so extra.joints at (6,) on a UR and (7,) on a Franka
+   blocks the merge just as surely as a missing column, and padding it would
+   fabricate data.
 3. Optional fixups (explicit flags only):
      --rescale-gripper OLD_REF NEW_REF   gripper recorded against a wrong
                                          reference width -> rescale obs+action
                                          gripper dims by OLD_REF/NEW_REF, clip [0,1]
+     --robot-type LABEL                  overwrite robot_type in every output.
+                                         LeRobot refuses to aggregate datasets
+                                         whose robot_type differs, and refuses
+                                         BEFORE reading any feature, so mixing
+                                         two arms needs one shared label. The
+                                         original is kept per-dataset in
+                                         record_config.json as source_robot_type.
      --promote extra.foo [extra.bar ...] rename extra.* columns to
                                          observation.state.* so LeRobot treats
                                          them as policy STATE inputs (with
@@ -87,6 +98,36 @@ def dataset_columns(dataset_dir: Path) -> set[str]:
     return set(pd.read_parquet(episode_files(dataset_dir)[0]).columns)
 
 
+def load_info_robot_type(dataset_dir: Path) -> str | None:
+    """The dataset's original robot_type, read before any rewrite."""
+    info_path = dataset_dir / "meta" / "info.json"
+    if not info_path.exists():
+        return None
+    with open(info_path) as f:
+        return json.load(f).get("robot_type")
+
+
+def feature_signatures(dataset_dir: Path) -> dict[str, tuple]:
+    """{feature key: (dtype, shape)} from meta/info.json.
+
+    Column NAMES agreeing is not enough for LeRobot: aggregate_datasets ->
+    features_equal_for_merge compares the whole feature dict for every
+    non-video key, so extra.joints being (6,) on a 6-DOF UR and (7,) on a
+    7-DOF Franka blocks the merge even though both datasets have the column.
+    Missing info.json yields {}, which makes every signature None and so
+    conflicts with nothing.
+    """
+    info_path = dataset_dir / "meta" / "info.json"
+    if not info_path.exists():
+        return {}
+    with open(info_path) as f:
+        info = json.load(f)
+    return {
+        key: (spec.get("dtype"), tuple(spec.get("shape") or ()))
+        for key, spec in (info.get("features") or {}).items()
+    }
+
+
 def is_internal(col: str) -> bool:
     return col in LEROBOT_INTERNAL_EXACT or any(
         col.startswith(p) for p in LEROBOT_INTERNAL_PREFIXES
@@ -106,6 +147,7 @@ def align(
     rescale_gripper: tuple[float, float] | None,
     promote: list[str],
     dry_run: bool,
+    robot_type: str | None = None,
 ) -> None:
     # ── 1. contract verification (single source: RecordConfig) ──────────────
     contracts = {d: load_contract(d) for d in dataset_dirs}
@@ -124,6 +166,29 @@ def align(
     col_sets = {d: dataset_columns(d) for d in dataset_dirs}
     shared = set.intersection(*col_sets.values())
 
+    # A column present everywhere can still be unmergeable: LeRobot compares
+    # the whole feature dict, so a DOF-dependent column like extra.joints —
+    # (6,) on a UR, (7,) on a Franka — has to go too. Only ever REMOVES from
+    # `shared`; a column with no info.json entry has signature None in every
+    # dataset and so conflicts with nothing.
+    sig_sets = {d: feature_signatures(d) for d in dataset_dirs}
+    conflicting = {
+        name
+        for name in shared
+        if len({sig_sets[d].get(name) for d in dataset_dirs}) > 1
+    }
+    if conflicting:
+        for name in sorted(conflicting):
+            logger.info(
+                f"  shape conflict on '{name}': "
+                + ", ".join(f"{d.name}={sig_sets[d].get(name)}" for d in dataset_dirs)
+            )
+        logger.info(
+            f"Dropping {len(conflicting)} column(s) present in every dataset but "
+            "with a different dtype/shape — padding them would fabricate data."
+        )
+        shared -= conflicting
+
     if promote:
         # Promoted columns must exist everywhere (a policy input cannot be
         # missing in part of the training data) and must not be stripped.
@@ -134,6 +199,13 @@ def align(
                 f"--promote columns missing in some datasets: {missing}. "
                 "Promotion makes them policy inputs, so every dataset in the "
                 "mix must contain them (robot-only training)."
+            )
+        conflicted_promotions = sorted(set(promote) & conflicting)
+        if conflicted_promotions:
+            raise SystemExit(
+                f"--promote columns have different shapes across datasets: "
+                f"{conflicted_promotions}. Promotion makes them policy inputs, "
+                "which cannot have a different width per dataset."
             )
         shared |= set(promote)
     for d, cols in col_sets.items():
@@ -149,7 +221,9 @@ def align(
         if dry_run:
             logger.info(f"[DRY RUN] {d.name} -> {out.name}: drop {drop or 'nothing'}"
                         + (f", rescale gripper x{rescale_gripper[0]/rescale_gripper[1]:.4f}"
-                           if rescale_gripper else ""))
+                           if rescale_gripper else "")
+                        + (f", robot_type {load_info_robot_type(d)!r} -> {robot_type!r}"
+                           if robot_type is not None else ""))
             continue
 
         logger.info(f"Copying {d} -> {out}")
@@ -198,6 +272,16 @@ def align(
             for old, new in rename_map.items():
                 if old in feats:
                     feats[new] = feats.pop(old)
+            if robot_type is not None:
+                # validate_all_metadata requires an IDENTICAL robot_type across
+                # every source, and refuses before it reads any feature. Two
+                # arms recorded to the same TCP-space contract are mixable, but
+                # only under one shared label.
+                original_robot_type = info.get("robot_type")
+                info["robot_type"] = robot_type
+                logger.info(
+                    f"  robot_type: {original_robot_type!r} -> {robot_type!r}"
+                )
             with open(info_path, "w") as f:
                 json.dump(info, f, indent=4)
 
@@ -213,6 +297,12 @@ def align(
         if rename_map:
             meta["promoted"] = rename_map
         meta["aligned_from"] = str(d)
+        if robot_type is not None:
+            # info.json can no longer say which arm an episode came from, so
+            # keep the original here — record_config.json is per-dataset and
+            # survives the merge as provenance.
+            meta["source_robot_type"] = load_info_robot_type(d)
+            meta["robot_type"] = robot_type
         if rescale_gripper is not None:
             meta["gripper_rescaled"] = {"old_ref": rescale_gripper[0],
                                         "new_ref": rescale_gripper[1]}
@@ -242,6 +332,12 @@ def main():
                         help="Rename extra.* columns to observation.state.* so "
                              "LeRobot uses them as policy inputs (robot-only "
                              "training; all datasets must contain them).")
+    parser.add_argument("--robot-type", type=str, default=None, metavar="LABEL",
+                        help="Overwrite robot_type in every output's info.json. "
+                             "LeRobot refuses to aggregate datasets whose "
+                             "robot_type differs, so mixing arms needs one "
+                             "shared label (e.g. 'ur+franka'). The original is "
+                             "kept in record_config.json as source_robot_type.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Report what would change without writing anything.")
     parser.add_argument("--log-level", type=str, default="INFO",
@@ -262,7 +358,7 @@ def main():
 
     align(dirs, args.output_suffix,
           tuple(args.rescale_gripper) if args.rescale_gripper else None,
-          args.promote, args.dry_run)
+          args.promote, args.dry_run, args.robot_type)
 
 
 if __name__ == "__main__":
