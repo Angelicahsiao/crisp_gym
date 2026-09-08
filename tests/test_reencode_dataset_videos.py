@@ -238,26 +238,30 @@ def test_missing_dataset_is_reported_by_path(tmp_path):
 # ── mergeability report: it must name EVERY gate, not just the video one ────
 
 
+def _signatures(video_feature):
+    """Run one feature through the real describe() path."""
+    return reencode.feature_signatures(
+        {"features": {"observation.images.cam": video_feature}}
+    )
+
+
+def _feature(dtype="float32", shape=(10,), **extra):
+    return {"dtype": dtype, "shape": shape, **extra}
+
+
 def _summary(robot_type="franka", fps=15, signatures=None, codec="h264"):
+    stream = {
+        "video.codec": codec,
+        "video.pix_fmt": "yuv420p",
+        "video.width": 1280,
+        "video.height": 800,
+        "video.fps": 15,
+    }
     return {
         "robot_type": robot_type,
         "fps": fps,
-        "signatures": signatures
-        if signatures is not None
-        else {"action": ("float32", (10,))},
-        "video": {
-            "cam": {
-                "declared": {
-                    "video.codec": codec,
-                    "video.pix_fmt": "yuv420p",
-                    "video.width": 1280,
-                    "video.height": 800,
-                    "video.fps": 15,
-                },
-                "actual": None,
-                "files": 1,
-            }
-        },
+        "signatures": signatures if signatures is not None else {"action": _feature()},
+        "video": {"cam": {"declared": stream, "actual": stream, "files": 1}},
     }
 
 
@@ -303,20 +307,17 @@ def test_feature_shape_mismatch_is_reported():
     name-only intersection used to keep it.
     """
     out = _report(
-        _summary(signatures={"extra.joints": ("float32", (6,))}),
-        _summary(signatures={"extra.joints": ("float32", (7,))}),
+        _summary(signatures={"extra.joints": _feature(shape=(6,))}),
+        _summary(signatures={"extra.joints": _feature(shape=(7,))}),
     )
     assert "extra.joints" in out and "Would NOT merge" in out, out
 
 
 def test_feature_present_on_only_one_side_is_reported():
     out = _report(
-        _summary(signatures={"action": ("float32", (10,))}),
+        _summary(signatures={"action": _feature()}),
         _summary(
-            signatures={
-                "action": ("float32", (10,)),
-                "extra.ext_torque": ("float32", (7,)),
-            }
+            signatures={"action": _feature(), "extra.ext_torque": _feature(shape=(7,))}
         ),
     )
     assert "extra.ext_torque" in out and "feature keys differ" in out, out
@@ -327,15 +328,54 @@ def test_codec_mismatch_is_still_reported():
     assert "video.codec" in out and "Would NOT merge" in out, out
 
 
+def test_a_stale_video_info_block_is_reported():
+    """The real miss: --inspect said "should accept these" and lerobot refused.
+
+    A dataset recorded before crisp_gym stopped hardcoding video.codec into
+    `video_info` carries it there; lerobot compares that block verbatim, so it
+    blocks the merge even when the `info` block and the mp4 both say h264.
+    """
+    stale = _feature(
+        dtype="video",
+        shape=(800, 1280, 3),
+        video_info={"video.fps": 15.0, "video.codec": "av1", "has_audio": False},
+        info={"video.codec": "h264"},
+    )
+    current = _feature(
+        dtype="video",
+        shape=(800, 1280, 3),
+        video_info={"video.fps": 15.0, "has_audio": False},
+        info={"video.codec": "h264"},
+    )
+    out = _report(
+        _summary(signatures=_signatures(stale)),
+        _summary(signatures=_signatures(current)),
+    )
+    assert "video_info" in out and "Would NOT merge" in out, out
+
+
+def test_encoder_tuning_keys_do_not_block_a_merge():
+    """lerobot exempts exactly these six inside `info`; we must too, or we
+    report a blocker that does not exist."""
+    a = _feature(dtype="video", shape=(800, 1280, 3),
+                 info={"video.codec": "h264", "video.crf": 21, "video.g": 2})
+    b = _feature(dtype="video", shape=(800, 1280, 3),
+                 info={"video.codec": "h264", "video.crf": 30, "video.g": 60})
+    out = _report(
+        _summary(signatures=_signatures(a)), _summary(signatures=_signatures(b))
+    )
+    assert "should accept these" in out, out
+
+
 def test_every_blocker_is_listed_in_one_pass():
     """One run must name every blocker at once.
 
     Otherwise each is only discovered after the previous one is fixed.
     """
     out = _report(
-        _summary(robot_type="ur", signatures={"extra.joints": ("float32", (6,))}, codec="av1"),
+        _summary(robot_type="ur", signatures={"extra.joints": _feature(shape=(6,))}, codec="av1"),
         _summary(
-            robot_type="franka", signatures={"extra.joints": ("float32", (7,))}, codec="h264"
+            robot_type="franka", signatures={"extra.joints": _feature(shape=(7,))}, codec="h264"
         ),
     )
     assert "robot_type" in out

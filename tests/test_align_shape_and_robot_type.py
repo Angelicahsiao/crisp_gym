@@ -216,6 +216,78 @@ def test_original_robot_type_is_kept_as_provenance(ur_and_franka):
         assert contract["robot_type"] == "ur+franka"
 
 
+# ── video_info reconciliation ───────────────────────────────────────────────
+
+
+CAM = "observation.images.oakw_cam"
+
+
+def _set_video_info(root: Path, block: dict | None) -> Path:
+    info = json.loads((root / "meta" / "info.json").read_text())
+    if block is None:
+        info["features"][CAM].pop("video_info", None)
+    else:
+        info["features"][CAM]["video_info"] = block
+    (root / "meta" / "info.json").write_text(json.dumps(info, indent=4))
+    return root
+
+
+CURRENT_VI = {"video.fps": 15.0, "video.is_depth_map": False, "has_audio": False}
+# What recorders wrote before to_features() stopped hardcoding the codec.
+LEGACY_VI = {**CURRENT_VI, "video.codec": "av1", "video.pix_fmt": "yuv420p"}
+
+
+def test_legacy_hardcoded_codec_in_video_info_is_reconciled(ur_and_franka):
+    """The blocker that survived aligning AND re-encoding.
+
+    lerobot's features_equal_for_merge exempts only the six encoder-tuning keys
+    inside `info`; `video_info` is compared verbatim. A dataset recorded before
+    crisp_gym stopped hardcoding video.codec there could not merge with one
+    recorded after, and re-encoding made the stale value actively wrong.
+    """
+    ur, franka = ur_and_franka
+    _set_video_info(ur, LEGACY_VI)
+    _set_video_info(franka, CURRENT_VI)
+
+    align_mod.align([ur, franka], "_aligned", None, [], dry_run=False)
+
+    assert _aligned_info(ur)["features"][CAM]["video_info"] == CURRENT_VI
+    assert _aligned_info(franka)["features"][CAM]["video_info"] == CURRENT_VI
+
+
+def test_video_info_is_dropped_when_a_dataset_lacks_it(ur_and_franka):
+    """Present-but-empty still differs from absent, so it has to go from both."""
+    ur, franka = ur_and_franka
+    _set_video_info(ur, CURRENT_VI)
+    _set_video_info(franka, None)
+
+    align_mod.align([ur, franka], "_aligned", None, [], dry_run=False)
+
+    assert "video_info" not in _aligned_info(ur)["features"][CAM]
+    assert "video_info" not in _aligned_info(franka)["features"][CAM]
+
+
+def test_agreeing_video_info_is_left_alone(ur_and_franka):
+    ur, franka = ur_and_franka
+    _set_video_info(ur, CURRENT_VI)
+    _set_video_info(franka, CURRENT_VI)
+
+    align_mod.align([ur, franka], "_aligned", None, [], dry_run=False)
+
+    assert _aligned_info(ur)["features"][CAM]["video_info"] == CURRENT_VI
+
+
+def test_video_keys_come_from_features_not_parquet_columns(ur_and_franka):
+    """Regression: reconciliation was fed the shared COLUMN set, and a video
+    key is not a parquet column, so it silently never ran."""
+    ur, franka = ur_and_franka
+    _set_video_info(ur, LEGACY_VI)
+    _set_video_info(franka, CURRENT_VI)
+    agreed = align_mod.reconcile_video_info([ur, franka])
+    assert CAM in agreed, "video feature was not considered at all"
+    assert agreed[CAM] == CURRENT_VI
+
+
 # ── labels must distinguish the datasets ────────────────────────────────────
 
 

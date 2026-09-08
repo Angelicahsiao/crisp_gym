@@ -147,6 +147,15 @@ def load_info_robot_type(dataset_dir: Path) -> str | None:
         return json.load(f).get("robot_type")
 
 
+def feature_specs(dataset_dir: Path) -> dict[str, dict]:
+    """The raw ``features`` block of meta/info.json, or {} when absent."""
+    info_path = dataset_dir / "meta" / "info.json"
+    if not info_path.exists():
+        return {}
+    with open(info_path) as f:
+        return json.load(f).get("features") or {}
+
+
 def feature_signatures(dataset_dir: Path) -> dict[str, tuple]:
     """{feature key: (dtype, shape)} from meta/info.json.
 
@@ -157,15 +166,62 @@ def feature_signatures(dataset_dir: Path) -> dict[str, tuple]:
     Missing info.json yields {}, which makes every signature None and so
     conflicts with nothing.
     """
-    info_path = dataset_dir / "meta" / "info.json"
-    if not info_path.exists():
-        return {}
-    with open(info_path) as f:
-        info = json.load(f)
     return {
         key: (spec.get("dtype"), tuple(spec.get("shape") or ()))
-        for key, spec in (info.get("features") or {}).items()
+        for key, spec in feature_specs(dataset_dir).items()
     }
+
+
+def reconcile_video_info(dataset_dirs: list[Path]) -> dict[str, dict | None]:
+    """Per video key, the ``video_info`` block every dataset can agree on.
+
+    ``video_info`` is written by crisp_gym's ``RecordConfig.to_features()`` and
+    compared VERBATIM by LeRobot: ``features_equal_for_merge`` exempts only the
+    six encoder-TUNING keys inside ``info``, nothing in here. Recorder versions
+    wrote different keys into it — older ones hardcoded ``video.codec`` and
+    ``video.pix_fmt``, which a later re-encode turns from merely redundant into
+    actively wrong — so a dataset recorded before that fix cannot merge with
+    one recorded after it.
+
+    Returns the agreed block per key, or None meaning "drop video_info
+    entirely" (used when some dataset does not have the block at all, since a
+    present-but-empty block still differs from an absent one).
+    """
+    specs = {d: feature_specs(d) for d in dataset_dirs}
+    # Derived from the FEATURES, not from `shared`: a video key is not a
+    # parquet column, so it never appears in the shared column set.
+    keys = set.intersection(
+        *(
+            {k for k, spec in specs[d].items() if spec.get("dtype") == "video"}
+            for d in dataset_dirs
+        )
+    ) if specs else set()
+    out: dict[str, dict | None] = {}
+    for key in sorted(keys):
+        entries = [specs[d].get(key) or {} for d in dataset_dirs]
+        if not entries or any(e.get("dtype") != "video" for e in entries):
+            continue
+        if not all("video_info" in e for e in entries):
+            out[key] = None
+            logger.info(
+                f"  reconciling video_info of '{key}': dropping it entirely "
+                "(not every dataset declares one)"
+            )
+            continue
+        blocks = [e["video_info"] or {} for e in entries]
+        agreed = {
+            k: blocks[0][k]
+            for k in blocks[0]
+            if all(k in b and b[k] == blocks[0][k] for b in blocks[1:])
+        }
+        dropped = sorted(set().union(*(set(b) for b in blocks)) - set(agreed))
+        if dropped:
+            logger.info(
+                f"  reconciling video_info of '{key}': dropping {dropped} "
+                "(present in some datasets only, or disagreeing)"
+            )
+        out[key] = agreed
+    return out
 
 
 def is_internal(col: str) -> bool:
@@ -277,13 +333,20 @@ def align(
         if extras:
             logger.info(f"{labels[d]}: stripping non-shared columns: {extras}")
 
+    video_info_agreed = reconcile_video_info(dataset_dirs)
+
     # ── 3. per-dataset rewrite ───────────────────────────────────────────────
     for d in dataset_dirs:
         out = d.parent / (d.name + output_suffix)
         drop = sorted(c for c in col_sets[d] - shared if not is_internal(c))
 
         if dry_run:
+            reconciled = sorted(
+                k for k, v in video_info_agreed.items()
+                if v is None or (feature_specs(d).get(k, {}).get("video_info") or {}) != v
+            )
             logger.info(f"[DRY RUN] {labels[d]} -> {out}: drop {drop or 'nothing'}"
+                        + (f", reconcile video_info of {reconciled}" if reconciled else "")
                         + (f", rescale gripper x{rescale_gripper[0]/rescale_gripper[1]:.4f}"
                            if rescale_gripper else "")
                         + (f", robot_type {load_info_robot_type(d)!r} -> {robot_type!r}"
@@ -336,6 +399,13 @@ def align(
             for old, new in rename_map.items():
                 if old in feats:
                     feats[new] = feats.pop(old)
+            for key, block in video_info_agreed.items():
+                if key not in feats:
+                    continue
+                if block is None:
+                    feats[key].pop("video_info", None)
+                else:
+                    feats[key]["video_info"] = block
             if robot_type is not None:
                 # validate_all_metadata requires an IDENTICAL robot_type across
                 # every source, and refuses before it reads any feature. Two

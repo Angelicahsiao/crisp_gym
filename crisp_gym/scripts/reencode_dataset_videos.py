@@ -375,17 +375,56 @@ def sample_frame_diff(old: Path, new: Path, count: int, total: int) -> float:
     )
 
 
-def feature_signatures(info: dict) -> dict[str, tuple]:
-    """``{feature key: (dtype, shape)}`` — what lerobot compares for non-video keys.
+# The six keys lerobot's features_equal_for_merge exempts, and ONLY inside a
+# video feature's `info` block. Everything else in the feature dict — including
+# the crisp_gym-authored `video_info` block, `names`, `shape` — is compared
+# verbatim. Mirrors lerobot.configs.video.VIDEO_ENCODER_INFO_KEYS.
+VIDEO_ENCODER_INFO_KEYS = frozenset(
+    f"video.{name}"
+    for name in ("g", "crf", "preset", "fast_decode", "extra_options", "video_backend")
+)
 
-    ``features_equal_for_merge`` tests the whole feature dict for anything that
-    is not a video, so a differing shape blocks the merge even when the name
-    matches on both sides.
+
+def comparable_feature(spec: dict) -> dict:
+    """One feature dict reduced to what lerobot compares for mergeability.
+
+    Reimplements ``features_equal_for_merge``'s ``_without_encoder_info_keys``:
+    for a video feature the encoder-TUNING keys inside ``info`` are dropped,
+    and nothing else is. Comparing a hand-picked subset instead (as this did
+    originally, five keys out of the ``info`` block) reports a merge as fine
+    that lerobot then refuses — a stale ``video_info`` block, a differing
+    ``names`` list or ``has_audio`` all block it and were all invisible.
     """
+    reduced = dict(spec)
+    if reduced.get("dtype") == "video" and isinstance(reduced.get("info"), dict):
+        reduced["info"] = {
+            k: v for k, v in reduced["info"].items() if k not in VIDEO_ENCODER_INFO_KEYS
+        }
+    return reduced
+
+
+def feature_signatures(info: dict) -> dict[str, dict]:
+    """``{feature key: comparable feature dict}`` for every feature."""
     return {
-        key: (spec.get("dtype"), tuple(spec.get("shape") or ()))
-        for key, spec in (info.get("features") or {}).items()
+        key: comparable_feature(spec) for key, spec in (info.get("features") or {}).items()
     }
+
+
+def _describe_difference(a: dict, b: dict) -> str:
+    """Name the sub-keys two comparable feature dicts disagree on."""
+    parts = []
+    for key in sorted(set(a) | set(b)):
+        if a.get(key) == b.get(key):
+            continue
+        if key == "info" and isinstance(a.get(key), dict) and isinstance(b.get(key), dict):
+            inner = sorted(
+                k for k in set(a[key]) | set(b[key]) if a[key].get(k) != b[key].get(k)
+            )
+            parts.append(f"info{inner}: {[a[key].get(k) for k in inner]} vs "
+                         f"{[b[key].get(k) for k in inner]}")
+        else:
+            parts.append(f"{key}: {a.get(key)!r} vs {b.get(key)!r}")
+    return "; ".join(parts)
 
 
 def describe(root: Path, label: str) -> dict:
@@ -496,26 +535,29 @@ def report_mergeability(summaries: list[tuple[str, dict]]) -> None:
                 label,
                 only_other or "-",
             )
-        conflicting = {
-            name: (ref_sig[name], other_sig[name])
-            for name in sorted(set(ref_sig) & set(other_sig))
-            if ref_sig[name] != other_sig[name] and ref_sig[name][0] != "video"
-        }
-        if conflicting:
+        for name in sorted(set(ref_sig) & set(other_sig)):
+            if ref_sig[name] == other_sig[name]:
+                continue
             blocked = True
-            for name, (a, b) in conflicting.items():
-                logger.error("feature %s: %s=%s vs %s=%s", name, ref_label, a, label, b)
+            logger.error(
+                "feature %s differs (%s vs %s): %s",
+                name,
+                ref_label,
+                label,
+                _describe_difference(ref_sig[name], other_sig[name]),
+            )
 
-        # Gate 3: the video streams. Only reached once the first two pass.
+        # Gate 3: the video STREAMS themselves, which the feature dicts only
+        # claim. A dataset whose info.json disagrees with its own mp4 passes
+        # gate 2 and then fails inside concatenate_video_files.
         for key in sorted(set(ref["video"]) & set(other["video"])):
-            diffs = {
-                k: (ref["video"][key]["declared"][k], other["video"][key]["declared"][k])
-                for k in COMPAT_KEYS
-                if ref["video"][key]["declared"][k] != other["video"][key]["declared"][k]
-            }
+            a, b = ref["video"][key]["actual"], other["video"][key]["actual"]
+            if a is None or b is None:
+                continue
+            diffs = {k: (a[k], b[k]) for k in COMPAT_KEYS if a[k] != b[k]}
             if diffs:
                 blocked = True
-                logger.error("video %s: %s", key, diffs)
+                logger.error("video stream %s: %s", key, diffs)
 
     if blocked:
         logger.error(
@@ -772,6 +814,29 @@ def main(argv: list[str] | None = None) -> int:
         if "is_depth_map" in existing:
             probed["is_depth_map"] = existing["is_depth_map"]
         dst_info["features"][key]["info"] = {**existing, **probed}
+
+        # crisp_gym recorders before the codec became configurable hardcoded
+        # video.codec / video.pix_fmt into the separate `video_info` block.
+        # Re-encoding turns those from redundant into actively WRONG, and
+        # lerobot compares that block verbatim — so refresh whatever is there.
+        # Absent keys are not added: current recorders do not write them, and
+        # adding them would break merging with a dataset recorded today.
+        video_info = dst_info["features"][key].get("video_info")
+        if isinstance(video_info, dict):
+            for block_key, probed_key in (
+                ("video.codec", "video.codec"),
+                ("video.pix_fmt", "video.pix_fmt"),
+            ):
+                if block_key in video_info and probed_key in probed:
+                    if video_info[block_key] != probed[probed_key]:
+                        logger.info(
+                            "video_info %s: %s -> %s (it would otherwise still "
+                            "declare the pre-transcode codec)",
+                            block_key,
+                            video_info[block_key],
+                            probed[probed_key],
+                        )
+                    video_info[block_key] = probed[probed_key]
         logger.info(
             "info.json %s: codec=%s pix_fmt=%s",
             key,
