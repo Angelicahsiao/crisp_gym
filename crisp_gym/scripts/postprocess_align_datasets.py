@@ -123,6 +123,49 @@ def dataset_columns(dataset_dir: Path) -> set[str]:
     return set(pd.read_parquet(episode_files(dataset_dir)[0]).columns)
 
 
+def prune_stats(dataset_dir: Path, drop: list[str], rename_map: dict[str, str]) -> None:
+    """Drop (and rename) statistics for columns that left the dataset.
+
+    Dropping a column from the parquet and from info.json is not enough:
+    ``aggregate_datasets`` finishes by calling ``aggregate_stats``, which takes
+    the UNION of stat keys across datasets and ``np.stack``s their means. A
+    feature still present in both stats files with a different width — say
+    extra.joints at (6,) and (7,) — therefore raises "all input arrays must
+    have the same shape" at the very END of the merge, after the data and
+    videos have already been copied.
+    """
+    stats_path = dataset_dir / "meta" / "stats.json"
+    if stats_path.exists():
+        with open(stats_path) as f:
+            stats = json.load(f)
+        removed = [c for c in drop if c in stats]
+        for c in removed:
+            stats.pop(c)
+        for old_key, new_key in rename_map.items():
+            if old_key in stats:
+                stats[new_key] = stats.pop(old_key)
+        if removed or rename_map:
+            logger.info(f"  stats.json: dropped {removed or 'nothing'}")
+            with open(stats_path, "w") as f:
+                json.dump(stats, f, indent=4)
+
+    prefixes = tuple(f"stats/{c}/" for c in drop)
+    for path in sorted((dataset_dir / "meta" / "episodes").glob("**/*.parquet")):
+        df = pd.read_parquet(path)
+        stale = [c for c in df.columns if c.startswith(prefixes)] if prefixes else []
+        renames = {
+            c: f"stats/{new_key}/" + c[len(f"stats/{old_key}/"):]
+            for c in df.columns
+            for old_key, new_key in rename_map.items()
+            if c.startswith(f"stats/{old_key}/")
+        }
+        if stale or renames:
+            df.drop(columns=stale).rename(columns=renames).to_parquet(path, index=False)
+            logger.info(
+                f"  {path.relative_to(dataset_dir)}: dropped {len(stale)} stat column(s)"
+            )
+
+
 def dataset_labels(dataset_dirs: list[Path]) -> dict[Path, str]:
     """Shortest per-dataset label that is unambiguous across this run.
 
@@ -426,6 +469,17 @@ def align(
             )
             logger.info(f"  ✓ {out} written ({len(episode_files(out))} data files)")
             continue
+        # ── stats must lose the dropped columns too ──
+        # They live in TWO more places, and neither is info.json:
+        #   meta/stats.json                 -> aggregate_stats() stacks these,
+        #                                      so a (6,) mean beside a (7,) one
+        #                                      dies inside numpy at the very
+        #                                      end of aggregate_datasets, after
+        #                                      the data and videos are copied.
+        #   meta/episodes/*.parquet         -> per-episode stats, flattened as
+        #                                      stats/<feature>/<stat> columns.
+        prune_stats(out, drop, rename_map)
+
         rc_path = out / "meta" / "record_config.json"
         meta["observations"] = [
             o for o in meta.get("observations", []) if o["key"] in shared

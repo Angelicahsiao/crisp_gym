@@ -103,6 +103,26 @@ def _make_dataset(root: Path, robot_type: str, dof: int, *, ext_torque: bool) ->
     data_dir = root / "data" / "chunk-000"
     data_dir.mkdir(parents=True)
     pd.DataFrame(columns).to_parquet(data_dir / "file-000.parquet", index=False)
+
+    # Stats live in two more places, both of which aggregate_datasets reads.
+    stat_keys = [k for k in features if features[k]["dtype"] != "video"]
+    stats = {
+        k: {
+            stat: np.zeros(features[k]["shape"], np.float32).tolist()
+            for stat in ("mean", "std", "min", "max")
+        }
+        | {"count": [1]}
+        for k in stat_keys
+    }
+    (root / "meta" / "stats.json").write_text(json.dumps(stats, indent=4))
+
+    ep_cols = {"episode_index": [0], "length": [1]}
+    for k in stat_keys:
+        for stat in ("mean", "std", "min", "max"):
+            ep_cols[f"stats/{k}/{stat}"] = [np.zeros(features[k]["shape"], np.float32)]
+    ep_dir = root / "meta" / "episodes" / "chunk-000"
+    ep_dir.mkdir(parents=True)
+    pd.DataFrame(ep_cols).to_parquet(ep_dir / "file-000.parquet", index=False)
     return root
 
 
@@ -214,6 +234,67 @@ def test_original_robot_type_is_kept_as_provenance(ur_and_franka):
         )
         assert contract["source_robot_type"] == expected
         assert contract["robot_type"] == "ur+franka"
+
+
+# ── stats must follow the columns out ───────────────────────────────────────
+
+
+DOF_KEYS = ("extra.joints", "extra.joint_efforts",
+            "extra.joint_velocities", "extra.target_joints")
+
+
+def _aligned_stats(root: Path, suffix: str = "_aligned") -> dict:
+    return json.loads(
+        (root.parent / (root.name + suffix) / "meta" / "stats.json").read_text()
+    )
+
+
+def test_dropped_columns_are_removed_from_stats_json(ur_and_franka):
+    """The failure came at the very END of aggregate_datasets, in numpy.
+
+    aggregate_stats takes the union of stat keys and np.stacks their means, so
+    extra.joints surviving at (6,) and (7,) raises "all input arrays must have
+    the same shape" after the data and videos are already copied.
+    """
+    ur, franka = ur_and_franka
+    align_mod.align([ur, franka], "_aligned", None, [], dry_run=False)
+    for root in (ur, franka):
+        stats = _aligned_stats(root)
+        for key in DOF_KEYS:
+            assert key not in stats, f"{key} still in {root.name} stats.json"
+    assert "extra.ext_torque" not in _aligned_stats(franka)
+
+
+def test_kept_columns_keep_their_stats(ur_and_franka):
+    ur, franka = ur_and_franka
+    align_mod.align([ur, franka], "_aligned", None, [], dry_run=False)
+    for root in (ur, franka):
+        stats = _aligned_stats(root)
+        for key in ("action", "observation.state", "observation.state.cartesian"):
+            assert key in stats
+
+
+def test_per_episode_stat_columns_are_dropped_too(ur_and_franka):
+    """Episode stats are flattened into meta/episodes as stats/<key>/<stat>."""
+    ur, franka = ur_and_franka
+    align_mod.align([ur, franka], "_aligned", None, [], dry_run=False)
+    for root in (ur, franka):
+        path = (root.parent / (root.name + "_aligned") / "meta" / "episodes"
+                / "chunk-000" / "file-000.parquet")
+        cols = set(pd.read_parquet(path).columns)
+        for key in DOF_KEYS:
+            assert not any(c.startswith(f"stats/{key}/") for c in cols), key
+        assert "stats/action/mean" in cols
+
+
+def test_aligned_stats_can_actually_be_aggregated(ur_and_franka):
+    """Reproduces what aggregate_stats does, which is where the merge died."""
+    ur, franka = ur_and_franka
+    align_mod.align([ur, franka], "_aligned", None, [], dry_run=False)
+    a, b = _aligned_stats(ur), _aligned_stats(franka)
+    for key in set(a) | set(b):
+        present = [s[key] for s in (a, b) if key in s]
+        np.stack([np.asarray(s["mean"]) for s in present])  # raises if mismatched
 
 
 # ── video_info reconciliation ───────────────────────────────────────────────
