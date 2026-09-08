@@ -50,12 +50,24 @@ import argparse
 import json
 import logging
 import shutil
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from crisp_gym.record.record_config import RecordConfig
+try:
+    from crisp_gym.record.record_config import RecordConfig
+except ModuleNotFoundError:  # pragma: no cover - exercised only outside the package
+    # This script runs where the DATASETS are: a data/training box that has
+    # lerobot but not the robot stack, and usually no `pip install -e .` of
+    # crisp_gym. Fall back to the checkout this file lives in
+    # (<root>/crisp_gym/scripts/this.py -> <root>). Tried second on purpose, so
+    # an installed crisp_gym still wins and this never shadows it silently.
+    # record_config itself only needs numpy and PyYAML, both already present in
+    # any lerobot[dataset] environment.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from crisp_gym.record.record_config import RecordConfig
 
 logger = logging.getLogger(__name__)
 
