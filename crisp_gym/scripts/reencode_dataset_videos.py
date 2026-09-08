@@ -98,9 +98,19 @@ class VideoProbe:
         return (self.width, self.height, self.fps, self.frames)
 
 
-def resolve_root(repo_id: str, root: Path | None) -> Path:
-    """Return the dataset directory for a repo id, or the explicit root."""
-    path = Path(root) if root is not None else HF_LEROBOT_HOME / repo_id
+def resolve_root(repo_id: str | None, root: Path | None) -> Path:
+    """Return the dataset directory for a repo id, an absolute path, or a root.
+
+    An absolute path passed as ``--repo-id`` is honoured as-is: datasets on a
+    shared volume are not under ``HF_LEROBOT_HOME`` and typing ``--repo-id
+    /workspace/...`` is the obvious thing to try.
+    """
+    if root is not None:
+        path = Path(root)
+    elif repo_id and Path(repo_id).is_absolute():
+        path = Path(repo_id)
+    else:
+        path = HF_LEROBOT_HOME / repo_id
     if not (path / "meta" / "info.json").is_file():
         raise FileNotFoundError(f"No LeRobot dataset at {path} (meta/info.json missing).")
     return path
@@ -469,7 +479,11 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        "--repo-id", action="append", default=[], help="Dataset repo id (repeatable for --inspect)."
+        "--repo-id",
+        action="append",
+        default=[],
+        help="Dataset repo id, or an absolute path to a dataset directory "
+        "(repeatable for --inspect).",
     )
     parser.add_argument(
         "--root", action="append", default=[], help="Explicit dataset root, positionally paired with --repo-id."
@@ -499,7 +513,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=args.log_level.upper(), format="%(levelname)s %(message)s")
+    # force=True because importing lerobot already configures the root logger;
+    # without it basicConfig returns early, --log-level is ignored and every
+    # INFO line this script emits is dropped.
+    logging.basicConfig(
+        level=args.log_level.upper(), format="%(levelname)s %(message)s", force=True
+    )
 
     if not args.repo_id and not args.root:
         parser.error("give at least one --repo-id or --root")
@@ -594,7 +613,7 @@ def main(argv: list[str] | None = None) -> int:
             dst_root = Path(args.output_root)
         elif args.output_repo_id:
             dst_root = HF_LEROBOT_HOME / args.output_repo_id
-        elif args.repo_id:
+        elif args.repo_id and not Path(args.repo_id[0]).is_absolute():
             dst_root = HF_LEROBOT_HOME / f"{args.repo_id[0]}_{encoder.vcodec}"
         else:
             # Source was given as a bare --root, so there is no repo id to

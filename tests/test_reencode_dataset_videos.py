@@ -216,6 +216,25 @@ def test_stored_codec_name_av1_is_accepted_as_a_target():
 # ── metadata helpers ─────────────────────────────────────────────────────────
 
 
+def test_absolute_path_as_repo_id_is_honoured(tmp_path):
+    """Datasets on a shared volume are not under HF_LEROBOT_HOME.
+
+    Passing the directory as --repo-id must use it directly rather than
+    joining it onto the cache root.
+    """
+    (tmp_path / "meta").mkdir()
+    (tmp_path / "meta" / "info.json").write_text("{}")
+    assert reencode.resolve_root(str(tmp_path), None) == tmp_path
+
+
+def test_missing_dataset_is_reported_by_path(tmp_path):
+    """The error must name where it looked, not just that it failed."""
+    import pytest
+
+    with pytest.raises(FileNotFoundError, match="meta/info.json"):
+        reencode.resolve_root(str(tmp_path / "nope"), None)
+
+
 def test_video_keys_selects_only_video_features():
     info = {
         "features": {
