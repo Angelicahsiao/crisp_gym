@@ -327,6 +327,16 @@ class RecordConfig:
     action: ActionConfig = field(default_factory=ActionConfig)
     rate_hz: float = 15.0
     name: str = "unnamed"
+    # Robot label stamped into the dataset's info.json `robot_type`. Optional:
+    # the recording script's --robot-type still wins when given, this is the
+    # per-contract default, and the script's own fallback applies when neither
+    # is set (see resolve_robot_type). Setting it here keeps the label with the
+    # rig's data contract instead of relying on remembering a CLI flag — the
+    # failure it prevents is recording on the UR with the franka default and
+    # silently mislabelling the dataset.
+    # Deliberately NOT in CONTRACT_FIELDS: datasets from different arms are
+    # meant to be mixable (see scripts/postprocess_align_datasets.py).
+    robot_type: str | None = None
 
     # ── loading ──
     @classmethod
@@ -350,6 +360,9 @@ class RecordConfig:
             action=act,
             rate_hz=float(data.get("rate_hz", 15.0)),
             name=str(data.get("name", Path(path).stem)),
+            robot_type=(
+                str(data["robot_type"]) if data.get("robot_type") is not None else None
+            ),
         )
         cfg.validate()
         return cfg
@@ -492,7 +505,7 @@ class RecordConfig:
                 action["names"] = list(action_names)
             if use_relative_actions is not None:
                 action["use_relative_actions"] = bool(use_relative_actions)
-        return {
+        meta: Dict[str, Any] = {
             "record_config_name": self.name,
             "rate_hz": self.rate_hz,
             "observations": [
@@ -506,6 +519,13 @@ class RecordConfig:
             ],
             "action": action,
         }
+        # Only stamped when the contract declares it, so a dataset recorded
+        # without it is indistinguishable from one recorded before this field
+        # existed (and postprocess_align_datasets.py still owns the key after a
+        # merge, where it rewrites robot_type / source_robot_type).
+        if self.robot_type is not None:
+            meta["robot_type"] = self.robot_type
+        return meta
 
     # Fields that must match for two datasets to be trained together.
     CONTRACT_FIELDS = ("rate_hz", "action")
@@ -545,3 +565,26 @@ class RecordConfig:
                 logger.error(f"Observation '{k}' params differ: {a_obs[k]} vs {b_obs[k]}")
                 return False
         return True
+
+
+def resolve_robot_type(
+    cli_value: str | None,
+    record_config: "RecordConfig | None",
+    default: str,
+) -> str:
+    """Resolve the robot label stamped into the dataset's info.json.
+
+    Precedence (first non-empty wins):
+      1. the script's explicit --robot-type
+      2. the record config's `robot_type` (the rig's data contract)
+      3. `default` — the script's own fallback
+
+    crisp_py pops `robot_type` when building a RobotConfig (it only selects the
+    config CLASS), so it cannot be read back off the env — the contract is the
+    place that still knows it.
+    """
+    if cli_value:
+        return cli_value
+    if record_config is not None and record_config.robot_type:
+        return record_config.robot_type
+    return default

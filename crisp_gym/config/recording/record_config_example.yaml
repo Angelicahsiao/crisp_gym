@@ -19,6 +19,19 @@ name: "example"
 # datasets with different rates train different dynamics. Default: 15.0
 rate_hz: 15.0
 
+# Robot label written to the dataset's info.json `robot_type`. OPTIONAL.
+# Set it per rig so datasets are labelled correctly without depending on a
+# CLI flag: recording on a UR while the script defaults to "franka" silently
+# mislabels the dataset, and the label cannot be recovered later from the env
+# (crisp_py pops robot_type when building a RobotConfig — it only picks the
+# config class, then discards the string).
+# Precedence: --robot-type  >  this field  >  the script's fallback
+#             ("franka", or "umi_handheld" for record_umi_handheld.py).
+# NOT part of the mixability contract — a UR and a Franka recorded to the same
+# TCP-space contract still train together; postprocess_align_datasets.py
+# --robot-type owns the label after a merge. Default: unset (script fallback).
+# robot_type: "ur"
+
 # ── observations ─────────────────────────────────────────────────────────────
 # List of dataset columns. Each entry:
 #   key:              dataset column name (LeRobot convention:

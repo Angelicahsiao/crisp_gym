@@ -11,7 +11,7 @@ import crisp_gym  # noqa: F401
 from crisp_gym.config.home import home_for_env
 from crisp_gym.envs.manipulator_env import ManipulatorCartesianEnv, make_env, ManipulatorJointEnv
 from crisp_gym.envs.manipulator_env_config import list_env_configs, FrankaEnvConfig
-from crisp_gym.record.record_config import RecordConfig
+from crisp_gym.record.record_config import RecordConfig, resolve_robot_type
 from crisp_gym.record.record_functions import (
     make_factr_drive_fn,
     make_record_fn,
@@ -49,8 +49,10 @@ def main():
     parser.add_argument(
         "--robot-type",
         type=str,
-        default="franka",
-        help="Type of robot being used.",
+        default=None,
+        help="Robot label stored in the dataset's info.json. Overrides the "
+        "record config's `robot_type`; when neither is set, defaults to "
+        "'franka'.",
     )
     parser.add_argument(
         "--fps",
@@ -321,11 +323,14 @@ def main():
                 "Streamed teleop is only compatible with Cartesian control. Please disable joint control."
             )
 
+        robot_type = resolve_robot_type(args.robot_type, record_config, "franka")
+        logger.info(f"Dataset robot_type: {robot_type}")
+
         recording_manager = make_recording_manager(
             recording_manager_type=args.recording_manager_type,
             features=features,
             repo_id=args.repo_id,
-            robot_type=args.robot_type,
+            robot_type=robot_type,
             num_episodes=args.num_episodes,
             fps=args.fps,
             resume=args.resume,

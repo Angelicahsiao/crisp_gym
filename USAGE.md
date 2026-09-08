@@ -483,6 +483,15 @@ robot is driven. Every parameter is documented in
   same policy; `device_max_width` is per-device.
 - `rate_hz` must equal the recording `--fps`; changing it creates a different,
   non-mixable contract.
+- `robot_type` (optional) is the label stamped into the dataset's
+  `info.json`. Set it per rig so the dataset is labelled correctly without
+  having to remember a CLI flag — `--robot-type` still overrides it, and the
+  script's fallback (`franka`, or `umi_handheld` for the handheld recorder)
+  applies when neither is set. It is NOT part of the mixability contract: a UR
+  and a Franka recorded to the same TCP-space contract still train together
+  (`postprocess_align_datasets.py --robot-type` owns the label after a merge).
+  The label cannot be derived from the env — crisp_py pops `robot_type` when
+  building a `RobotConfig`, keeping only the config class.
 
 Use it via `--record-config path/to/your.yaml` on either recording script, or
 programmatically:
