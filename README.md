@@ -71,33 +71,28 @@ sibling of `crisp_gym` (e.g. `/workspace/lerobot` alongside `/workspace/crisp_gy
 
 ```bash
 cd /workspace/crisp_gym              # the crisp_gym repo root
-bash scripts/setup_lerobot.sh        # clones LeRobot v0.4.4 to ../lerobot and
-                                     # patches its pyproject for ROS 2 Humble
+bash scripts/setup_lerobot.sh        # clones LeRobot v0.6.1 to ../lerobot
 rm -f pixi.lock
 pixi install -e humble-lerobot
 ```
 
-`scripts/setup_lerobot.sh` does two things you must not skip:
+`scripts/setup_lerobot.sh` clones **v0.6.1**, which is what `pixi.toml`'s
+`humble-lerobot` environment expects (Python 3.12 + numpy 2). At that version
+**no patching is needed**: LeRobot's own `opencv-python-headless` bound (<4.14)
+accepts the conda-provided opencv, and `pixi.toml` pins numpy and packaging to
+LeRobot's own ranges. If you already cloned LeRobot yourself the script detects
+it, skips the clone, and warns when the checkout is a different revision.
 
-1. **Clones** LeRobot to `../lerobot` (override the version with
-   `LEROBOT_REV=v0.5.1 bash scripts/setup_lerobot.sh`). If you already cloned it
-   manually, the script detects the existing directory, skips the clone, and
-   still applies the patches below — so run it anyway.
-2. **Patches** LeRobot's `pyproject.toml` for the Humble stack, most importantly
-   **removing the `rerun-sdk` dependency**. `rerun-sdk>=0.24` requires
-   `numpy>=2`, which conflicts with the `numpy==1.26.4` that ROS 2 Humble
-   (robostack) pins — without this patch `pixi install -e humble-lerobot` fails
-   with:
+Clone a different revision with `LEROBOT_REV=v0.4.4 bash scripts/setup_lerobot.sh`
+— but note 0.4.x has **no `dataset` extra** (added in 0.6.x), so `pixi.toml`'s
+`extras = ["dataset"]` will not resolve against it and must be pinned back at the
+same time.
 
-   > Because rerun-sdk>=0.24.0,<=0.26.2 depends on numpy>=2 and numpy==1.26.4,
-   > we can conclude that rerun-sdk … cannot be used … lerobot==0.4.4 cannot be used.
-
-   `crisp_gym` does not use `rerun`; only LeRobot's standalone
-   `visualize_dataset.py` does, which is unaffected by recording/training/inference.
-
-> If you cloned LeRobot manually and hit the `rerun-sdk` / `numpy` conflict above,
-> just run `bash scripts/setup_lerobot.sh` (it will patch your existing clone),
-> then `rm -f pixi.lock && pixi install -e humble-lerobot`.
+> **Do not set `LEROBOT_PATCH_NUMPY1=1` on this environment.** Those patches
+> relax the clone's `requires-python` to 3.11, `numpy` to >=1.26 and drop
+> `rerun-sdk`; they are correct only when the pixi env is itself on Python 3.11
+> + numpy 1.26. Applied to the current numpy-2 environment they silently undo
+> the requirements it was migrated to. They are opt-in for exactly that reason.
 
 ## Data pipeline: record → train → deploy
 
@@ -117,7 +112,7 @@ flowchart TD
     CHK["VERIFY before training<br/>scripts/check_relative_pose.py<br/>(identity, round-trip, rot6d sanity)"]
     DS --> CHK
 
-    subgraph TRAIN["2 — Train (GPU PC, lerobot 0.4.4)"]
+    subgraph TRAIN["2 — Train (GPU PC, lerobot 0.4.x or ≥0.5)"]
         TR["scripts/lerobot_relative_pose.py<br/>+ any lerobot-train args"]
         W["RelativePoseDataset (in __getitem__):<br/>abs → RELATIVE wrt last obs frame;<br/>state = [rel_pose9, gripper1, rot_wrt_start6] (16-D);<br/>relative stats recomputed"]
         CKPT[("checkpoint<br/>+ pose_repr.json<br/>(generation stamp)")]

@@ -12,7 +12,7 @@ Contents:
 5. [Record all robot states (full-state recording)](#5-record-all-robot-states-full-state-recording)
 6. [Post-process: align and merge datasets](#6-post-process-align-and-merge-datasets)
 7. [Post-process: promote extra states to policy inputs](#7-post-process-promote-extra-states-to-policy-inputs)
-8. [Train (LeRobot 0.4.4, UMI-style relative pose)](#8-train-lerobot-044-umi-style-relative-pose)
+8. [Train (UMI-style relative pose)](#8-train-umi-style-relative-pose)
 9. [Deploy a trained policy](#9-deploy-a-trained-policy)
 10. [Write your own record config](#10-write-your-own-record-config)
 11. [Migrate legacy Euler + delta-command data to rot6d](#11-migrate-legacy-euler--delta-command-data-to-rot6d)
@@ -406,11 +406,17 @@ the policy then also needs real joint states in its observation.
 
 ---
 
-## 8. Train (LeRobot 0.4.4, UMI-style relative pose)
+## 8. Train (UMI-style relative pose)
 
 On the GPU PC (no ROS needed): copy `crisp_gym/scripts/lerobot_relative_pose.py`
 (self-contained: lerobot + torch + numpy only) and run it exactly like
 `lerobot-train`:
+
+**Version support.** The wrapper runs on lerobot **0.4.x and >=0.5**, verified
+against 0.4.4 and 0.6.1. It patches whichever dataset factory that version
+exposes (`make_train_eval_datasets` on >=0.5, `make_dataset` on 0.4.x) and
+**raises** rather than silently training unwrapped, so a version it cannot seam
+into fails loudly. `scripts/setup_lerobot.sh` clones **v0.6.1** by default.
 
 ```bash
 python lerobot_relative_pose.py \
@@ -422,12 +428,14 @@ python lerobot_relative_pose.py \
 ```
 
 Uses the default `torchcodec` video backend at full worker parallelism — no
-special flags needed. (Earlier versions crashed at step 0 with
-`RuntimeError: Could not push packet to decoder`; that was the stats pass
-opening torchcodec decoders in the main process, which then broke in forked
-DataLoader workers. It is fixed in `lerobot_relative_pose.py` — the stats pass
-no longer decodes video. If you ever see that error again, the fallbacks are
-`--dataset.video_backend=pyav` or `--num_workers=0`.)
+special flags needed.
+
+> The `RuntimeError: Could not push packet to decoder` crash at step 0 was
+> FORK-only, i.e. lerobot 0.4.x: the stats pass opened torchcodec decoders in
+> the main process and they broke in forked DataLoader workers. It is fixed in
+> `lerobot_relative_pose.py` (the stats pass no longer decodes video), and
+> >=0.5 spawns its workers so it cannot happen there at all. Fallbacks if you
+> ever see it: `--dataset.video_backend=pyav` or `--num_workers=0`.
 
 What it does at load time (disk data stays absolute):
 - converts obs window + 16-step action horizon to poses **relative to the
@@ -571,7 +579,8 @@ machine (any lerobot version), crisp_gym is only the websocket client. See
 **REMOTE_INFERENCE.md** (incl. the version policy) and the contract config
 `crisp_gym/config/policy/remote_policy_example.yaml`.
 Local in-process deployment (`crisp_gym/scripts/deploy_policy.py`) is legacy:
-only for checkpoints trained with the robot machine's own lerobot (0.4.4).
+valid only for a checkpoint trained with the SAME lerobot version the robot
+machine itself runs. Do not point it at a checkpoint from a newer lerobot.
 
 ### Before the first rollout
 
@@ -683,7 +692,7 @@ fn = make_record_fn(env, cfg, drive_fn=...)   # drive_fn None = passive
 
 Datasets recorded with the **old** collection scripts store the orientation as
 Euler and the action as a **delta-pose command** (from the teleop `stream_fn`).
-The rot6d + relative-pose trainer ([§8](#8-train-lerobot-044-umi-style-relative-pose))
+The rot6d + relative-pose trainer ([§8](#8-train-umi-style-relative-pose))
 requires the UMI convention instead:
 
 | | Legacy data | Needed for training |
@@ -727,7 +736,7 @@ What it does, per frame:
 Videos, sensors and every other column/file are copied through unchanged, and
 stats for the three rewritten keys are recomputed. The result is a standard
 absolute-on-disk rot6d dataset — train it with
-`lerobot_relative_pose.py` exactly as in [§8](#8-train-lerobot-044-umi-style-relative-pose),
+`lerobot_relative_pose.py` exactly as in [§8](#8-train-umi-style-relative-pose),
 and (if needed) mix it with other UMI-contract datasets via the alignment
 script ([§6](#6-post-process-align-and-merge-datasets)).
 

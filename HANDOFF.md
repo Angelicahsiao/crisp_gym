@@ -169,10 +169,20 @@ Repos involved (same owner, branch conventions apply to all):
 | `crisp_gym/util/loop_timing.py` | Phase timing for the record/deploy loop (`LoopTimingRecorder` producer side, `WriterTimingRecorder` consumer side). Attributes a dropped control rate to `data` (producer) vs `put` (writer back-pressure) vs `sleep`. Stdlib only — no ROS/numpy/lerobot, so the writer subprocess can import it. MEASUREMENT ONLY: no control flow depends on it. USAGE.md §12. |
 | `tests/test_loop_timing.py` | Pins the attribution in all three regimes against a REAL `mp.JoinableQueue` with a slow consumer, plus `make_record_fn`'s `.timing` publication. Stdlib + numpy; stubs `crisp_py.utils.geometry`. |
 
-LeRobot version target: **0.4.4** (module path `lerobot.datasets.lerobot_dataset`;
-train entry `lerobot.scripts.lerobot_train`; diffusion defaults n_obs_steps=2,
-horizon=16, n_action_steps=8). ROS2 Humble limits Python to 3.11 — which is why
-model inference must be decoupled (see roadmap).
+LeRobot version target: **0.6.1** — what `scripts/setup_lerobot.sh` clones by
+default and what `pixi.toml`'s `humble-lerobot` env is built for (Python 3.12 +
+numpy 2). The training wrappers and the recording path still support **0.4.x**
+and seam into whichever API that version exposes; 0.4.4 and 0.6.1 are the two
+verified points. Stable across both: module path
+`lerobot.datasets.lerobot_dataset`, train entry `lerobot.scripts.lerobot_train`,
+diffusion defaults n_obs_steps=2, horizon=16, n_action_steps=8.
+
+(The older note here said Humble limits Python to 3.11 and that this is why
+inference must be decoupled. The Python limit is no longer true —
+robostack-humble resolves against numpy 2 and Python 3.12 once
+`ros-humble-image-transport-plugins` is dropped, which `pixi.toml` now does.
+Decoupled inference is still right, for the version-independence reason in
+REMOTE_INFERENCE.md, not for a Python-version one.)
 
 ---
 
