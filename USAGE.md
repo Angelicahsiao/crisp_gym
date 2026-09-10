@@ -234,13 +234,44 @@ complementary to the Cartesian `/force_torque_sensor_broadcaster` wrench.
 
 ---
 
-## 6. Post-process: align datasets for mixed training
+## 6. Post-process: align and merge datasets
 
-Makes datasets from different devices schema-identical so LeRobot can
-concatenate them. Verifies the stamped contracts first and REFUSES unfixable
-mixes (e.g. classic-teleop vs UMI actions). Originals are never modified.
+Merging datasets that were not recorded identically takes three steps.
+LeRobot's `aggregate_datasets` applies four independent compatibility gates and
+stops at the first one that fails — and two of them fail LATE, one only in
+`finalize_aggregation` after every video has already been copied. Work through
+the steps in order and re-check between them.
 
-Runs on any machine: `pip install crisp_gym[postprocess]` (pandas + pyarrow).
+Runs on any machine with lerobot: `pip install crisp_gym[postprocess]`
+(pandas + pyarrow). Neither script needs ROS, and neither needs crisp_gym
+installed — running them straight out of a checkout works.
+
+### What blocks a merge, and what fixes it
+
+| gate | where it fires | fixed by |
+|---|---|---|
+| `fps`, `robot_type` | `validate_all_metadata`, before a single feature is read | `--robot-type` (§6.1) |
+| feature key set, dtype, shape (incl. the `video_info` block) | `features_equal_for_merge` | the align script (§6.1) |
+| video codec / pix_fmt / size / fps | `features_equal_for_merge`, then `concatenate_video_files` — which concatenates by STREAM COPY, so the codecs must already match | `reencode_dataset_videos.py` (§6.2) |
+| statistics shapes | `aggregate_stats` inside `finalize_aggregation` — the LAST step of the merge | the align script (§6.1) |
+
+Check at any point with:
+
+```bash
+python crisp_gym/scripts/reencode_dataset_videos.py --inspect \
+    --repo-id <dataset A> --repo-id <dataset B>
+```
+
+`--inspect` walks the first three gates in the order lerobot applies them and
+names every blocker in one pass, rather than revealing the next only after you
+have fixed the previous. It accepts a repo id or an absolute path. It does NOT
+simulate the statistics gate.
+
+### 6.1 Align the schemas
+
+Makes datasets schema-identical: verifies the stamped record contracts, then
+drops every column that is not common to all of them. Originals are never
+modified — each dataset gets an `_aligned` copy.
 
 ```bash
 python crisp_gym/scripts/postprocess_align_datasets.py \
@@ -249,8 +280,93 @@ python crisp_gym/scripts/postprocess_align_datasets.py \
     [--dry-run]
 # -> umi_ur7e_full_aligned + umi_handheld_demo_aligned (extra.* stripped)
 ```
-Optional fixup for a wrongly-scaled gripper:
-`--rescale-gripper OLD_REF NEW_REF` (e.g. `0.08 0.09`).
+
+A column is dropped when it is missing from some dataset **or** when its
+dtype/shape differs across them. The second case is why a 6-DOF UR and a 7-DOF
+Franka can be mixed at all: `extra.joints` exists on both but at `(6,)` and
+`(7,)`, and LeRobot compares whole feature dicts. Padding one to the other
+would fabricate data, so both are dropped. Everything the policy actually
+consumes — `action`, `observation.state`, `observation.state.cartesian`,
+gripper, images — is arm-agnostic under the UMI contract and survives.
+
+Dropping a column also removes its statistics, from `meta/stats.json` **and**
+from the `stats/<key>/<stat>` columns in `meta/episodes/*.parquet`. Leaving
+them behind is what makes `aggregate_stats` die with "all input arrays must
+have the same shape" at the very end of a merge.
+
+| flag | when you need it |
+|---|---|
+| `--robot-type LABEL` | Mixing two arms. `validate_all_metadata` requires an identical `robot_type` and refuses before reading any feature, so give them one shared label (e.g. `ur+franka`). The original is kept per-dataset in `record_config.json` as `source_robot_type`. |
+| `--skip-contract-check` | A dataset has no `meta/record_config.json`. LeRobot's own `aggregate_datasets` writes only `info.json`, `tasks.parquet`, `stats.json` and the episodes parquet, so **a dataset produced by an earlier merge has had its crisp_gym contract stripped**. The flag allows it and warns exactly what went unverified — the action semantics (definition, lookahead, rotation representation) live only in that file. Only use it when you know the datasets share a record config; restoring the file from a source dataset is the honest fix. |
+| `--rescale-gripper OLD NEW` | Gripper recorded against the wrong reference width (e.g. `0.08 0.09`). |
+| `--dry-run` | Report what would change and write nothing. Always worth one pass — the real run copies the datasets in full, videos included. |
+
+### 6.2 Make the video codecs match
+
+`aggregate_datasets` concatenates videos by **stream copy**, so a dataset
+recorded as av1 cannot merge with one recorded as h264 no matter what the
+metadata says. Re-encode one side to match the other:
+
+```bash
+python crisp_gym/scripts/reencode_dataset_videos.py \
+    --repo-id     <the odd one out>_aligned \
+    --match       <the reference dataset>_aligned \
+    --output-root <somewhere>_aligned_h264 \
+    --vcodec h264_nvenc --crf 21
+```
+
+`--match` copies the codec AND pix_fmt from the reference so the two cannot
+disagree; an explicit `--vcodec` overrides only the codec, which is how you get
+NVENC instead of software libx264. NVENC output reads back as `h264` — the
+canonical *decoder* name is what lands in the metadata.
+
+This is the slow step, so do it last, after the schema is settled. Each file is
+verified before it is accepted: frame count, resolution, fps, duration within
+one frame period, every episode's stored timestamp offsets still resolving
+inside the new file, and a sampled frame-content comparison. That matters
+because in the v3.0 layout one mp4 holds MANY episodes and
+`meta/episodes/*.parquet` locates each by a timestamp offset into it — a
+re-encode that drops one frame corrupts every later episode while the dataset
+still loads cleanly. A failure stops the run; without `--in-place` the source is
+never touched.
+
+### 6.3 Merge
+
+```bash
+python -c "
+from lerobot.datasets.aggregate import aggregate_datasets
+aggregate_datasets(
+    ['<A>', '<B>'],
+    'my_org/merged',
+    roots=['<A>', '<B>'],
+    aggr_root='<output>/lerobot',
+)"
+```
+
+Then confirm the result reads back — decoding a frame from the last episode is
+the real test, because its video offsets were shifted by the merge:
+
+```bash
+python -c "
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+ds = LeRobotDataset('my_org/merged', root='<output>/lerobot')
+print(ds.num_episodes, ds.num_frames, ds.meta.robot_type, ds.fps)
+for i in (0, ds.num_frames // 2, ds.num_frames - 1):
+    print(i, {k: tuple(v.shape) for k, v in ds[i].items() if hasattr(v, 'shape')})"
+```
+
+### 6.4 What a merge costs you
+
+Two things are gone afterwards and cannot be recovered from the merged dataset:
+
+- **`meta/record_config.json` and `meta/crisp_meta.json`.** `aggregate_datasets`
+  does not copy them. Anything downstream that reads the crisp_gym contract sees
+  a merged dataset as un-contracted, and a later align needs
+  `--skip-contract-check`. Copy them back from a source dataset if you care.
+- **Which episode came from which source.** With `--robot-type` the arms share
+  one label. `aggregate_datasets` offsets `episode_index` by the running total,
+  so episodes `0 .. N-1` are the first source where `N` is its `total_episodes`
+  — **write that number down before merging**; nothing else distinguishes them.
 
 ---
 
@@ -556,7 +672,7 @@ stats for the three rewritten keys are recomputed. The result is a standard
 absolute-on-disk rot6d dataset — train it with
 `lerobot_relative_pose.py` exactly as in [§8](#8-train-lerobot-044-umi-style-relative-pose),
 and (if needed) mix it with other UMI-contract datasets via the alignment
-script ([§6](#6-post-process-align-datasets-for-mixed-training)).
+script ([§6](#6-post-process-align-and-merge-datasets)).
 
 ---
 

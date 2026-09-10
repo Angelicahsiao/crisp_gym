@@ -12,7 +12,7 @@ This repository contains Gymnasium environments to train and deploy high-level l
 
 Check the [docs](https://utiasdsl.github.io/crisp_controllers/getting_started/#4-using-the-gym) to get started.
 
-For the UMI-style data pipeline (handheld/robot recording, dataset alignment, relative-pose training, deployment), see **[USAGE.md](USAGE.md)**; remote model serving is specified in [REMOTE_INFERENCE.md](REMOTE_INFERENCE.md); development conventions live in [HANDOFF.md](HANDOFF.md).
+For the UMI-style data pipeline (handheld/robot recording, dataset alignment and merging, relative-pose training, deployment), see **[USAGE.md](USAGE.md)**; the training/deployment scripts have their own reference in [crisp_gym/scripts/README.md](crisp_gym/scripts/README.md); remote model serving is specified in [REMOTE_INFERENCE.md](REMOTE_INFERENCE.md); development conventions live in [HANDOFF.md](HANDOFF.md).
 
 ## Workspace layout
 
@@ -138,6 +138,12 @@ Notes:
   model trained on migrated data set `reference_width: == device_max_width`
   in `config/policy/relative_lerobot_policy.yaml` so the unit conversion is
   identity.
+- **Merging datasets recorded on different rigs** (two arms, different codecs,
+  different extra states) needs the schemas, the video codecs and the
+  statistics reconciled first — `aggregate_datasets` applies four separate
+  compatibility gates and two of them fail only at the very end of the merge.
+  Step-by-step, with a table of what blocks a merge and what fixes it:
+  [USAGE.md §6](USAGE.md#6-post-process-align-and-merge-datasets).
 - Full step-by-step commands: [USAGE.md](USAGE.md).
 
 ## Deploying a relative-pose (rot6d) model
