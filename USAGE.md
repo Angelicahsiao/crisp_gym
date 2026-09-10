@@ -320,6 +320,13 @@ disagree; an explicit `--vcodec` overrides only the codec, which is how you get
 NVENC instead of software libx264. NVENC output reads back as `h264` — the
 canonical *decoder* name is what lands in the metadata.
 
+LeRobot has its own `lerobot-edit-dataset --operation.type reencode_videos`,
+which re-encodes and nothing more. Use the crisp_gym script when you are
+re-encoding *in order to merge*: it adds the mergeability report above, the
+per-file timeline verification below, the crisp_gym `video_info` reconciliation,
+and the NVENC preflight (its presets enable B-frames, so lerobot's `g=2` cannot
+open without `bf=0` — applied automatically).
+
 This is the slow step, so do it last, after the schema is settled. Each file is
 verified before it is accepted: frame count, resolution, fps, duration within
 one frame period, every episode's stored timestamp offsets still resolving
@@ -341,6 +348,16 @@ aggregate_datasets(
     roots=['<A>', '<B>'],
     aggr_root='<output>/lerobot',
 )"
+```
+
+LeRobot also ships a CLI for this. It is the same code path — `merge_datasets`
+is documented as "a wrapper around the aggregate_datasets functionality with a
+cleaner API" — so it hits exactly the same gates:
+
+```bash
+lerobot-edit-dataset --new_repo_id my_org/merged --new_root <output>/lerobot \
+    --operation.type merge \
+    --operation.repo_ids "['<A>','<B>']" --operation.roots "['<A>','<B>']"
 ```
 
 Then confirm the result reads back — decoding a frame from the last episode is
