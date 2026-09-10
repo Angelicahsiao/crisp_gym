@@ -10,12 +10,14 @@ Contents:
 3. [Record with a FACTR leader arm (joint teleop, UMI contract)](#3-record-with-a-factr-leader-arm-joint-teleop-umi-contract)
 4. [Classic teleop recording (delta-pose commands)](#4-classic-teleop-recording-delta-pose-commands)
 5. [Record all robot states (full-state recording)](#5-record-all-robot-states-full-state-recording)
-6. [Post-process: align datasets for mixed training](#6-post-process-align-datasets-for-mixed-training)
+6. [Post-process: align and merge datasets](#6-post-process-align-and-merge-datasets)
 7. [Post-process: promote extra states to policy inputs](#7-post-process-promote-extra-states-to-policy-inputs)
 8. [Train (LeRobot 0.4.4, UMI-style relative pose)](#8-train-lerobot-044-umi-style-relative-pose)
 9. [Deploy a trained policy](#9-deploy-a-trained-policy)
 10. [Write your own record config](#10-write-your-own-record-config)
 11. [Migrate legacy Euler + delta-command data to rot6d](#11-migrate-legacy-euler--delta-command-data-to-rot6d)
+12. [Diagnose a dropped control rate (loop timing)](#12-diagnose-a-dropped-control-rate-loop-timing)
+13. [Recording at high resolution without stalling teleop](#13-recording-at-high-resolution-without-stalling-teleop)
 
 The keyboard recording manager is the same everywhere:
 **r** start/stop episode · **s** save episode · **d** delete episode · **q** quit
@@ -570,6 +572,44 @@ machine (any lerobot version), crisp_gym is only the websocket client. See
 `crisp_gym/config/policy/remote_policy_example.yaml`.
 Local in-process deployment (`crisp_gym/scripts/deploy_policy.py`) is legacy:
 only for checkpoints trained with the robot machine's own lerobot (0.4.4).
+
+### Before the first rollout
+
+Three things are prerequisites, not defaults:
+
+- `device_max_width` in the policy config must be YOUR end-effector (0.085 for
+  a Robotiq 2F-85, 0.140 for a 2F-140) and `reference_width` the recording
+  value (0.09).
+- The deploy env's `primary` camera must point at the **topics you recorded
+  with** — a policy fed a different viewpoint is out of distribution and will
+  drift no matter how well it trained.
+- The deploy env must keep `orientation_representation: rotation_6d` and
+  `use_relative_actions: false` (see `config/envs/ur7e_robotiq_deploy_umi.yaml`
+  for why).
+
+### Checkpoint generations — what `observation.state` was trained on
+
+Training stamps `pose_repr.json` next to the checkpoints, recording the pose
+conventions and, critically, what the policy's `observation.state` input was.
+Three generations exist:
+
+| generation | `observation.state` | produced by |
+|---|---|---|
+| gen 1 — ABSOLUTE 10-D | absolute pose9 + gripper | checkpoints from before the wrapper converted the concatenated state, **including any checkpoint with no stamp at all** |
+| gen 2 — RELATIVE 10-D | `[rel_pose9, gripper1]` | `lerobot_relative_pose.py --no-wrt-start` |
+| gen 3 — RELATIVE 16-D | `[rel_pose9, gripper1, rot_wrt_start6]` — UMI parity | `lerobot_relative_pose.py` (default `--wrt-start`) |
+
+Deployment auto-detects the generation from the stamp (`state_input: auto`) —
+do not set it by hand. Remote-inference contract templates per generation:
+`config/policy/remote_umi_absolute_state.yaml` (gen 1) and
+`config/policy/remote_umi_relative_state.yaml` (gen 3). The training flag that
+selects gen 2 vs gen 3 is documented in
+[crisp_gym/scripts/README.md](crisp_gym/scripts/README.md#lerobot_relative_posepy--relative-pose-training-umi).
+
+At startup the local worker logs the checkpoint's input features, and on the
+first inference the exact `observation.state` it fed the policy together with an
+absolute/relative heuristic — use it to sanity-check what a checkpoint was
+trained on.
 
 ### Deploy an ABSOLUTE checkpoint (train_absolute_next_pose.py)
 

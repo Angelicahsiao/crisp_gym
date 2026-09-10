@@ -12,7 +12,22 @@ This repository contains Gymnasium environments to train and deploy high-level l
 
 Check the [docs](https://utiasdsl.github.io/crisp_controllers/getting_started/#4-using-the-gym) to get started.
 
-For the UMI-style data pipeline (handheld/robot recording, dataset alignment and merging, relative-pose training, deployment), see **[USAGE.md](USAGE.md)**; the training/deployment scripts have their own reference in [crisp_gym/scripts/README.md](crisp_gym/scripts/README.md); remote model serving is specified in [REMOTE_INFERENCE.md](REMOTE_INFERENCE.md); development conventions live in [HANDOFF.md](HANDOFF.md).
+## Documentation
+
+Each document answers one question. Start with the one that matches what you are doing.
+
+| document | answers | typical entry point |
+|---|---|---|
+| this README | what is this, how do I install it | first time here |
+| **[USAGE.md](USAGE.md)** | *how do I do X?* — ordered recipes: record → align/merge datasets → train → deploy → diagnose | the day-to-day reference |
+| [crisp_gym/scripts/README.md](crisp_gym/scripts/README.md) | *what does this script or flag do?* — training and deployment script reference | you know the step, you need the flags |
+| [REMOTE_INFERENCE.md](REMOTE_INFERENCE.md) | the websocket contract and wire protocol for serving a policy from the GPU machine | building or debugging the server |
+| [HANDOFF.md](HANDOFF.md) | *what must I not break?* — pose/data conventions, invariants, verification procedure | before changing pose math, recording, or the data schema |
+| [CHANGELOG.md](CHANGELOG.md) | released versions | — |
+
+The UMI-style data pipeline — handheld and robot recording, dataset alignment
+and merging, relative-pose training, deployment — is covered end to end in
+[USAGE.md](USAGE.md).
 
 ## Workspace layout
 
@@ -146,51 +161,31 @@ Notes:
   [USAGE.md §6](USAGE.md#6-post-process-align-and-merge-datasets).
 - Full step-by-step commands: [USAGE.md](USAGE.md).
 
-## Deploying a relative-pose (rot6d) model
+## Deploying a trained policy
 
 Models trained with `scripts/lerobot_relative_pose.py` output UMI-style
-RELATIVE poses that must be composed with the TCP pose captured at
-observation time. Two deployment paths:
+RELATIVE poses that must be composed with the TCP pose captured at observation
+time. Two paths:
 
-**Local (verification)** — robot machine's lerobot matches the training
-version (0.4.4). The `relative_lerobot_policy` runs inference in a worker
-process and handles the composition, gripper unit conversion, and obs
-history:
+- **Remote (canonical)** — inference on the GPU machine over websocket, the
+  robot machine stays torch-free. Contract and wire protocol:
+  [REMOTE_INFERENCE.md](REMOTE_INFERENCE.md).
+- **Local** — in-process on the robot machine, for verification and only for
+  checkpoints trained against that machine's own lerobot:
 
-```bash
-python -m crisp_gym.scripts.deploy_policy \
-    --env-config ur7e_robotiq_deploy_umi \
-    --policy-config relative_lerobot_policy \
-    --path outputs/train/<run>/checkpoints/last/pretrained_model \
-    --repo-id my_org/deploy_eval --fps 15
-```
+  ```bash
+  python -m crisp_gym.scripts.deploy_policy \
+      --env-config ur7e_robotiq_deploy_umi \
+      --policy-config relative_lerobot_policy \
+      --path outputs/train/<run>/checkpoints/last/pretrained_model \
+      --repo-id my_org/deploy_eval --fps 15
+  ```
 
-Before running: set `device_max_width` in
-`config/policy/relative_lerobot_policy.yaml` to YOUR gripper (0.140 for a
-Robotiq 2F-140), and point the deploy env config's `primary` camera at the
-topics you recorded with. The deploy env must keep
-`orientation_representation: rotation_6d` and `use_relative_actions: false`
-(see `config/envs/ur7e_robotiq_deploy_umi.yaml` for why).
-
-At startup the worker logs the checkpoint's input features and, on the first
-inference, the exact `observation.state` fed to the policy with an
-absolute/relative heuristic — use it to sanity-check what a checkpoint was
-trained on.
-
-**Remote (canonical)** — inference on the GPU machine over websocket, robot
-machine stays torch-free. Contract and wire protocol: [REMOTE_INFERENCE.md](REMOTE_INFERENCE.md).
-
-**Checkpoint generations.** Training stamps `pose_repr.json` next to the
-checkpoints recording the pose conventions and (critically) what the
-policy's `observation.state` input was. Three generations exist:
-ABSOLUTE 10-D (checkpoints trained before the wrapper converted the
-concatenated state — includes any checkpoint without the stamp),
-RELATIVE 10-D (converted state, no wrt-start), and RELATIVE 16-D
-(current wrapper — UMI parity: `[rel_pose9, gripper1, rot_wrt_start6]`,
-with the episode-start relative rotation appended). Deployment
-auto-detects this from the stamp (`state_input: auto`); don't mix them up
-manually. Remote-inference contract templates per generation:
-`config/policy/remote_umi_absolute_state.yaml` (gen 1) and
-`config/policy/remote_umi_relative_state.yaml` (gen 3).
+Gripper widths, camera topics and the `rotation_6d` / `use_relative_actions`
+requirements of the deploy env are prerequisites, not defaults — and a
+checkpoint carries a *generation* that decides what `observation.state` it
+expects. Both are in [USAGE.md §9](USAGE.md#9-deploy-a-trained-policy); every
+flag and policy config is in
+[crisp_gym/scripts/README.md](crisp_gym/scripts/README.md#deployment).
 
 Check the [docs](https://utiasdsl.github.io/crisp_controllers/getting_started/#4-using-the-gym) to get started.
