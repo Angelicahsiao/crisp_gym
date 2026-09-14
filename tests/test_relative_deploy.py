@@ -202,6 +202,39 @@ def test_build_obs_frame_layout_and_guards():
         assert "rotation_6d" in str(e)
 
 
+def test_build_obs_frame_carries_task_for_vla():
+    """A language-conditioned checkpoint needs obs["task"] to survive the frame.
+
+    build_obs_frame used to copy only observation.state*/observation.images*, so
+    a VLA deployed through this wrapper received no instruction at all.
+    """
+    ref, dev_max = 0.09, 0.140
+    cart = _pose9(_random_traj(1, seed=11)[0]).astype(np.float32)
+    obs = {
+        "task": "open the power switch",
+        "observation.state.cartesian": cart,
+        "observation.state.gripper": np.array([0.3], dtype=np.float32),
+        "observation.images.primary": np.zeros((224, 224, 3), np.uint8),
+    }
+    frame = rlp.build_obs_frame(obs, ref, dev_max)
+    assert frame["task"] == "open the power switch"
+    # the task must not leak into the numeric state vector
+    assert frame["observation.state"].shape == (10,)
+
+
+def test_build_obs_frame_without_task_is_unchanged():
+    """Non-VLA envs publish no task; the frame must build anyway."""
+    ref, dev_max = 0.09, 0.140
+    cart = _pose9(_random_traj(1, seed=12)[0]).astype(np.float32)
+    obs = {
+        "observation.state.cartesian": cart,
+        "observation.state.gripper": np.array([0.3], dtype=np.float32),
+    }
+    frame = rlp.build_obs_frame(obs, ref, dev_max)
+    assert "task" not in frame
+    assert frame["observation.state"].shape == (10,)
+
+
 # ── 5. training wrapper converts observation.state (the model input) ─────────
 
 def test_training_converts_observation_state_10d():

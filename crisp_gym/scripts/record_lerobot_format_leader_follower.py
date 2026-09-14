@@ -43,8 +43,10 @@ def main():
         "--tasks",
         type=str,
         nargs="+",
-        default=["pick the lego block."],
-        help="List of task descriptions to record data for, e.g. 'clean red' 'clean green'",
+        required=True,
+        help="Task description(s) recorded with every frame, e.g. 'open the power "
+        "switch'. Required: this string is the language input a VLA is later "
+        "conditioned on, and a stale default silently mislabels the dataset.",
     )
     parser.add_argument(
         "--robot-type",

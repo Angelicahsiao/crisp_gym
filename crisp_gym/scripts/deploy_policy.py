@@ -23,6 +23,15 @@ def main():
         description="Deploy a pretrained policy and record data in Lerobot Format"
     )
     parser.add_argument(
+        "--task",
+        type=str,
+        required=True,
+        help="Instruction for this rollout. Fed to the policy as obs['task'] "
+        "(the language input of a VLA such as SmolVLA) AND recorded as the "
+        "task label of the evaluation dataset. Must match a task string the "
+        "checkpoint was trained on.",
+    )
+    parser.add_argument(
         "--repo-id",
         type=str,
         default=None,
@@ -243,7 +252,12 @@ def main():
     policy = None
     try:
         ctrl_type = "cartesian" if not args.joint_control else "joint"
-        env = make_env(args.env_config, control_type=ctrl_type, namespace=args.env_namespace)
+        env = make_env(
+            args.env_config,
+            control_type=ctrl_type,
+            namespace=args.env_namespace,
+            task=args.task,
+        )
 
         # %% Prepare the dataset
         features = get_features(env)
@@ -317,7 +331,7 @@ def main():
 
                     recording_manager.record_episode(
                         data_fn=policy.make_data_fn(),
-                        task="Pick up the lego block.",
+                        task=args.task,
                         on_start=on_start,
                         on_end=on_end,
                     )

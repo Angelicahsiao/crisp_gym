@@ -55,6 +55,11 @@ from crisp_gym.util.gripper_mode import (
 
 logger = logging.getLogger(__name__)
 
+# Fallback task string. A language-conditioned policy (e.g. SmolVLA) receives this
+# verbatim as its instruction, so deployments MUST pass their real task through
+# make_env(task=...) — the default is a placeholder, not a description.
+DEFAULT_TASK = "Finish the task."
+
 
 class ManipulatorBaseEnv(gym.Env):
     """Base class for Manipulator Gym Environment.
@@ -67,7 +72,7 @@ class ManipulatorBaseEnv(gym.Env):
         self,
         config: ManipulatorEnvConfig,
         namespace: str = "",
-        task: str = "Finish the task.",
+        task: str = DEFAULT_TASK,
     ):
         """Initialize the Manipulator Gym Environment.
 
@@ -717,14 +722,21 @@ class ManipulatorCartesianEnv(ManipulatorBaseEnv):
     This class is a specific implementation of the Manipulator Gym Environment for Cartesian space control.
     """
 
-    def __init__(self, config: ManipulatorEnvConfig, namespace: str = ""):
+    def __init__(
+        self,
+        config: ManipulatorEnvConfig,
+        namespace: str = "",
+        task: str = DEFAULT_TASK,
+    ):
         """Initialize the Manipulator Cartesian Environment.
 
         Args:
             namespace (str): ROS2 namespace for the robot.
             config (ManipulatorEnvConfig): Configuration for the environment.
+            task (str): Instruction exposed as obs["task"]; the language input of
+                a VLA policy. Leave at the default only for policies that ignore it.
         """
-        super().__init__(namespace=namespace, config=config)
+        super().__init__(namespace=namespace, config=config, task=task)
 
         self.ctrl_type = ControlType.CARTESIAN
 
@@ -839,14 +851,21 @@ class ManipulatorJointEnv(ManipulatorBaseEnv):
     This class is a specific implementation of the Manipulator Gym Environment for Joint space control.
     """
 
-    def __init__(self, config: ManipulatorEnvConfig, namespace: str = ""):
+    def __init__(
+        self,
+        config: ManipulatorEnvConfig,
+        namespace: str = "",
+        task: str = DEFAULT_TASK,
+    ):
         """Initialize the Manipulator Joint Environment.
 
         Args:
             namespace (str): ROS2 namespace for the robot.
             config (ManipulatorEnvConfig): Configuration for the environment.
+            task (str): Instruction exposed as obs["task"]; the language input of
+                a VLA policy. Leave at the default only for policies that ignore it.
         """
-        super().__init__(config=config, namespace=namespace)
+        super().__init__(config=config, namespace=namespace, task=task)
 
         self.ctrl_type = ControlType.JOINT
 
@@ -1049,6 +1068,7 @@ def make_env(
     control_type: str = "cartesian",
     namespace: str = "",
     config_path: Path | str | None = None,
+    task: str = DEFAULT_TASK,
     **config_overrides,  # noqa: ANN003
 ) -> ManipulatorBaseEnv:
     """Create a manipulator environment instance using the specified configuration.
@@ -1058,6 +1078,8 @@ def make_env(
         control_type (str): The control type ("cartesian" or "joint"). Defaults to "cartesian".
         namespace (str): Namespace for the robot. Defaults to "".
         config_path (str | None): Optional path to YAML config file.
+        task (str): Instruction exposed as obs["task"]. Passed to the env, NOT to
+            the env config — a language-conditioned policy reads it every step.
         **config_overrides: Additional parameters to override configuration defaults.
 
     Returns:
@@ -1069,9 +1091,9 @@ def make_env(
     config = make_env_config(env_type, config_path=config_path, **config_overrides)
 
     if control_type.lower() == "cartesian":
-        return ManipulatorCartesianEnv(config=config, namespace=namespace)
+        return ManipulatorCartesianEnv(config=config, namespace=namespace, task=task)
     elif control_type.lower() == "joint":
-        return ManipulatorJointEnv(config=config, namespace=namespace)
+        return ManipulatorJointEnv(config=config, namespace=namespace, task=task)
     else:
         raise ValueError(
             f"Unsupported control type: {control_type}. Supported types are: 'cartesian', 'joint'"

@@ -284,6 +284,12 @@ def build_obs_frame(
                         "match what the checkpoint was trained on."
                     )
                 frame[key] = np.asarray(value)
+    # Language instruction, for VLA checkpoints (SmolVLA and friends). The env
+    # publishes it as obs["task"] every step and numpy_obs_to_torch passes
+    # "task" keys through untouched, so carrying it here is all that is needed.
+    # Policies that take no language input simply never read it.
+    if "task" in obs_raw:
+        frame["task"] = obs_raw["task"]
     return frame
 
 
