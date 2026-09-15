@@ -389,6 +389,42 @@ Two things are gone afterwards and cannot be recovered from the merged dataset:
 
 ---
 
+### 6.5 If the datasets are DVC-tracked, commit before you sync
+
+Every script in this section rewrites files IN PLACE. On a DVC-tracked dataset
+that leaves the workspace and the recorded hashes describing different data, and
+the failure is silent until training:
+
+    CastError: Couldn't cast ... because column names don't match
+
+That error means the parquet carries columns `meta/info.json` does not declare —
+typically because `meta/` moved through **git** (the `.dvc` pointers and
+`info.json`) while `data/` never moved through **DVC**. Git and DVC advance
+independently; only `dvc checkout` brings the bytes in line after ANY git
+operation that touches `.dvc` files (checkout, pull, merge, rebase).
+
+Rules that prevent it:
+
+- `dvc status` clean BEFORE aligning, re-encoding or repairing anything.
+- `dvc add` / `dvc commit` immediately AFTER, before pushing or syncing.
+- `dvc push` BEFORE `git push` — otherwise a commit lands referencing content
+  nobody can fetch.
+- After every `git checkout` / `pull` / `rebase`: `dvc checkout`.
+- `dvc install` once per dataset repo. It installs a `post-checkout` hook that
+  runs `dvc checkout` automatically and deletes the manual step permanently.
+- Syncing to a share: `rsync -a --delete --exclude='*.bak'`. Without `--delete`,
+  stale files survive and you get a hybrid that loads on one machine and not
+  another.
+
+Verify with `scripts/check_schema_drift.py <dataset>/lerobot --videos`: it
+compares parquet columns against `info.json` features and resolves every
+episode's video reference. Run it after any in-place edit and after any sync.
+
+Prefer a NON-EMPTY `--output-suffix` so align/re-encode write a fresh directory
+and leave the DVC-tracked one untouched; then `dvc add` the result.
+
+---
+
 ## 7. Post-process: promote extra states to policy inputs
 
 For a ROBOT-ONLY model that should consume joint states etc. Renames

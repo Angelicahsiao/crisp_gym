@@ -148,11 +148,14 @@ Repos involved (same owner, branch conventions apply to all):
 | `crisp_gym/record/record_functions.py::make_record_fn` | Config-driven recorder; 1-step lookahead pairing done per RecordConfig. |
 | `crisp_gym/scripts/record_umi_handheld.py` | Recording entry point (KeyboardRecordingManager: r/s/d/q). |
 | `crisp_gym/scripts/lerobot_relative_pose.py` | Training-side dataset wrapper + `lerobot-train` launcher (patches `make_dataset`). Converts `observation.state.cartesian`, `action`, AND the CONCATENATED `observation.state` (§1.2); recomputes relative stats; stamps `pose_repr.json` into the output dir. Runs on the GPU PC, needs only lerobot/torch/numpy — NO crisp imports, keep it that way. |
-| `crisp_gym/policy/relative_lerobot_policy.py` | LOCAL deployment of a relative-pose rot6d checkpoint (robot lerobot == training lerobot == 0.4.4). Mirrors the REMOTE_INFERENCE.md division of labor: client (main proc) = obs history, obs-time chunk base, T_cmd composition, gripper unit conversion; worker (subprocess) = checkpoint + processors, window→queues→`predict_action_chunk`, and the server-side obs conversion `convert_window_state_to_relative` for relative-state checkpoints. Auto-detects the checkpoint generation from `pose_repr.json` (`state_input: auto`; missing stamp => absolute). Logs the first `observation.state` fed to the policy (absolute/relative eyeball check). Config: `config/policy/relative_lerobot_policy.yaml` (`device_max_width` REQUIRED); deploy env: `config/envs/ur7e_robotiq_deploy_umi.yaml` (rotation_6d + use_relative_actions:false + `primary` camera). ALSO deploys ABSOLUTE checkpoints via `action_repr` (auto\|relative\|absolute): absolute sends the model pose to the CIC directly (no T_base@T_rel), auto-detected from `action_repr.json` next to the checkpoint; config `config/policy/absolute_lerobot_policy.yaml`. GRIPPER OBS (UNIFIED): one convention everywhere — the crisp_py device value, `0=closed / 1=open`. `env._get_obs`, the record source `gripper.width_normalized`, the command side (`_set_gripper_action`), and `UmiHandheldEnv._get_obs` all use it, so `build_obs_frame` consumes the obs as-is (`g_dev = obs`) and only reference-rescales. (Historically `manipulator_env._get_obs` alone returned `1 - value`, forcing an un-invert here; that lone inversion was removed so all sites agree and deploy-recorded episodes are training-compatible.) Existing record-source datasets/checkpoints are unaffected — removing the `_get_obs` inversion and the `build_obs_frame` un-invert cancels to the same `device_to_ref(value)` fed before. `invert_gripper` still exists for the ACTION side of legacy migrated demos (default false for UMI). OPT-IN `async_inference` (default false = classic sync loop): prefetches the next chunk `prefetch_lead` steps early and collects it without blocking so the loop never stalls on inference (keep full denoising steps at rate); the swap indexes the prefetched chunk by the elapsed offset (`_pending_offset`) so it never re-commands passed poses. DEPLOY-ENV CONTRACT (must equal the training dataset's info.json): `observation.state` components/order via `observations_to_include_to_state` + `has_effort_feedback:false` + `sensor_configs:[]` (sensors are force-added to state), image keys via `camera_name`, and image `resolution` (crisp_py resizes to it — 224 for UMI). |
+| `crisp_gym/policy/relative_lerobot_policy.py` | LOCAL deployment of a relative-pose rot6d checkpoint. VERIFIED on lerobot **0.6.1** (2026-09, `scripts/deploy_preflight.py`): `TrainPipelineConfig`, `get_policy_class`, `make_pre_post_processors` and `populate_queues` all still resolve, and `scripts/lerobot_relative_pose.py`'s own docstring says 0.4.4 AND 0.6.1. The former "robot lerobot == training lerobot == 0.4.4" claim was stale. Mirrors the REMOTE_INFERENCE.md division of labor: client (main proc) = obs history, obs-time chunk base, T_cmd composition, gripper unit conversion; worker (subprocess) = checkpoint + processors, window→queues→`predict_action_chunk`, and the server-side obs conversion `convert_window_state_to_relative` for relative-state checkpoints. Auto-detects the checkpoint generation from `pose_repr.json` (`state_input: auto`; missing stamp => absolute). Logs the first `observation.state` fed to the policy (absolute/relative eyeball check). Config: `config/policy/relative_lerobot_policy.yaml` (`device_max_width` REQUIRED); deploy env: `config/envs/ur7e_robotiq_deploy_umi.yaml` (rotation_6d + use_relative_actions:false + `primary` camera). ALSO deploys ABSOLUTE checkpoints via `action_repr` (auto\|relative\|absolute): absolute sends the model pose to the CIC directly (no T_base@T_rel), auto-detected from `action_repr.json` next to the checkpoint; config `config/policy/absolute_lerobot_policy.yaml`. GRIPPER OBS (UNIFIED): one convention everywhere — the crisp_py device value, `0=closed / 1=open`. `env._get_obs`, the record source `gripper.width_normalized`, the command side (`_set_gripper_action`), and `UmiHandheldEnv._get_obs` all use it, so `build_obs_frame` consumes the obs as-is (`g_dev = obs`) and only reference-rescales. (Historically `manipulator_env._get_obs` alone returned `1 - value`, forcing an un-invert here; that lone inversion was removed so all sites agree and deploy-recorded episodes are training-compatible.) Existing record-source datasets/checkpoints are unaffected — removing the `_get_obs` inversion and the `build_obs_frame` un-invert cancels to the same `device_to_ref(value)` fed before. `invert_gripper` still exists for the ACTION side of legacy migrated demos (default false for UMI). OPT-IN `async_inference` (default false = classic sync loop): prefetches the next chunk `prefetch_lead` steps early and collects it without blocking so the loop never stalls on inference (keep full denoising steps at rate); the swap indexes the prefetched chunk by the elapsed offset (`_pending_offset`) so it never re-commands passed poses. DEPLOY-ENV CONTRACT (must equal the training dataset's info.json): `observation.state` components/order via `observations_to_include_to_state` + `has_effort_feedback:false` + `sensor_configs:[]` (sensors are force-added to state), image keys via `camera_name`, and image `resolution` (crisp_py resizes to it — 224 for UMI). |
 | `tests/test_relative_deploy.py` | Deploy math vs training reference on synthetic SE(3): composition inverts `make_relative`, obs-time chunk base, gripper ref<->device scaling parity with the record source, obs frame layout, training `observation.state` conversion, worker window conversion == training conversion. Numpy-only (torch stubbed). |
 | `crisp_gym/scripts/migrate_euler_delta_to_rot6d.py` | One-time migration of LEGACY datasets (Euler pose + delta-command action from the old `stream_fn` recorder) to the UMI absolute rot6d schema. File surgery: copies the dataset (videos byte-identical, NO re-encode), rewrites only low-dim parquet columns (cartesian Euler(6)→rot6d(9), rebuilt `observation.state`, reconstructed `next_tcp_pose` action) + `info.json` + stats. Handles BOTH v2.x (`episode_*.parquet`) and v3.0 (`data/file-*.parquet` multi-episode + `meta/episodes/*.parquet` stats) layouts. USAGE.md §11. |
 | `crisp_gym/scripts/postprocess_align_datasets.py` | Make datasets schema-identical so `aggregate_datasets` accepts them. Drops columns that are missing from some dataset OR whose dtype/shape differs (a 6-DOF `extra.joints` beside a 7-DOF one blocks the merge just as surely as a missing column; padding would fabricate data), prunes their stats from `meta/stats.json` AND the `stats/<key>/<stat>` columns in `meta/episodes/*.parquet`, reconciles the crisp_gym `video_info` block, and can unify `robot_type` (`--robot-type`, required to mix two arms). `--skip-contract-check` for a dataset whose `record_config.json` an earlier merge stripped. USAGE.md §6.1. |
 | `crisp_gym/scripts/reencode_dataset_videos.py` | Re-encode a dataset's videos so a mixed-codec pair can merge (`aggregate_datasets` concatenates by STREAM COPY). `--inspect` walks all three metadata gates in lerobot's own order and names every blocker in one pass; it reimplements `features_equal_for_merge` rather than sampling keys, because a partial check reports a merge as fine that lerobot then refuses. Verifies every re-encoded file against the v3.0 many-episodes-per-mp4 layout: frame count, duration, each episode's stored timestamp offsets, sampled frame content. USAGE.md §6.2. |
+| `crisp_gym/scripts/check_schema_drift.py` | Parquet columns vs `meta/info.json` features, plus (`--videos`) every episode's video reference resolved against the files present. Catches the DVC/git split-brain that produces `CastError: ... column names don't match` at TRAIN time — no merge-time gate looks at parquet columns. `--repair` drops orphan columns from data parquets AND both stats locations. USAGE.md §6.5. |
+| `crisp_gym/scripts/fix_dataset_task.py` | Inspect/repair a dataset's task strings. They live in FOUR places that must agree (`meta/tasks.parquet`, `info.json` `total_tasks` — a COUNT, not the strings — the `tasks` column in `meta/episodes/*.parquet`, and `task_index` on every frame). `--rename` preserves `task_index` so frame data is untouched; `--set-all` rewrites it. The task is a MODEL INPUT for a VLA, so a stale label trains an unusable mapping. |
+| `crisp_gym/scripts/deploy_preflight.py` | Pre-rollout checks against a real checkpoint: lerobot version + the four APIs the deploy wrapper calls; `pose_repr.json`/`action_repr.json` discovery with the wrapper's own walk-up; image keys and `observation.state` width vs the dataset (expected width derived from the pose_repr MODE, +6 for `relative_wrt_start`); and whether `batch["task"]` needs a list wrap (lerobot 0.6.1: it does NOT — a bare str tokenizes identically). Probes the NORMALIZER for the true state width rather than trusting `input_features`. HANDOFF §4c. |
 | `crisp_gym/scripts/check_relative_pose.py` | Verify a rot6d dataset's relative-pose conversion: identity (current frame → identity), round-trip (`T_current ∘ T_rel` recovers the on-disk absolute `next_tcp_pose` — deploy parity), Δpos magnitude, gripper pass-through. Runs `RelativePoseDataset` with no start-pose noise. USAGE.md §8. |
 | `crisp_gym/util/lerobot_features.py` | LEGACY feature schema (no---record-config path only; config-driven recording uses `RecordConfig.to_features`). Rotation-rep-aware dims/names AND v0.4.x/v0.5.x lerobot compatibility + fps parameter — both aspects must survive future edits. ROS-free at import time. |
 | `crisp_gym/util/rot6d.py` | CANONICAL in-package rot6d/pose9d helpers (used by remote_policy, umi_handheld_env). `lerobot_relative_pose.py` and `migrate_euler_delta_to_rot6d.py` keep local copies BY DESIGN (must stay crisp-import-free); tests/test_pose_math.py pins the convention. |
@@ -204,6 +207,120 @@ synthetic SE(3) trajectory -> `RelativePoseDataset.convert_item` -> assert:
 
 A quick recorded-data sanity check: action rows `a[3:6]`,`a[6:9]` must have
 norm ~1.0 and dot ~0.0 (they are rows of a real rotation matrix).
+
+---
+
+---
+
+## 4c. Policy choice for RELATIVE rot6d actions (investigated 2026-09; do not re-derive)
+
+A relative-pose finetune of **SmolVLA** underperformed a from-scratch **diffusion**
+policy on the same robot. The investigation below is what to read before picking a
+model again; every claim was verified against the installed lerobot 0.6.1 rather
+than recalled.
+
+### Why SmolVLA fights a relative action space
+
+`lerobot/smolvla_base` is pretrained overwhelmingly on ABSOLUTE joint-space data
+(SO-100 / SO-101 community datasets). Finetuning it to emit relative rot6d poses
+means the action expert must relearn its output space while its priors pull the
+other way. Separately, relative deltas at 15 fps are millimetre-scale, so after
+normalization they sit close to noise. UMI uses relative for CROSS-EMBODIMENT
+TRANSFER, not because it trains more easily.
+
+### GR00T N1.7 is the architectural match — VERIFIED, not assumed
+
+lerobot 0.6.1 ships GR00T **N1.7** (`nvidia/GR00T-N1.7-3B`, backbone
+`nvidia/Cosmos-Reason2-2B`). N1.5 support was REMOVED; a N1.5 checkpoint needs
+`lerobot==0.5.1`.
+
+All EIGHT embodiments in the base checkpoint are `*_relative_eef_*` — there is no
+absolute-EEF embodiment in it. The model is trained entirely in relative
+end-effector space, the exact inverse of SmolVLA's situation.
+
+Its relative decode is OUR math (`policies/groot/utils.py:209`):
+
+    def relative_eef_to_absolute(action, reference_state):
+        """Convert relative EEF deltas in xyz+rot6d format to absolute EEF poses."""
+        reference = xyz_rot6d_to_homogeneous(reference_state[b])
+        relative  = xyz_rot6d_to_homogeneous(action[b, t])
+        out[b, t] = homogeneous_to_xyz_rot6d(reference @ relative)
+
+`xyz+rot6d`, composed as `reference @ relative` — homogeneous SE(3), identical to
+`compose_mode: "coupled"` (T_cmd = T_base @ T_rel). Our action layout
+`[xyz(3), rot6d(6), gripper(1)]` maps straight onto it: `xyz_rot6d_to_homogeneous`
+consumes the first 9 dims, and `relative_exclude_joints: ["gripper"]` holds the
+tenth absolute — the UMI convention in two config lines.
+
+### THE TRAP: there are TWO relative paths, and only one is correct for rot6d
+
+`lerobot/processor/relative_action_processor.py:40` is the GENERIC one:
+
+    """Convert absolute actions to relative: relative = action - state ..."""
+    actions[..., :dims] -= state_offset
+
+ELEMENTWISE SUBTRACTION. Correct for joint space, WRONG for rot6d — a relative
+rotation is `T_cur^-1 @ T_tgt`, not a subtraction. It trains fine and moves wrong.
+
+Which path runs is gated at `policies/groot/processor_groot.py:1271`:
+
+    uses_native_relative_actions = bool(checkpoint_assets.use_relative_action)
+    if config.use_relative_actions and not uses_native_relative_actions:
+        logging.warning("... using the generic RelativeActionsProcessorStep fallback ...")
+        input_steps.insert(2, RelativeActionsProcessorStep(...))
+
+The base checkpoint declares `processor_kwargs.use_relative_action = True` (read at
+`processor_groot.py:190`), so a run built on it takes the NATIVE path and the
+subtraction step is never inserted.
+
+**THAT WARNING IS THE TRIPWIRE.** If it appears during training, you are on the
+subtraction path and your rot6d rows are being subtracted instead of composed.
+Stop. Verify a FINETUNED checkpoint still carries `use_relative_action: True`;
+the warning text also offers `dataset_meta` as a route to native relative stats.
+
+Because GR00T converts INSIDE the policy, a GR00T run is fed the ABSOLUTE dataset
+(which is what is on disk under §1.2) and needs none of
+`scripts/lerobot_relative_pose.py`, `pose_repr.json`, or `state_input` detection.
+
+### Before committing a GR00T run
+
+- **Measure inference rate first.** 3B + a 2B backbone, native horizon 40 steps =
+  2.7 s at 15 fps. A VLA that cannot sustain the control loop makes the convention
+  alignment irrelevant.
+- Isaac-GR00T is a REAL dependency: `modeling_groot.py` delegates to the `gr00t`
+  package.
+
+### The stale-metadata trap in ANY `--policy.path` finetune
+
+A SmolVLA checkpoint finetuned from a base model kept the BASE model's
+`input_features` while its normalization STATISTICS were refit on the new data.
+Observed on `franka_electricbox_rel_smolvla_20260910`:
+
+| field | declared | reality |
+|---|---|---|
+| `observation.state` | 6 | 16 (10-D dataset + 6 wrt-start) |
+| image size | 256x256 | 800x1280 from the camera |
+| image keys | camera1/2/3 + empty_camera_0/1 | ONE real camera (`camera1` via `--rename_map`) |
+
+**The statistics win at runtime; `input_features` is metadata.** Never derive a
+deploy contract from it — `scripts/deploy_preflight.py` probes the normalizer
+instead. `crisp_gym/policy/relative_lerobot_policy.py` does the same and logs
+loudly when the two disagree.
+
+### Ordering when a policy underperforms
+
+1. Is it the MODEL or the DATASET? Train a from-scratch diffusion policy on the
+   SAME dataset. One run, and it splits the two explanations.
+2. `n_action_steps` — 50 @ 15 fps is 3.3 s open-loop. Drop to 8-16 before blaming
+   the architecture.
+3. `--policy.empty_cameras` — every declared-but-blank camera still goes through
+   the vision encoder. Four blanks for one real camera means 80% of the visual
+   token budget is black frames.
+4. Only then change model.
+
+A VLA pays for language grounding and multi-task transfer. With ONE task, ONE
+instruction and ONE camera you pay every cost and collect none of the benefit;
+a from-scratch policy has no priors to unlearn.
 
 ---
 
