@@ -98,3 +98,15 @@ log_actions: 0
 # steps before the current one ends; null auto-sizes it from measured latency.
 async_inference: false
 # prefetch_lead: null
+
+# Zero-fill image inputs the checkpoint DECLARES but the robot cannot produce.
+# A checkpoint finetuned from a base model (--policy.path) keeps that model's
+# camera slots, and --policy.empty_cameras adds more; both were blank during
+# training, but the deploy wrapper feeds every declared key and a missing one
+# raises. DEFAULT FALSE on purpose: that raise is how a wrong camera_name in
+# the deploy env gets caught, and silently substituting black frames would hide
+# it. Enable only for a checkpoint you know declares blank slots — every padded
+# key is logged once at startup, so check that list for a REAL camera name.
+# The train-time --rename_map is read from the checkpoint's train_config.json
+# automatically and needs no setting here.
+pad_missing_images: false

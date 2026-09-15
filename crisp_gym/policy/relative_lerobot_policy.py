@@ -179,6 +179,32 @@ def find_pose_repr(pretrained_path: str) -> dict | None:
     return None
 
 
+def find_rename_map(pretrained_path: str) -> dict:
+    """The dataset->checkpoint key renaming recorded by the training run.
+
+    `--rename_map` at train time (e.g. observation.images.oakw_cam ->
+    observation.images.camera1, to land a camera in a base model's slot) is
+    stored in the checkpoint's train_config.json. Deployment has to apply the
+    SAME mapping or the policy is handed keys it never saw. Reading it from the
+    checkpoint means it cannot drift from what training actually did.
+
+    Returns {} when there is no map — which makes every caller a no-op, so
+    checkpoints trained without renaming are untouched.
+    """
+    import json
+    from pathlib import Path
+
+    f = Path(pretrained_path).resolve() / "train_config.json"
+    if not f.exists():
+        return {}
+    try:
+        data = json.loads(f.read_text())
+    except Exception:  # noqa: BLE001
+        return {}
+    mapping = data.get("rename_map")
+    return dict(mapping) if isinstance(mapping, dict) else {}
+
+
 def find_action_repr(pretrained_path: str) -> dict | None:
     """Load action_repr.json stamped by the ABSOLUTE training launchers.
 
@@ -228,6 +254,8 @@ def build_obs_frame(
     device_max_width: float,
     image_keys: List[str] | None = None,
     target_to_euler: bool = False,
+    rename_map: dict | None = None,
+    pad_image_shapes: dict | None = None,
 ) -> dict:
     """One history frame from a raw env observation, in TRAINING units.
 
@@ -273,9 +301,14 @@ def build_obs_frame(
         frame[key] = part
         state_parts.append(part.reshape(-1))
     frame["observation.state"] = np.concatenate(state_parts)
+    renames = rename_map or {}
     for key, value in obs_raw.items():
         if key.startswith("observation.images"):
-            if image_keys is None or key in image_keys:
+            # The checkpoint may know this camera under a different name (the
+            # training --rename_map). An empty map leaves target == key, so
+            # checkpoints trained without renaming take the identical path.
+            target = renames.get(key, key)
+            if image_keys is None or target in image_keys:
                 if value is None:
                     raise ValueError(
                         f"camera image '{key}' is None — the camera has not "
@@ -283,7 +316,22 @@ def build_obs_frame(
                         "(ros2 topic hz) and the deploy env camera name/topic "
                         "match what the checkpoint was trained on."
                     )
-                frame[key] = np.asarray(value)
+                frame[target] = np.asarray(value)
+
+    # Opt-in zero-fill for image inputs the robot cannot produce (a base
+    # model's unused camera slots, --policy.empty_cameras padding). OFF unless
+    # pad_image_shapes is passed, because a KeyError on a missing camera is how
+    # a wrong deploy-env camera_name gets caught — silently substituting black
+    # frames would hide that for every checkpoint.
+    for key, shape in (pad_image_shapes or {}).items():
+        if key in frame:
+            continue
+        chw = tuple(int(d) for d in shape)
+        # Declared shapes are CHW; env images (and numpy_obs_to_torch, which
+        # permutes 2,0,1) are HWC uint8. Pad in HWC or the permute silently
+        # produces a transposed tensor.
+        hwc = (chw[1], chw[2], chw[0]) if len(chw) == 3 else chw
+        frame[key] = np.zeros(hwc, dtype=np.uint8)
     # Language instruction, for VLA checkpoints (SmolVLA and friends). The env
     # publishes it as obs["task"] every step and numpy_obs_to_torch passes
     # "task" keys through untouched, so carrying it here is all that is needed.
@@ -329,8 +377,20 @@ class RelativeLerobotPolicy(Policy):
             trained before the wrapper converted observation.state).
             "absolute" / "relative" / "relative_wrt_start" (16-D UMI parity:
             wrt-start rot6d appended server-side, noise off) force it.
+        pad_missing_images: Zero-fill image inputs the checkpoint declares but
+            the robot cannot produce (a base model's unused camera slots, or
+            --policy.empty_cameras padding). DEFAULT FALSE, and deliberately
+            so: a missing camera key normally raises, which is how a wrong
+            deploy-env camera_name gets caught. Enable ONLY for a checkpoint
+            known to declare slots that were blank during training — every
+            padded key is logged once at startup.
         overrides: Optional lerobot policy-config overrides (as LerobotPolicy).
     """
+
+    # Zero-fill targets for declared image inputs the robot cannot produce.
+    # Class-level so every construction path (including tests that bypass
+    # __init__) sees the safe default: empty == pad nothing == raise as before.
+    _pad_shapes: dict = {}
 
     def __init__(
         self,
@@ -349,6 +409,7 @@ class RelativeLerobotPolicy(Policy):
         log_actions: int = 0,
         async_inference: bool = False,
         prefetch_lead: int | None = None,
+        pad_missing_images: bool = False,
         overrides: dict | None = None,
     ):
         if compose_mode not in ("coupled", "decoupled"):
@@ -457,6 +518,30 @@ class RelativeLerobotPolicy(Policy):
         if isinstance(meta, tuple) and meta[0] == "error":
             raise RuntimeError(f"Inference worker failed to load: {meta[1]}")
         self.meta = meta
+
+        # Which declared image inputs get zero-filled. Empty unless the caller
+        # opted in, so the default path keeps raising on a missing camera.
+        self._pad_shapes: dict = {}
+        if pad_missing_images:
+            renames = meta.get("rename_map") or {}
+            producible = {renames.get(k, k) for k in self.env.get_obs()}
+            self._pad_shapes = {
+                key: shape
+                for key, shape in (meta.get("image_shapes") or {}).items()
+                if key not in producible
+            }
+            if self._pad_shapes:
+                logger.warning(
+                    "pad_missing_images: zero-filling %d image input(s) the robot "
+                    "cannot produce: %s. These were blank during training too — if "
+                    "a REAL camera is in this list, the deploy env camera_name or "
+                    "the checkpoint's rename_map is wrong.",
+                    len(self._pad_shapes),
+                    sorted(self._pad_shapes),
+                )
+            else:
+                logger.info("pad_missing_images set, but nothing needed padding.")
+
         self.n_obs_steps = int(meta["n_obs_steps"])
         chunk_len = int(meta["n_action_steps"])
         self.n_action_steps = (
@@ -763,6 +848,8 @@ class RelativeLerobotPolicy(Policy):
                 self.device_max_width,
                 image_keys=self.meta.get("image_keys"),
                 target_to_euler=self.target_to_euler,
+                rename_map=self.meta.get("rename_map"),
+                pad_image_shapes=self._pad_shapes,
             )
             self._verify_state_dim(frame)
             self._history.append(frame)
@@ -1087,13 +1174,56 @@ def inference_worker(conn, pretrained_path: str, overrides: dict,
         )
 
         image_features = list(getattr(policy.config, "image_features", []) or [])
+        in_feats = getattr(policy.config, "input_features", {}) or {}
+        image_shapes = {
+            k: tuple(int(d) for d in getattr(in_feats[k], "shape", ()) or ())
+            for k in image_features
+            if k in in_feats
+        }
+        rename_map = find_rename_map(pretrained_path)
+        if rename_map:
+            wlog.info(f"[RelInference] train-time rename_map: {rename_map}")
+
         state_dim = None
         try:
-            in_feats = getattr(policy.config, "input_features", {}) or {}
             if "observation.state" in in_feats:
                 state_dim = int(np.prod(in_feats["observation.state"].shape))
         except Exception:
             pass
+
+        # input_features can disagree with the normalization statistics: a
+        # finetune started from a base model (--policy.path) keeps the BASE
+        # feature shapes while the stats are refit on the new data. The stats
+        # are what runs, so ask them. A checkpoint whose metadata is correct
+        # returns the same number and takes an identical path.
+        if preprocessor is not None and state_dim:
+            try:
+                import re as _re
+
+                import torch as _torch
+
+                probe = {
+                    k: _torch.zeros((1, *tuple(int(d) for d in getattr(v, "shape", ()) or ())))
+                    for k, v in in_feats.items()
+                }
+                probe["task"] = "probe"
+                preprocessor(probe)
+            except RuntimeError as exc:
+                m = _re.search(
+                    r"tensor a \((\d+)\) must match the size of tensor b \((\d+)\)",
+                    str(exc),
+                )
+                if m and int(m.group(1)) == state_dim:
+                    wlog.warning(
+                        "[RelInference] checkpoint input_features says "
+                        f"observation.state is {state_dim}, but its normalization "
+                        f"statistics want {m.group(2)}. The stats are what runs; "
+                        "using them. (Typical when a finetune keeps the base "
+                        "model's input_features.)"
+                    )
+                    state_dim = int(m.group(2))
+            except Exception:  # noqa: BLE001
+                pass
         meta = {
             "n_obs_steps": int(getattr(policy.config, "n_obs_steps", 1)),
             "n_action_steps": int(getattr(policy.config, "n_action_steps", 1)),
@@ -1104,6 +1234,10 @@ def inference_worker(conn, pretrained_path: str, overrides: dict,
             # the client verifies its built state against this BEFORE the first
             # inference (a mismatch inside the normalizer is cryptic).
             "state_dim": state_dim,
+            # Train-time dataset->checkpoint key renaming; {} for checkpoints
+            # trained without --rename_map, which makes the client a no-op.
+            "rename_map": rename_map,
+            "image_shapes": image_shapes,
         }
         conn.send(meta)
         wlog.info(f"[RelInference] Ready: {meta}")

@@ -235,6 +235,114 @@ def test_build_obs_frame_without_task_is_unchanged():
     assert frame["observation.state"].shape == (10,)
 
 
+# ── 4b. rename / pad adapter — MUST be inert for checkpoints that need neither ──
+
+def _obs(cam: str = "observation.images.oakw_cam") -> tuple:
+    """A minimal env observation with one camera, in env (HWC uint8) layout."""
+    ref, dev = 0.09, 0.140
+    cart = _pose9(_random_traj(1, seed=21)[0]).astype(np.float32)
+    return ({
+        "observation.state.cartesian": cart,
+        "observation.state.gripper": np.array([0.3], dtype=np.float32),
+        cam: np.zeros((800, 1280, 3), np.uint8),
+    }, ref, dev)
+
+
+def test_diffusion_shaped_frame_is_byte_identical_without_rename_or_pad():
+    """The regression guard: a checkpoint needing neither feature is untouched.
+
+    Mirrors the real diffusion deployment — image key matches the dataset, no
+    train-time rename_map, padding not enabled.
+    """
+    obs, ref, dev = _obs()
+    keys = ["observation.images.oakw_cam"]
+    before = rlp.build_obs_frame(obs, ref, dev, image_keys=keys)
+    after = rlp.build_obs_frame(obs, ref, dev, image_keys=keys,
+                                rename_map={}, pad_image_shapes={})
+    assert set(before) == set(after)
+    for k in before:
+        np.testing.assert_array_equal(np.asarray(before[k]), np.asarray(after[k]))
+
+
+def test_padding_off_still_omits_a_key_the_robot_cannot_produce():
+    """A missing camera must NOT become silent zeros unless explicitly asked."""
+    obs, ref, dev = _obs()
+    frame = rlp.build_obs_frame(
+        obs, ref, dev, image_keys=["observation.images.camera1"]
+    )
+    # oakw_cam does not match camera1 and no rename was given, so nothing lands
+    assert not [k for k in frame if k.startswith("observation.images")]
+
+
+def test_rename_map_routes_the_camera_into_the_checkpoint_slot():
+    """The robot's camera must land under the name the checkpoint knows."""
+    obs, ref, dev = _obs()
+    frame = rlp.build_obs_frame(
+        obs, ref, dev,
+        image_keys=["observation.images.camera1"],
+        rename_map={"observation.images.oakw_cam": "observation.images.camera1"},
+    )
+    assert "observation.images.camera1" in frame
+    assert "observation.images.oakw_cam" not in frame
+    assert frame["observation.images.camera1"].shape == (800, 1280, 3)
+
+
+def test_pad_fills_declared_slots_in_HWC_not_CHW():
+    """Declared shapes are CHW; the env and numpy_obs_to_torch use HWC.
+
+    Padding in CHW would survive the permute(2,0,1) as a transposed tensor —
+    silently wrong rather than an error.
+    """
+    obs, ref, dev = _obs()
+    frame = rlp.build_obs_frame(
+        obs, ref, dev,
+        image_keys=["observation.images.camera1", "observation.images.camera2"],
+        rename_map={"observation.images.oakw_cam": "observation.images.camera1"},
+        pad_image_shapes={"observation.images.camera2": (3, 256, 256)},
+    )
+    assert frame["observation.images.camera2"].shape == (256, 256, 3)
+    assert frame["observation.images.camera2"].dtype == np.uint8
+    # the real camera is untouched
+    assert frame["observation.images.camera1"].shape == (800, 1280, 3)
+
+
+def test_pad_never_overwrites_a_real_image():
+    """Padding fills gaps only — a produced image always wins."""
+    obs, ref, dev = _obs()
+    real = obs["observation.images.oakw_cam"]
+    real[0, 0, 0] = 255
+    frame = rlp.build_obs_frame(
+        obs, ref, dev,
+        image_keys=["observation.images.oakw_cam"],
+        pad_image_shapes={"observation.images.oakw_cam": (3, 256, 256)},
+    )
+    assert frame["observation.images.oakw_cam"].shape == (800, 1280, 3)
+    assert frame["observation.images.oakw_cam"][0, 0, 0] == 255
+
+
+def test_find_rename_map_absent_is_empty(tmp_path: Path):
+    """No train_config.json, or no rename_map in it, must yield {} — the no-op."""
+    assert rlp.find_rename_map(str(tmp_path)) == {}
+    (tmp_path / "train_config.json").write_text('{"policy": {"type": "diffusion"}}')
+    assert rlp.find_rename_map(str(tmp_path)) == {}
+
+
+def test_find_rename_map_reads_the_training_value(tmp_path: Path):
+    """The deploy side must use the exact mapping training recorded."""
+    (tmp_path / "train_config.json").write_text(
+        '{"rename_map": {"observation.images.oakw_cam": "observation.images.camera1"}}'
+    )
+    assert rlp.find_rename_map(str(tmp_path)) == {
+        "observation.images.oakw_cam": "observation.images.camera1"
+    }
+
+
+def test_find_rename_map_survives_corrupt_json(tmp_path: Path):
+    """Unreadable metadata degrades to the no-op, never to a crash at startup."""
+    (tmp_path / "train_config.json").write_text("{not json")
+    assert rlp.find_rename_map(str(tmp_path)) == {}
+
+
 # ── 5. training wrapper converts observation.state (the model input) ─────────
 
 def test_training_converts_observation_state_10d():
