@@ -287,11 +287,12 @@ def test_rename_map_routes_the_camera_into_the_checkpoint_slot():
     assert frame["observation.images.camera1"].shape == (800, 1280, 3)
 
 
-def test_pad_fills_declared_slots_in_HWC_not_CHW():
-    """Declared shapes are CHW; the env and numpy_obs_to_torch use HWC.
+def test_pad_matches_the_real_camera_not_the_declared_shape():
+    """All image inputs are stacked, so every pad must be the REAL resolution.
 
-    Padding in CHW would survive the permute(2,0,1) as a transposed tensor —
-    silently wrong rather than an error.
+    The checkpoint declares its BASE model's image size (256x256 here) while
+    the robot streams 800x1280; padding to the declaration makes torch.stack
+    raise "expects each tensor to be equal size".
     """
     obs, ref, dev = _obs()
     frame = rlp.build_obs_frame(
@@ -300,10 +301,21 @@ def test_pad_fills_declared_slots_in_HWC_not_CHW():
         rename_map={"observation.images.oakw_cam": "observation.images.camera1"},
         pad_image_shapes={"observation.images.camera2": (3, 256, 256)},
     )
-    assert frame["observation.images.camera2"].shape == (256, 256, 3)
-    assert frame["observation.images.camera2"].dtype == np.uint8
-    # the real camera is untouched
     assert frame["observation.images.camera1"].shape == (800, 1280, 3)
+    assert frame["observation.images.camera2"].shape == (800, 1280, 3)
+    assert frame["observation.images.camera2"].dtype == frame["observation.images.camera1"].dtype
+
+
+def test_pad_falls_back_to_the_declared_shape_with_no_real_image():
+    """No camera at all: the declaration is the only size hint, still HWC."""
+    obs, ref, dev = _obs()
+    obs.pop("observation.images.oakw_cam")
+    frame = rlp.build_obs_frame(
+        obs, ref, dev,
+        image_keys=["observation.images.camera2"],
+        pad_image_shapes={"observation.images.camera2": (3, 256, 256)},
+    )
+    assert frame["observation.images.camera2"].shape == (256, 256, 3)
 
 
 def test_pad_never_overwrites_a_real_image():

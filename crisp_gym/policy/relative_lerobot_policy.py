@@ -323,15 +323,31 @@ def build_obs_frame(
     # pad_image_shapes is passed, because a KeyError on a missing camera is how
     # a wrong deploy-env camera_name gets caught — silently substituting black
     # frames would hide that for every checkpoint.
-    for key, shape in (pad_image_shapes or {}).items():
-        if key in frame:
-            continue
-        chw = tuple(int(d) for d in shape)
-        # Declared shapes are CHW; env images (and numpy_obs_to_torch, which
-        # permutes 2,0,1) are HWC uint8. Pad in HWC or the permute silently
-        # produces a transposed tensor.
-        hwc = (chw[1], chw[2], chw[0]) if len(chw) == 3 else chw
-        frame[key] = np.zeros(hwc, dtype=np.uint8)
+    pad_targets = pad_image_shapes or {}
+    if pad_targets:
+        # All image inputs are stacked into ONE tensor, so every pad must match
+        # the REAL camera's resolution. The declared shape is the wrong source:
+        # a checkpoint finetuned from a base model carries that model's image
+        # size (the policy resizes internally), so the declaration is metadata,
+        # not what flows at runtime. Mirror a real frame when there is one and
+        # fall back to the declaration only when the robot produces no image.
+        real = next(
+            (v for k, v in frame.items() if k.startswith("observation.images")), None
+        )
+        for key, shape in pad_targets.items():
+            if key in frame:
+                continue
+            if real is not None:
+                sample = np.asarray(real)
+                hwc, dtype = sample.shape, sample.dtype
+            else:
+                # Declared shapes are CHW; env images (and numpy_obs_to_torch,
+                # which permutes 2,0,1) are HWC. Pad in HWC or the permute
+                # silently produces a transposed tensor.
+                chw = tuple(int(d) for d in shape)
+                hwc = (chw[1], chw[2], chw[0]) if len(chw) == 3 else chw
+                dtype = np.uint8
+            frame[key] = np.zeros(hwc, dtype=dtype)
     # Language instruction, for VLA checkpoints (SmolVLA and friends). The env
     # publishes it as obs["task"] every step and numpy_obs_to_torch passes
     # "task" keys through untouched, so carrying it here is all that is needed.
