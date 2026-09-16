@@ -287,8 +287,13 @@ Because GR00T converts INSIDE the policy, a GR00T run is fed the ABSOLUTE datase
 - **Measure inference rate first.** 3B + a 2B backbone, native horizon 40 steps =
   2.7 s at 15 fps. A VLA that cannot sustain the control loop makes the convention
   alignment irrelevant.
-- Isaac-GR00T is a REAL dependency: `modeling_groot.py` delegates to the `gr00t`
-  package.
+- Isaac-GR00T is almost certainly NOT a code dependency. The docstrings
+  ("delegates to Isaac-GR00T N1.7 components", "the `gr00t` Python package")
+  document PROVENANCE, not imports. Verified 2026-09 on the 0.6.1 tree:
+  `policies/groot/*.py` contains no `import gr00t` / `from gr00t`, no dynamic
+  import (`importlib` / `__import__`), and `pyproject.toml` names neither
+  gr00t nor isaac. Weights come from HuggingFace (`nvidia/GR00T-N1.7-3B`).
+  Confirm by importing `GrootPolicy` before planning an install.
 
 ### The stale-metadata trap in ANY `--policy.path` finetune
 
