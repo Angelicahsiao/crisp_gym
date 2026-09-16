@@ -567,9 +567,24 @@ class RecordingManager(ABC):
             # v0.5.1+ uses LeRobotDataset.resume(); older versions use the
             # plain constructor (which handles resuming based on existing meta).
             if hasattr(LeRobotDataset, "resume"):
+                resume_kwargs = self._writer_kwargs(LeRobotDataset.resume)
+                # lerobot >= 0.6 REFUSES resume() with root=None: without a root
+                # it would resolve to the revision-safe Hub snapshot cache and
+                # writing there corrupts the shared cache. create() has no such
+                # guard and silently defaults to HF_LEROBOT_HOME/repo_id, so the
+                # two paths must be told the same directory explicitly or
+                # --resume writes somewhere create() never wrote.
+                import inspect as _inspect
+
+                try:
+                    _accepts_root = "root" in _inspect.signature(LeRobotDataset.resume).parameters
+                except (TypeError, ValueError):
+                    _accepts_root = False
+                if _accepts_root:
+                    resume_kwargs["root"] = self.dataset_directory
                 dataset = LeRobotDataset.resume(
                     repo_id=self.config.repo_id,
-                    **self._writer_kwargs(LeRobotDataset.resume),
+                    **resume_kwargs,
                 )
             else:
                 dataset = LeRobotDataset(repo_id=self.config.repo_id)
