@@ -15,7 +15,7 @@ from crisp_py.sensors.sensor_config import SensorConfig
 from crisp_py.utils.geometry import OrientationRepresentation
 
 from crisp_gym.config.path import CRISP_CONFIG_PATH, find_config, list_configs_in_folder
-from crisp_gym.util.gripper_mode import GripperMode
+from crisp_gym.util.gripper_mode import GripperMode, HomeGripper
 
 
 class ObservationKeys:
@@ -59,6 +59,9 @@ class ManipulatorEnvConfig(ABC):
         cartesian_control_param_config (Path | None): Path to the Cartesian control parameters configuration file.
         joint_control_param_config (Path | None): Path to the joint control parameters configuration file.
         gripper_threshold (float): Threshold for gripper actions.
+        home_gripper (HomeGripper | str): What the gripper does once the arm reaches
+            home ("open" | "closed" | "hold"). Applied after arrival, never during
+            the trajectory.
         gripper_enabled (bool): Whether the gripper is enabled.
         max_episode_steps (int | None): Maximum number of steps per episode, if applicable.
     """
@@ -78,6 +81,16 @@ class ManipulatorEnvConfig(ABC):
     # Gripper specific configurations
     gripper_mode: GripperMode | str = GripperMode.ABSOLUTE_CONTINUOUS
     gripper_threshold: float = 0.1
+
+    # What env.home() commands the gripper to do ONCE THE ARM HAS ARRIVED.
+    #   open   - open at home (default; the end state homing has always left)
+    #   closed - close at home
+    #   hold   - leave the gripper wherever the episode ended
+    # Never applied before or during the homing trajectory: the gripper reaches
+    # its target in ~0.3 s (max_delta 0.1 at publish_frequency 30 Hz) while the
+    # arm takes time_to_home (5 s default) to travel, so an open issued up front
+    # drops whatever is held over the task area rather than at home.
+    home_gripper: HomeGripper | str = HomeGripper.OPEN
 
     gripper_enabled: bool | None = None  # Deprecated, use gripper_mode instead
     gripper_continuous_control: bool | None = None  # Deprecated, use gripper_mode instead
@@ -161,6 +174,9 @@ class ManipulatorEnvConfig(ABC):
 
         if isinstance(self.gripper_mode, str):
             self.gripper_mode = GripperMode(self.gripper_mode)
+
+        if isinstance(self.home_gripper, str):
+            self.home_gripper = HomeGripper(self.home_gripper)
 
         if isinstance(self.cartesian_control_param_config, str):
             self.cartesian_control_param_config = (

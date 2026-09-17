@@ -13,6 +13,20 @@ class GripperMode(Enum):
     RELATIVE_BINARY = "relative_binary"
 
 
+class HomeGripper(Enum):
+    """What the gripper is commanded to do when the arm homes.
+
+    The action is applied only AFTER the arm has reached the home pose. It is
+    not a pose the gripper travels to alongside the arm: commanding it at the
+    start of the homing trajectory releases a grasped object over whatever the
+    arm was last reaching into.
+    """
+
+    OPEN = "open"
+    CLOSED = "closed"
+    HOLD = "hold"
+
+
 def min_action_for_gripper_mode(mode: GripperMode) -> float:
     """Get the minimum action value for the specified gripper mode.
 

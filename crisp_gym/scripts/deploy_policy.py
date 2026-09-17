@@ -315,8 +315,10 @@ def main():
         def on_end():
             """Hook function to be called when stopping the recording."""
             env.robot.reset_targets()
-            env.robot.home(blocking=False)
-            env.gripper.open()
+            # Blocking, and via env.home() so the gripper is commanded only
+            # after the arm arrives: the previous non-blocking home followed by
+            # an immediate open released a grasped object mid-trajectory.
+            env.home(blocking=True)
 
             logger.info("Waiting for user to decide on success/failure if evaluating...")
             if recording_manager.state != "exit":

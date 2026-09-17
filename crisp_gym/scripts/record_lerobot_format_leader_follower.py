@@ -456,15 +456,20 @@ def main():
                 # travelling. The next episode — and the follow_mode=False that
                 # comes with it in on_start — may only begin once the robot has
                 # actually reached the home pose.
-                env.robot.home(blocking=True, home_config=random_home)
+                env.home(blocking=True, home_config=random_home)
             else:
-                env.robot.home(blocking=False, home_config=random_home)
+                # Leader first and non-blocking, so both arms travel together;
+                # the follower's blocking home below is what the hook waits on.
                 if isinstance(leader, TeleopRobot):
                     leader.robot.reset_targets()
                     # Activate incase leader should go to the same position as the follower
                     # leader.robot.home(blocking=False, home_config=random_home)
                     leader.robot.home(blocking=False)
-            env.gripper.open()
+                # Blocking, and via env.home() so the gripper is commanded only
+                # after the arm arrives. The previous non-blocking home followed
+                # by an unconditional env.gripper.open() released a grasped
+                # object seconds into a 5 s trajectory, over the task area.
+                env.home(blocking=True, home_config=random_home)
 
         with recording_manager:
             while not recording_manager.done():

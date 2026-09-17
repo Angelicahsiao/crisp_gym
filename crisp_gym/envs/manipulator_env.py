@@ -49,6 +49,7 @@ from crisp_gym.envs.manipulator_env_config import (
 from crisp_gym.util.control_type import ControlType
 from crisp_gym.util.gripper_mode import (
     GripperMode,
+    HomeGripper,
     max_action_for_gripper_mode,
     min_action_for_gripper_mode,
 )
@@ -587,18 +588,56 @@ class ManipulatorBaseEnv(gym.Env):
         self.switch_controller(self.ctrl_type)
 
     def home(self, home_config: list[float] | None = None, blocking: bool = True):
-        """Move the robot to the home position.
+        """Move the robot to the home position, then settle the gripper.
+
+        ORDER MATTERS. The gripper is commanded only after the arm has ARRIVED.
+        `gripper.open()` is non-blocking — it sets a target that the 30 Hz
+        publisher walks to in `max_delta` (0.1) steps, so the gripper is fully
+        open roughly 0.3 s later, while `robot.home` is still driving a
+        `time_to_home` (5 s default) trajectory. Commanding it first therefore
+        releases whatever is held over the task area, metres from home. This
+        method used to do exactly that.
+
+        What happens on arrival is `config.home_gripper`: "open" (default, the
+        end state homing has always left), "closed", or "hold" to not touch it.
+
+        With `blocking=False` the gripper is left alone entirely: the call
+        returns while the arm is still travelling, so there is no safe moment
+        to act on. Callers that need both must home blocking, or command the
+        gripper themselves once the arm has arrived.
 
         Args:
             home_config (list[float]): Optional home configuration for the robot.
             blocking (bool): If True, wait until the robot reaches the home position.
         """
-        if self.config.gripper_mode != GripperMode.NONE:
-            self.gripper.open()
         self.robot.home(home_config=home_config, blocking=blocking)
 
         if not blocking:
             self.switch_to_default_controller()
+            return
+
+        self.apply_home_gripper()
+
+    def apply_home_gripper(self) -> None:
+        """Command the gripper to its configured home state.
+
+        Split out of `home()` so a caller that drives `robot.home()` itself —
+        to interleave a leader arm, say — can still get the configured
+        behaviour. Call it only once the arm has reached home; calling it
+        earlier reintroduces the mid-trajectory release `home()` avoids.
+        """
+        if self.config.gripper_mode == GripperMode.NONE:
+            return
+
+        action = self.config.home_gripper
+        if action is HomeGripper.HOLD:
+            return
+        if action is HomeGripper.OPEN:
+            self.gripper.open()
+        elif action is HomeGripper.CLOSED:
+            self.gripper.close()
+        else:
+            raise ValueError(f"Unsupported home_gripper: {action}")
 
     def get_metadata(self) -> dict:
         """Generate metadata for the environment.
