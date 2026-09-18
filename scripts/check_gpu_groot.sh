@@ -232,7 +232,16 @@ line("embodiment_tag", cfg.embodiment_tag)
 line("chunk_size", f"{cfg.chunk_size}  (n_action_steps {cfg.n_action_steps}, n_obs_steps {cfg.n_obs_steps})")
 line("denoise steps", cfg.num_inference_timesteps if cfg.num_inference_timesteps is not None
      else "None (checkpoint default: 4)")
-line("batch_size", f"{cfg.batch_size}   <- a datacenter default; drop it hard on one card")
+# The live fine-tuning knobs. GrootConfig.batch_size is NOT one of them: it
+# sits in the block configuration_groot.py marks "unused by the LeRobot N1.7
+# implementation", kept only so an older config.json still parses. Batch size
+# comes from lerobot's training config (--batch_size), not the policy.
+line("tune_llm", f"{cfg.tune_llm}    (backbone frozen when False)")
+line("tune_visual", cfg.tune_visual)
+line("tune_projector", cfg.tune_projector)
+line("tune_diffusion_model", cfg.tune_diffusion_model)
+line("tune_vlln", cfg.tune_vlln)
+line("batch_size", f"{cfg.batch_size}  <- DEPRECATED/unused; set --batch_size on the train config")
 
 print()
 print("  Defaults that are WRONG for a relative-pose rot6d dataset:")
