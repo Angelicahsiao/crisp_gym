@@ -113,26 +113,53 @@ fi
 if [ "${SKIP_HUB_CHECK:-0}" -eq 0 ]; then
     echo "==> checking hub access for the base model and its backbone"
     if ! python - <<'PY'
-import sys
+import os, sys
 try:
-    from huggingface_hub import hf_hub_download
+    from huggingface_hub import HfApi, hf_hub_download
 except ImportError:
     print("  huggingface_hub not installed; skipping"); sys.exit(0)
-bad = False
+
+# Whether a token is reaching the hub at all decides which remedy applies, and
+# HF_TOKEN wins over HF_HOME, so it sidesteps the redirect above entirely.
+token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+try:
+    who = HfApi().whoami()
+    source = "HF_TOKEN" if token else os.environ.get("HF_HOME", "~/.cache/huggingface") + "/token"
+    print(f"  token   authenticated as {who.get('name', '?')}  (from {source})")
+    authed = True
+except Exception:
+    print("  token   NONE — requests are anonymous")
+    authed = False
+
+bad = []
 for repo in ("nvidia/GR00T-N1.7-3B", "nvidia/Cosmos-Reason2-2B"):
     try:
         hf_hub_download(repo, "config.json")
-        print(f"  OK    {repo}")
+        print(f"  OK      {repo}")
     except Exception as exc:
-        bad = True
-        print(f"  FAIL  {repo}: {type(exc).__name__}: {str(exc)[:200]}")
+        text = str(exc)
+        code = "401" if "401" in text else "403" if "403" in text else "?"
+        bad.append((repo, code))
+        print(f"  FAIL    {repo}: {type(exc).__name__} {code}")
+
 if bad:
     print()
-    print("  Both repos must be reachable BEFORE training starts.")
-    print("    token hidden by the HOME redirect?  export HF_TOKEN=$(cat ~/.cache/huggingface/token)")
-    print("    never logged in?                    huggingface-cli login")
-    print("    gated repo?                         accept the terms on both model pages")
-    print("    no egress?                          pre-download on a networked host and copy HF_HOME")
+    if any(c == "401" for _, c in bad):
+        print("  401 = UNAUTHENTICATED. The repo is gated and no valid token was sent.")
+        print("    1. accept the terms on the model page (a click-through, needs an account)")
+        print("    2. create a read token at https://huggingface.co/settings/tokens")
+        print("    3. export HF_TOKEN=hf_...   (beats HF_HOME, so the redirect cannot hide it)")
+    if any(c == "403" for _, c in bad):
+        print("  403 = AUTHENTICATED BUT NOT PERMITTED. The token works; this account has")
+        print("    not been granted the repo. Accept the terms on the model page with THIS")
+        print("    account, or ask whoever owns the org for access.")
+    if any(c == "?" for _, c in bad):
+        print("  Neither 401 nor 403 — likely no egress from this node. Pre-download on a")
+        print("    networked host, copy HF_HOME across, then SKIP_HUB_CHECK=1 HF_HUB_OFFLINE=1.")
+    if not authed:
+        print()
+        print("  Note: nvidia/GR00T-N1.7-3B is public; only the Cosmos-Reason2-2B backbone")
+        print("  is gated, so a token is needed even though the policy repo resolves fine.")
     sys.exit(1)
 PY
     then
