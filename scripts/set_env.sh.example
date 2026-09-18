@@ -15,10 +15,26 @@
 #
 # Source this script; do not execute it directly.
 
-# --- required: where crisp looks for robot/camera/controller YAML ------------
-# Point this at your configuration folder. crisp_py's find_config() searches it
-# when a config is named rather than given as an absolute path.
-export CRISP_CONFIG_PATH="${HOME}/crisp_configs"
+# --- optional: EXTRA config folders, on top of the built-in ones -------------
+# Leave this unset unless you keep configs OUTSIDE both repos.
+#
+# crisp_py/config and crisp_gym/config are ALREADY searched with no env var set
+# (crisp_gym/config/path.py appends both package config dirs unconditionally),
+# so pointing CRISP_CONFIG_PATH at one of them adds nothing -- it duplicates an
+# entry in the search list, and find_config() then warns that every config in
+# it "exists in N config paths" on every lookup.
+#
+# Set it only for your OWN config folder elsewhere. Colon-separated; entries are
+# PREPENDED, so they take priority over the built-ins:
+#
+#     export CRISP_CONFIG_PATH="/workspace/my_configs:/workspace/robot_lab_configs"
+#
+# These are paths INSIDE the container -- each entry is checked with
+# Path(entry).exists() by the process that reads it. A path that does not exist
+# is not a warning: if NONE of the entries exist, importing crisp_gym raises
+#   FileNotFoundError: No valid CRISP configuration paths found in '...'
+# so a typo here stops everything, loudly.
+# export CRISP_CONFIG_PATH="/workspace/my_configs"
 
 # --- required: ROS 2 DDS domain ---------------------------------------------
 # Use 100 when working with the crisp_controllers demos. Machines that must see
