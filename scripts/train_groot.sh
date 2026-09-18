@@ -126,11 +126,17 @@ if [ "$DRY_RUN" -eq 1 ]; then
     exit 0
 fi
 
-# Keep the exact invocation next to the checkpoints. Which flags a run used is
-# the first question asked of a checkpoint that behaves oddly, and
+# Keep the exact invocation with the run. Which flags a run used is the first
+# question asked of a checkpoint that behaves oddly, and
 # check_trained_groot.sh compares this against what the policy actually saved.
-mkdir -p "$OUTPUT"
-{ printf '%q ' "${CMD[@]}"; printf '\n'; } > "$OUTPUT/launch_command.txt"
+#
+# BESIDE the output directory, never inside it. lerobot refuses to start when
+# output_dir already exists (configs/train.py:259, "already exists and resume
+# is False"), so creating it here to hold this file is precisely what stops the
+# run. Only the parent is created; the file is moved in afterwards.
+LAUNCH_LOG="${OUTPUT}.launch_command.txt"
+mkdir -p "$(dirname "$OUTPUT")"
+{ printf '%q ' "${CMD[@]}"; printf '\n'; } > "$LAUNCH_LOG"
 
 echo "==> Watch the log for:"
 echo "      'using the generic RelativeActionsProcessorStep fallback'"
@@ -140,6 +146,12 @@ echo
 
 "${CMD[@]}"
 status=$?
+
+# lerobot has created the directory by now, so the record can live with the
+# checkpoints where check_trained_groot.sh and a future reader will find it.
+if [ -d "$OUTPUT" ] && [ -f "$LAUNCH_LOG" ]; then
+    mv -f "$LAUNCH_LOG" "$OUTPUT/launch_command.txt"
+fi
 
 if [ $status -eq 0 ]; then
     echo
