@@ -179,10 +179,23 @@ if geometry:
     elif not geometry.get("letter_box_transform", (None,))[0]:
         warnings.append("letter_box_transform is off: frames are resized to a square, so a "
                         "wide frame is squashed rather than cropped (FOV kept, aspect lost)")
+    # The runtime DERIVES crop_fraction from image_crop_size when it is not set
+    # explicitly (_transform_n1_7_image_for_vlm_torch), so reading only the
+    # explicit key misses a crop that is really happening.
     crop = geometry.get("crop_fraction", (None,))[0]
+    target = geometry.get("image_target_size", (None,))[0]
+    crop_size = geometry.get("image_crop_size", (None,))[0]
+    derived = False
+    if crop is None and crop_size and target:
+        try:
+            crop, derived = crop_size[0] / float(target[0]), True
+        except (TypeError, ZeroDivisionError, IndexError):
+            crop = None
     if isinstance(crop, (int, float)) and 0 < crop < 1:
-        warnings.append(f"crop_fraction={crop}: a centered crop keeps only the middle "
-                        f"{100 * crop:.0f}% -- the periphery is discarded")
+        how = f"derived from image_crop_size/image_target_size = {crop:.4f}" if derived \
+              else f"crop_fraction={crop}"
+        warnings.append(f"centered crop ({how}): keeps the middle {100 * crop:.1f}%, "
+                        f"so {100 * (1 - crop) / 2:.1f}% is discarded from each edge")
 else:
     print("  image geometry: no processor_kwargs recorded in this checkpoint's JSON.")
     print("    That is NOT the same as 'no transform' -- lerobot reads them from the")
