@@ -1,0 +1,98 @@
+# dric Franka + Robotiq 2F-85 + oakw camera — DEPLOYMENT env for a GR00T N1.7
+# checkpoint fine-tuned on franka_electricbox (umi_robot_full_record.yaml
+# contract: rot6d cartesian 9 + gripper 1 = 10-D state and action).
+#
+# Derived from dric_dual_rscam_franka_deploy_umi.yaml. The settings below that
+# differ from it are the GR00T-specific ones; everything else is carried over
+# because the robot and the data contract are the same.
+#
+# GR00T DIFFERS FROM THE RELATIVE-POSE CHECKPOINTS IN ONE IMPORTANT WAY: it
+# returns ABSOLUTE poses. GrootN17PackInputsStep caches the raw state and
+# GrootN17ActionDecodeStep composes the relative prediction back through it, so
+# the SE(3) composition has already happened inside the model. The deploy
+# wrapper must therefore NOT compose again — set action_repr: "absolute" in
+# config/policy/groot_lerobot_policy.yaml. Its default of "auto" resolves to
+# RELATIVE when no action_repr.json is present (relative_lerobot_policy.py:476),
+# and a GR00T checkpoint never has one: that stamp is written by crisp_gym's
+# own training launchers, not by lerobot. Leaving it on auto double-composes,
+# silently.
+#
+# use_relative_actions: false below is required by the wrapper regardless
+# (it raises otherwise, relative_lerobot_policy.py:455) — the env's relative
+# branch is a decoupled world-frame add, not what any of these models expect.
+control_frequency: 15.0        # = the dataset's rate_hz; GR00T's 40-step chunk
+                               #   is 40/15 = 2667 ms of open-loop command
+gripper_mode: "absolute_continuous"
+
+orientation_representation: "rotation_6d"
+use_relative_actions: false
+
+cartesian_control_param_config: null
+joint_control_param_config: "control/fr3_joint_control.yaml"
+
+# observation.state fed to the POLICY must match the training dataset exactly.
+# umi_robot_full_record.yaml made it [cartesian(9), gripper(1)] = 10-D; the
+# joints/effort/ext_torque/target columns were extra.* and excluded. The env
+# DEFAULT would build a 40-D state and raise
+# "observation.state dim mismatch: checkpoint expects 10, client built 40".
+# Order matters: cartesian then gripper.
+observations_to_include_to_state:
+  - observation.state.cartesian
+  - observation.state.gripper
+
+named_home_configs:
+  open_pose: &home_pose
+    - 0.4246407298371954
+    - -0.01130037897899503
+    - -0.3321400257658427
+    - -2.6908276789742325
+    - 0.09774443531853239
+    - 4.257101518895322
+    - -0.013673332419279224
+  close_to_table: *home_pose
+
+robot_config:
+  robot_type: "franka"
+  # FALSE at deploy: true auto-appends observation.state.effort (+7) and breaks
+  # the 10-D state. Recording envs set it true only to fill extra.joint_efforts.
+  has_effort_feedback: false
+  home_config:
+  - 0.425725623070977
+  - -0.013800044320084788
+  - -0.33286129072276527
+  - -2.6913555955684414
+  - 0.10167396715537252
+  - 4.262024898082136
+  - -0.021739227284989265
+
+gripper_config:
+  min_value: 0.79
+  max_value: 0.0
+  command_topic: "/robotiq_2f85/robotiq_gripper_controller/gripper_cmd"
+  joint_state_topic: /robotiq_2f85/joint_states
+  use_gripper_command_action: True
+  max_delta: 1.0
+  max_effort: 5.0
+
+camera_configs:
+  # ONE camera. camera_name defines the observation.images.* key and MUST equal
+  # the dataset's — the checkpoint resolves its video views by those keys, so
+  # a mismatch leaves GR00T with no image.
+  - camera_name: "oakw_cam"          # -> observation.images.oakw_cam
+    camera_frame: "oakw_cam_link"
+    # NATIVE resolution, deliberately. GR00T resizes to 256x256 itself inside
+    # GrootN17VLMEncodeStep, so this is not about detail — it is about FRAMING.
+    # crisp_py's _resize_with_aspect_ratio (camera.py:317) scales by
+    # max(target_w/w, target_h/h) and then CENTRE-CROPS, so a square target
+    # here would crop before GR00T ever saw the frame:
+    #     [224, 224]   -> 67 px off each side, only 63% of the width survives
+    #     [800, 1280]  -> nothing trimmed, 100% reaches GR00T
+    # Training kept ~90% of the frame (GR00T's own 230/256 crop), so anything
+    # that crops here is a train/serve mismatch with no error to reveal it.
+    resolution: [800, 1280]         # (HEIGHT, WIDTH) — camera_config.py:21
+    # TODO SET THIS to the topic you recorded observation.images.oakw_cam from.
+    # Find it with:  ros2 topic list | grep -i oak
+    camera_color_image_topic: "/oakw_cam/color/image_raw"
+    image_transport: "compressed"
+
+sensor_configs: []

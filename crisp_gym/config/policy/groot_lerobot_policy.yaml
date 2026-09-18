@@ -1,0 +1,78 @@
+# Local (in-process) deployment of a GR00T N1.7 checkpoint fine-tuned on a
+# crisp_gym recording (umi_robot_full_record.yaml contract: rot6d cartesian 9 +
+# gripper 1 = 10-D state and action).
+#
+# Use with config/envs/dric_franka_oakw_deploy_groot.yaml:
+#   python -m crisp_gym.scripts.deploy_policy \
+#       --env-config dric_franka_oakw_deploy_groot \
+#       --policy-config groot_lerobot_policy \
+#       --path <.../checkpoints/last/pretrained_model>
+#
+# Train it with scripts/train_groot.sh, which pins the flags
+# check_trained_groot.sh then verifies survived the run.
+name: "relative_lerobot_policy"   # the WRAPPER class; the checkpoint's own
+                                  # config.json says type: groot
+
+# ── THE SETTING THAT MATTERS MOST ────────────────────────────────────────────
+# GR00T returns ABSOLUTE poses. GrootN17PackInputsStep caches the raw state and
+# GrootN17ActionDecodeStep composes the relative prediction back through it, so
+# the SE(3) composition is already done inside the model.
+#
+# "auto" IS WRONG HERE. relative_lerobot_policy.py:476-488 resolves auto by
+# looking for action_repr.json next to the checkpoint and falls back to
+# RELATIVE when it is absent — and a GR00T checkpoint never has one, because
+# that stamp is written by crisp_gym's training launchers, not by lerobot. The
+# wrapper would then apply T_cmd = T_base @ T_rel to poses that are already
+# absolute: a double composition, with nothing raising.
+action_repr: "absolute"
+
+# The dataset stores ABSOLUTE state (GR00T converts internally, so it is fed
+# the raw recording). "auto" would also land here — with no pose_repr.json it
+# defaults to absolute, the opposite way round from action_repr — but state and
+# action conventions are easy to confuse, so both are stated explicitly.
+state_input: "absolute"
+
+# Gripper units, matching umi_robot_full_record.yaml's gripper_params.
+device_max_width: 0.085        # Robotiq 2F-85 stroke
+reference_width: 0.09          # shared UMI reference width
+
+# ── control-loop rate ────────────────────────────────────────────────────────
+# GR00T's native chunk is 40 steps. At the trained 15 fps that is 2667 ms of
+# open-loop command per inference — a long time for a contact-rich task. Lower
+# n_action_steps to re-observe more often; the rest of each chunk is discarded.
+# null -> execute the checkpoint's full 40.
+n_action_steps: null
+
+# Diffusion-only knobs, inert here: relative_lerobot_policy.py:1055 is a no-op
+# for non-diffusion policies, and null skips the block entirely. GR00T's
+# equivalent lever is num_inference_timesteps (flow-matching steps, checkpoint
+# default 4) — set it through `overrides` below if inference misses the budget.
+num_inference_steps: null
+scheduler: null
+# overrides: {num_inference_timesteps: 2}
+
+# Not consulted when action_repr is "absolute" (nothing is composed), kept at
+# the default so a later switch to a relative checkpoint behaves as before.
+compose_mode: "coupled"
+
+# The dataset was recorded natively in rot6d, not migrated from the Euler
+# recorder, so no target conversion is needed.
+target_to_euler: false
+
+# Obs, command and the record config all use the device convention
+# (0=closed / 1=open). Symptom of this being wrong: the gripper oscillates.
+invert_gripper: false
+
+# FALSE so a wrong camera_name in the deploy env raises instead of being
+# silently filled with black frames. The GR00T checkpoint declares exactly the
+# camera key the dataset had (observation.images.oakw_cam) and the deploy env
+# publishes it, so nothing needs padding.
+pad_missing_images: false
+
+# Log the first N steps of every chunk (model action, command, T_base, gripper)
+# to check conventions on the first deployment. 0 = off. Worth setting to 5 for
+# the first run: with action_repr absolute you should see the command equal the
+# model's pose, NOT a composition of it.
+log_actions: 0
+
+async_inference: false
