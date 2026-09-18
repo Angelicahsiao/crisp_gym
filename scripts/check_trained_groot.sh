@@ -151,15 +151,45 @@ for name in ("input_features", "output_features"):
         shape = spec.get("shape") if isinstance(spec, dict) else None
         print(f"    {key:<34} {shape}")
 
-# The image geometry carried over from the base checkpoint.
+# Image geometry. These live in processor_kwargs, which lerobot loads from the
+# checkpoint's processor sidecars -- NOT from config.json -- so search every
+# JSON in the directory. Absent here means "not recorded in this checkpoint",
+# which is not the same as "no transform": the base checkpoint's own files are
+# what _load_n1_7_checkpoint_processor_assets reads at runtime.
 kwargs_keys = ["image_target_size", "image_crop_size", "shortest_image_edge",
                "crop_fraction", "letter_box_transform", "use_albumentations"]
-geometry = {k: find_key(cfg, k) for k in kwargs_keys}
-if any(v is not None for v in geometry.values()):
-    print("\n  image geometry inherited from the base checkpoint:")
-    for k, v in geometry.items():
-        if v is not None:
-            line(f"  {k}", v)
+geometry: dict = {}
+for json_path in sorted(cfg_path.parent.glob("*.json")):
+    blob = load(json_path)
+    for k in kwargs_keys:
+        found_val = find_key(blob, k)
+        if found_val is not None and k not in geometry:
+            geometry[k] = (found_val, json_path.name)
+
+print()
+if geometry:
+    print("  image geometry (what the VLM does to each frame):")
+    for k, (v, where) in geometry.items():
+        line(f"  {k}", f"{v!r}   [{where}]")
+    if geometry.get("use_albumentations", (None,))[0]:
+        warnings.append("use_albumentations=True: shortest-edge resize then CENTER CROP "
+                        "-- a wide frame loses its periphery")
+    elif geometry.get("image_target_size", (None,))[0] is None:
+        pass
+    elif not geometry.get("letter_box_transform", (None,))[0]:
+        warnings.append("letter_box_transform is off: frames are resized to a square, so a "
+                        "wide frame is squashed rather than cropped (FOV kept, aspect lost)")
+    crop = geometry.get("crop_fraction", (None,))[0]
+    if isinstance(crop, (int, float)) and 0 < crop < 1:
+        warnings.append(f"crop_fraction={crop}: a centered crop keeps only the middle "
+                        f"{100 * crop:.0f}% -- the periphery is discarded")
+else:
+    print("  image geometry: no processor_kwargs recorded in this checkpoint's JSON.")
+    print("    That is NOT the same as 'no transform' -- lerobot reads them from the")
+    print("    BASE checkpoint at runtime. To see what actually applies, probe the base:")
+    print("      python -c \"from huggingface_hub import snapshot_download as d; print(d('nvidia/GR00T-N1.7-3B', allow_patterns=['*.json']))\"")
+    print("    then grep those files for image_target_size / letter_box_transform /")
+    print("    crop_fraction / use_albumentations.")
 
 print()
 print(BAR)
