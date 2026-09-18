@@ -100,6 +100,50 @@ if [ "$SKIP_PREFLIGHT" -eq 0 ]; then
     echo
 fi
 
+# ── gate: are BOTH hub repos reachable with this token? ──────────────────────
+# GR00T pulls from two repos: the 3B policy and its Cosmos-Reason2-2B backbone
+# (configuration_groot.py:44-45). A failure on either surfaces deep in training
+# as "failed to get .../main/config", long after the dataset has loaded.
+#
+# The HOME redirect above is a live hazard here: huggingface-cli writes its
+# token to $HF_HOME/token, so a login done under your real HOME is invisible
+# once HF_HOME points into the bind mount, and gated NVIDIA repos then answer
+# 401/403 anonymously. Export HF_TOKEN before running this script, or log in
+# once with HF_HOME set to the path above.
+if [ "${SKIP_HUB_CHECK:-0}" -eq 0 ]; then
+    echo "==> checking hub access for the base model and its backbone"
+    if ! python - <<'PY'
+import sys
+try:
+    from huggingface_hub import hf_hub_download
+except ImportError:
+    print("  huggingface_hub not installed; skipping"); sys.exit(0)
+bad = False
+for repo in ("nvidia/GR00T-N1.7-3B", "nvidia/Cosmos-Reason2-2B"):
+    try:
+        hf_hub_download(repo, "config.json")
+        print(f"  OK    {repo}")
+    except Exception as exc:
+        bad = True
+        print(f"  FAIL  {repo}: {type(exc).__name__}: {str(exc)[:200]}")
+if bad:
+    print()
+    print("  Both repos must be reachable BEFORE training starts.")
+    print("    token hidden by the HOME redirect?  export HF_TOKEN=$(cat ~/.cache/huggingface/token)")
+    print("    never logged in?                    huggingface-cli login")
+    print("    gated repo?                         accept the terms on both model pages")
+    print("    no egress?                          pre-download on a networked host and copy HF_HOME")
+    sys.exit(1)
+PY
+    then
+        echo >&2
+        echo "Hub check FAILED — not starting training." >&2
+        echo "SKIP_HUB_CHECK=1 bash scripts/train_groot.sh to override (e.g. fully cached offline)." >&2
+        exit 1
+    fi
+    echo
+fi
+
 # ── the command ──────────────────────────────────────────────────────────────
 CMD=(
     python3 -m lerobot.scripts.lerobot_train
@@ -144,18 +188,31 @@ echo "    That step SUBTRACTS, which is wrong for rot6d. If it appears, stop:"
 echo "    the checkpoint is not carrying native relative statistics."
 echo
 
-"${CMD[@]}"
-status=$?
+# Tee to a log beside the run. lerobot only creates output_dir when it writes
+# its first checkpoint, so a run that dies before then leaves nothing behind and
+# the traceback goes with the scrollback. This keeps it.
+RUN_LOG="${OUTPUT}.log"
+echo "==> logging to $RUN_LOG"
+echo
+
+"${CMD[@]}" 2>&1 | tee "$RUN_LOG"
+status=${PIPESTATUS[0]}
 
 # lerobot has created the directory by now, so the record can live with the
 # checkpoints where check_trained_groot.sh and a future reader will find it.
-if [ -d "$OUTPUT" ] && [ -f "$LAUNCH_LOG" ]; then
-    mv -f "$LAUNCH_LOG" "$OUTPUT/launch_command.txt"
+if [ -d "$OUTPUT" ]; then
+    [ -f "$LAUNCH_LOG" ] && mv -f "$LAUNCH_LOG" "$OUTPUT/launch_command.txt"
+    [ -f "$RUN_LOG" ]    && mv -f "$RUN_LOG"    "$OUTPUT/train.log"
 fi
 
 if [ $status -eq 0 ]; then
     echo
     echo "==> Training finished. Verify the flags survived:"
     echo "      bash scripts/check_trained_groot.sh $OUTPUT"
+else
+    echo
+    echo "==> FAILED (exit $status). No output directory means lerobot never"
+    echo "    reached its first checkpoint save. The traceback is in:"
+    echo "      ${RUN_LOG}"
 fi
 exit $status
