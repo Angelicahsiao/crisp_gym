@@ -15,26 +15,32 @@
 #
 # Source this script; do not execute it directly.
 
-# --- optional: EXTRA config folders, on top of the built-in ones -------------
-# Leave this unset unless you keep configs OUTSIDE both repos.
+# --- config search order: make crisp_gym's copies win ------------------------
+# crisp_py/config and crisp_gym/config are BOTH searched with no env var set
+# (crisp_gym/config/path.py:30-33 appends them unconditionally), and crisp_py
+# is searched FIRST -- so where a name exists in both, crisp_py's copy is the
+# one that loads and crisp_gym's is silently ignored. Nine names currently
+# collide; four differ in content, among them cameras/wrist_camera.yaml
+# (different topic names AND resolution) and two control YAMLs. find_config()
+# warns about each, but only once per name per process.
 #
-# crisp_py/config and crisp_gym/config are ALREADY searched with no env var set
-# (crisp_gym/config/path.py appends both package config dirs unconditionally),
-# so pointing CRISP_CONFIG_PATH at one of them adds nothing -- it duplicates an
-# entry in the search list, and find_config() then warns that every config in
-# it "exists in N config paths" on every lookup.
+# Entries here are PREPENDED, in the order given, ahead of both built-ins, so
+# naming crisp_gym's own config dir flips the winner to crisp_gym. Anything
+# already in CRISP_CONFIG_PATH (e.g. from docker-compose) keeps priority over
+# it. Derived from this script's location rather than hardcoded, so it follows
+# the repo -- same idiom as gen_cyclone_config.sh.
 #
-# Set it only for your OWN config folder elsewhere. Colon-separated; entries are
-# PREPENDED, so they take priority over the built-ins:
-#
-#     export CRISP_CONFIG_PATH="/workspace/my_configs:/workspace/robot_lab_configs"
-#
-# These are paths INSIDE the container -- each entry is checked with
-# Path(entry).exists() by the process that reads it. A path that does not exist
-# is not a warning: if NONE of the entries exist, importing crisp_gym raises
-#   FileNotFoundError: No valid CRISP configuration paths found in '...'
-# so a typo here stops everything, loudly.
-# export CRISP_CONFIG_PATH="/workspace/my_configs"
+# Drop this block if you would rather keep crisp_py's copies winning.
+_crisp_gym_cfg="$(cd "$(dirname "${BASH_SOURCE[0]}")/../crisp_gym/config" 2>/dev/null && pwd)"
+if [ -n "${_crisp_gym_cfg}" ]; then
+    export CRISP_CONFIG_PATH="${CRISP_CONFIG_PATH:+${CRISP_CONFIG_PATH}:}${_crisp_gym_cfg}"
+fi
+unset _crisp_gym_cfg
+# Add your OWN config folders by exporting CRISP_CONFIG_PATH BEFORE this block,
+# or by appending to it afterwards; entries are colon-separated container paths,
+# each checked with Path(entry).exists(). If NONE of them exist, importing
+# crisp_gym raises FileNotFoundError rather than warning, so a typo stops
+# everything loudly.
 
 # --- ROS 2 DDS domain --------------------------------------------------------
 # DEFAULT-ONLY on purpose (`:=`, the same idiom gen_cyclone_config.sh uses for
