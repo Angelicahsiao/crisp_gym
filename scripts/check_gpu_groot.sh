@@ -221,6 +221,11 @@ except Exception as exc:  # noqa: BLE001
 print("  GrootPolicy imports OK -- no NVIDIA Isaac-GR00T package required.")
 print()
 
+# PreTrainedConfig.__post_init__ resolves an unset device and logs
+# "Device 'None' is not available. Switching to 'cuda'." We only want the
+# dataclass defaults, so silence that one logger rather than print noise.
+import logging
+logging.getLogger("lerobot.configs.policies").setLevel(logging.ERROR)
 cfg = GrootConfig()
 line("base model", cfg.base_model_path)
 line("embodiment_tag", cfg.embodiment_tag)
