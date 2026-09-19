@@ -15,8 +15,17 @@ name: "relative_lerobot_policy"   # the WRAPPER class; the checkpoint's own
 
 # ── THE SETTING THAT MATTERS MOST ────────────────────────────────────────────
 # GR00T returns ABSOLUTE poses. GrootN17PackInputsStep caches the raw state and
-# GrootN17ActionDecodeStep composes the relative prediction back through it, so
-# the SE(3) composition is already done inside the model.
+# GrootN17ActionDecodeStep adds it back to the relative prediction, so the
+# conversion is already done inside the model.
+#
+# On the ARITHMETIC, for a new_embodiment fine-tune: it is componentwise
+# subtract-then-add, NOT SE(3). _build_n1_7_relative_action_processor_assets
+# synthesizes the modality config with "type": "NON_EEF" / "format": "DEFAULT"
+# hardcoded (processor_groot.py:1049-1051), and relative_eef_to_absolute only
+# runs for type == "eef" and format == "xyz+rot6d", which is NVIDIA's own
+# pretrained embodiments, never a synthesized one. The round trip is exact
+# either way, so the commanded poses are right; what the rot6d columns lose is
+# rotation-equivariance, not correctness.
 #
 # "auto" IS WRONG HERE. relative_lerobot_policy.py:476-488 resolves auto by
 # looking for action_repr.json next to the checkpoint and falls back to

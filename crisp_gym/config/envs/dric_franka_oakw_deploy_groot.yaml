@@ -8,9 +8,9 @@
 #
 # GR00T DIFFERS FROM THE RELATIVE-POSE CHECKPOINTS IN ONE IMPORTANT WAY: it
 # returns ABSOLUTE poses. GrootN17PackInputsStep caches the raw state and
-# GrootN17ActionDecodeStep composes the relative prediction back through it, so
-# the SE(3) composition has already happened inside the model. The deploy
-# wrapper must therefore NOT compose again — set action_repr: "absolute" in
+# GrootN17ActionDecodeStep adds it back to the relative prediction, so the
+# conversion has already happened inside the model. The deploy wrapper must
+# therefore NOT convert again — set action_repr: "absolute" in
 # config/policy/groot_lerobot_policy.yaml. Its default of "auto" resolves to
 # RELATIVE when no action_repr.json is present (relative_lerobot_policy.py:476),
 # and a GR00T checkpoint never has one: that stamp is written by crisp_gym's
