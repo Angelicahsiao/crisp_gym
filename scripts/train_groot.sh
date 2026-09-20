@@ -38,6 +38,19 @@
 #   --job-name NAME    default: the output directory's name
 #   --save-freq N      default 20000
 #   --num-workers N    default 8
+#   --se3              CROSS-EMBODIMENT mode: train through crisp_gym's UMI
+#                      relative-pose wrapper, which re-expresses the
+#                      OBSERVATION relative to the current frame
+#                      (T_base^-1 @ T). Neither GR00T path does that -- in
+#                      lerobot and Isaac-GR00T alike the state is only ever a
+#                      reference, never transformed -- and an absolute TCP pose
+#                      is in the robot's own base frame, so the same motion is
+#                      different numbers on a Franka and a UR. GR00T's own
+#                      relative conversion is turned off so it does not
+#                      subtract the state a second time. The dataset on disk
+#                      stays absolute, so the preflight applies unchanged.
+#   --no-wrt-start     with --se3: 10-D relative state instead of the 16-D
+#                      UMI-parity [rel_pose9, gripper1, wrt_start6]
 #   --skip-preflight   run without gating on groot_preflight.py
 #   --dry-run          print the command and exit
 #   --                 everything after this is appended to the lerobot command
@@ -52,7 +65,7 @@ REPO="$(cd "$HERE/.." && pwd)"
 
 DATASET="" OUTPUT="" REPO_ID="" JOB_NAME=""
 BATCH_SIZE=32 STEPS=100000 SAVE_FREQ=20000 NUM_WORKERS=8
-SKIP_PREFLIGHT=0 DRY_RUN=0
+SKIP_PREFLIGHT=0 DRY_RUN=0 SE3=0 WRT_START=1
 EXTRA=()
 
 while [ $# -gt 0 ]; do
@@ -65,6 +78,8 @@ while [ $# -gt 0 ]; do
         --job-name)       JOB_NAME="${2:-}"; shift 2 ;;
         --save-freq)      SAVE_FREQ="${2:-}"; shift 2 ;;
         --num-workers)    NUM_WORKERS="${2:-}"; shift 2 ;;
+        --se3)            SE3=1; shift ;;
+        --no-wrt-start)   WRT_START=0; shift ;;
         --skip-preflight) SKIP_PREFLIGHT=1; shift ;;
         --dry-run)        DRY_RUN=1; shift ;;
         --)               shift; EXTRA=("$@"); break ;;
@@ -172,15 +187,38 @@ PY
 fi
 
 # ── the command ──────────────────────────────────────────────────────────────
-CMD=(
-    python3 -m lerobot.scripts.lerobot_train
+if [ "$SE3" -eq 1 ]; then
+    RELTRAINER="$REPO/crisp_gym/scripts/lerobot_relative_pose.py"
+    if [ ! -f "$RELTRAINER" ]; then
+        echo "--se3 needs $RELTRAINER, which is missing." >&2
+        exit 2
+    fi
+    CMD=(python3 "$RELTRAINER")
+    if [ "$WRT_START" -eq 1 ]; then CMD+=(--wrt-start); else CMD+=(--no-wrt-start); fi
+else
+    CMD=(python3 -m lerobot.scripts.lerobot_train)
+fi
+
+CMD+=(
     --dataset.repo_id="$REPO_ID"
     --dataset.root="$DATASET"
     --policy.type=groot
-    --policy.use_relative_actions=true
-    --policy.relative_exclude_joints='["gripper"]'
     --policy.embodiment_tag=new_embodiment
     --policy.push_to_hub=false
+)
+
+if [ "$SE3" -eq 1 ]; then
+    # The wrapper already made the action relative; GR00T must not subtract the
+    # state again, and there is nothing left for relative_exclude_joints to do.
+    CMD+=(--policy.use_relative_actions=false)
+else
+    CMD+=(
+        --policy.use_relative_actions=true
+        --policy.relative_exclude_joints='["gripper"]'
+    )
+fi
+
+CMD+=(
     --output_dir="$OUTPUT"
     --job_name="$JOB_NAME"
     --batch_size="$BATCH_SIZE"
