@@ -408,6 +408,12 @@ class RelativeLerobotPolicy(Policy):
     # __init__) sees the safe default: empty == pad nothing == raise as before.
     _pad_shapes: dict = {}
 
+    # One-shot preflight latches. Class-level for the same reason: a path that
+    # bypasses __init__ reads "not checked yet", so the check still runs once
+    # instead of raising AttributeError. __init__ shadows both per instance.
+    _image_keys_checked: bool = False
+    _state_dim_checked: bool = False
+
     def __init__(
         self,
         env: "ManipulatorBaseEnv",
@@ -574,6 +580,7 @@ class RelativeLerobotPolicy(Policy):
 
         self._history: deque = deque(maxlen=self.n_obs_steps)
         self._state_dim_checked = False
+        self._image_keys_checked = False
         self._chunk: np.ndarray | None = None
         self._chunk_idx = 0
         # Base pose for the CURRENT chunk, captured at observation time
@@ -850,6 +857,33 @@ class RelativeLerobotPolicy(Policy):
                 "of --path; override with state_input: 'absolute' or 'relative'."
             )
 
+    def _verify_image_keys(self, frame: dict) -> None:
+        """Fail BEFORE inference if a camera the checkpoint declares is absent
+        from the built frame — a deploy-env `camera_name` that disagrees with
+        the training dataset otherwise surfaces as a bare KeyError inside the
+        worker's batch assembly, indistinguishable from a policy whose
+        preprocessor consumed the image keys.
+        """
+        if self._image_keys_checked:
+            return
+        self._image_keys_checked = True
+        expected = list(self.meta.get("image_keys") or [])
+        missing = [k for k in expected if k not in frame]
+        if not expected or not missing:
+            return
+        produced = sorted(k for k in frame if k.startswith("observation.images"))
+        renames = self.meta.get("rename_map") or {}
+        raise ValueError(
+            f"camera key mismatch: the checkpoint expects {expected}, the "
+            f"deploy env produced {produced}"
+            + (f" (after the train-time rename_map {renames})" if renames else "")
+            + f". Missing: {missing}. Fix by setting the deploy env camera's "
+            "`camera_name` to the name the RECORDING env used (the suffix "
+            "after 'observation.images.'), or by giving the checkpoint a "
+            "rename_map. Use pad_missing_images only for slots that were blank "
+            "during training too."
+        )
+
     # ── Policy interface ──────────────────────────────────────────────────────
 
     def make_data_fn(self) -> Callable[[], Tuple[Observation, Action]]:
@@ -868,6 +902,7 @@ class RelativeLerobotPolicy(Policy):
                 pad_image_shapes=self._pad_shapes,
             )
             self._verify_state_dim(frame)
+            self._verify_image_keys(frame)
             self._history.append(frame)
 
             if self._log_actions and self._action_log_left > 0:
@@ -1265,7 +1300,14 @@ def inference_worker(conn, pretrained_path: str, overrides: dict,
             batch = numpy_obs_to_torch(frame)
             if preprocessor is not None:
                 batch = preprocessor(batch)
-            if image_features:
+            # Stack the per-camera keys into the single observation.images
+            # tensor diffusion/ACT/VQ-BeT consume — but only if they SURVIVED
+            # the preprocessor. GR00T's pack step packs every camera into one
+            # `video` tensor and pops every observation.images.* key, so the
+            # stack would KeyError on a key the checkpoint legitimately
+            # declares. Policies that keep the keys take the identical path as
+            # before (and stack for themselves in select_action anyway).
+            if image_features and all(key in batch for key in image_features):
                 batch = dict(batch)
                 batch[OBS_IMAGES] = torch.stack(
                     [batch[key] for key in image_features], dim=-4
