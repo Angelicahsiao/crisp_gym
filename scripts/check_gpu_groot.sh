@@ -18,7 +18,8 @@
 # WHAT IT CHECKS
 #   1. GPU    torch build vs the card's compute capability, VRAM, and a real
 #             bf16 matmul on every visible device.
-#   2. GR00T  whether GrootPolicy imports, and whether the config defaults that
+#   2. GR00T  whether GrootPolicy imports, whether the packages the model needs
+#             AT RUN TIME are installed, and whether the config defaults that
 #             matter for a relative-pose rot6d dataset are set. Skipped cleanly
 #             when lerobot is not installed, so the same script is useful on a
 #             deploy machine that only has torch.
@@ -38,6 +39,7 @@
 #   3  no usable CUDA device
 #   4  a GPU failed the matmul -- this torch build cannot drive it
 #   5  GPU is fine but GrootPolicy will not import
+#   6  GrootPolicy imports but a package the model needs at run time is missing
 #
 #   VRAM shortfalls are reported as WARN, not failure: inference in bf16 needs
 #   far less than fine-tuning, so a card too small to train on may still deploy.
@@ -221,6 +223,72 @@ except Exception as exc:  # noqa: BLE001
 print("  GrootPolicy imports OK -- no NVIDIA Isaac-GR00T package required.")
 print()
 
+# ── run-time packages ────────────────────────────────────────────────────────
+# A clean GrootPolicy import proves almost nothing about whether a rollout can
+# run. lerobot guards these with require_package() at the point of use, and
+# those points are spread across the lifecycle -- dm-tree's sits inside
+# GR00TN17.prepare_input, so it fires on the FIRST get_action, long after the
+# checkpoint has loaded and the robot has homed. Import them here instead.
+import importlib
+
+# (pip spec, import name, where lerobot demands it). The spec is what goes on
+# a pip command line; only dm-tree carries a bound the groot extra pins itself.
+RUNTIME_DEPS = [
+    ("transformers",             "transformers", "policy import"),
+    ("diffusers",                "diffusers",    "model construction (GR00TN17ActionHead)"),
+    ("datasets",                 "datasets",     "processor build (normalization stats)"),
+    ("dm-tree>=0.1.8,<1.0.0",    "tree",         "FIRST INFERENCE (GR00TN17.prepare_input)"),
+]
+# Declared by the `groot` extra but with no require_package() call in the
+# policy path, so a miss here is not provably fatal -- reported, not failed.
+EXTRA_DEPS = [("peft", "peft"), ("timm", "timm"), ("decord", "decord")]
+
+print("  Packages the model needs at run time:")
+missing = []
+for pip_name, import_name, when in RUNTIME_DEPS:
+    try:
+        importlib.import_module(import_name)
+    except Exception:  # noqa: BLE001
+        missing.append(pip_name)
+        print(f"    MISSING  {pip_name:<24} needed at {when}")
+    else:
+        print(f"    ok       {pip_name:<24} ({when})")
+
+soft = []
+for pip_name, import_name in EXTRA_DEPS:
+    try:
+        importlib.import_module(import_name)
+    except Exception:  # noqa: BLE001
+        soft.append(pip_name)
+if soft:
+    print(f"    note     not installed: {', '.join(soft)} -- declared by the groot")
+    print("             extra but not required by the policy path itself.")
+
+if missing:
+    print()
+    print(f"  FAIL  {len(missing)} run-time package(s) missing: {', '.join(missing)}.")
+    print("        The policy imports and the checkpoint loads without them, so")
+    print("        this does NOT show up until a rollout is already running.")
+    print()
+    print("        Durable fix -- add the extra to the pixi env, so a lock")
+    print("        refresh keeps it (crisp_gym pixi.toml, feature.lerobot):")
+    print()
+    print('          lerobot = { path = "../lerobot", editable = true,')
+    print('                      extras = ["dataset", "groot"] }')
+    print("          pixi install -e humble-lerobot")
+    print()
+    print("        Right now, in the env being tested:")
+    print()
+    print(f"          pip install {' '.join(repr(m) for m in missing)}")
+    print()
+    print("        lerobot's own error says `pip install 'lerobot[groot]'`. Do")
+    print("        not: against an editable source checkout that installs")
+    print("        lerobot from PyPI on top of it. Point pip at the checkout:")
+    print("          pip install -e '/path/to/lerobot[groot]'")
+    print(BAR)
+    sys.exit(6)
+print()
+
 # PreTrainedConfig.__post_init__ resolves an unset device and logs
 # "Device 'None' is not available. Switching to 'cuda'." We only want the
 # dataclass defaults, so silence that one logger rather than print noise.
@@ -262,9 +330,16 @@ if ok:
 
 print()
 print("  Also: feed GR00T the ABSOLUTE dataset. It takes absolute action + state")
-print("  and does the SE(3) relative conversion itself (GrootN17PackInputsStep")
-print("  caches the raw state; GrootN17ActionDecodeStep composes back). Running")
-print("  crisp_gym's relative conversion first would double-convert.")
+print("  and relativizes the ACTION itself (GrootN17PackInputsStep caches the")
+print("  raw state; GrootN17ActionDecodeStep adds it back). Running crisp_gym's")
+print("  relative conversion first would double-convert the action.")
+print()
+print("  That conversion is COMPONENTWISE SUBTRACTION, not SE(3): a finetune")
+print("  synthesizes a `new_embodiment` whose action config is hardcoded")
+print("  NON_EEF/DEFAULT, and relative_eef_to_absolute runs only for")
+print("  eef + xyz+rot6d. The OBSERVATION is never relativized, in lerobot or")
+print("  in Isaac-GR00T -- for a cross-embodiment run, wrap the observation")
+print("  yourself (scripts/train_groot.sh --se3).")
 print()
 print("  If training logs 'using the generic RelativeActionsProcessorStep")
 print("  fallback', STOP: that step subtracts, which is wrong for rot6d.")

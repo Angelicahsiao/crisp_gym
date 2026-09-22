@@ -89,7 +89,15 @@ pynput = "*"
 # LeRobotDataset, so recording cannot start at all if the extra is missing.
 # Add "diffusers-dep" as well if you train diffusion policies IN THIS env
 # rather than on a separate training machine.
-lerobot = { path = "../lerobot", editable = true, extras = ["dataset"] }
+#
+# "groot" is REQUIRED to DEPLOY a GR00T N1.7 checkpoint, and its absence does
+# not look like a missing dependency: every other package the extra pulls is
+# required at import or at model construction, so the policy class imports,
+# the checkpoint loads and the processors build without it. dm-tree alone is
+# required inside GR00TN17.prepare_input, i.e. on the FIRST get_action -- so a
+# rollout dies at the first frame, after the robot is already homed. The extra
+# also carries peft/timm/diffusers/transformers and (on x86_64) decord.
+lerobot = { path = "../lerobot", editable = true, extras = ["dataset", "groot"] }
 # === v0.6.1 from PyPI (alternative to the local clone) ===
 # lerobot = { version = "==0.6.1", extras = ["dataset"] }
 
