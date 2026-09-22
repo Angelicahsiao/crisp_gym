@@ -1381,7 +1381,17 @@ def inference_worker(conn, pretrained_path: str, overrides: dict,
                         # predict_action_chunk then torch.stacks a NoneType.
                         # select_action drops it for the same reason — mirror it.
                         batch.pop(ACTION, None)
-                        policy._queues = populate_queues(policy._queues, batch)
+                        # Observation-queue policies (diffusion/ACT/VQ-BeT)
+                        # want the window pushed through populate_queues;
+                        # predict_action_chunk then stacks the queues into the
+                        # n_obs_steps dimension. GR00T keeps NO observation
+                        # queue — its reset() builds an action queue only and
+                        # predict_action_chunk consumes the batch directly — so
+                        # touching _queues raises AttributeError there. With
+                        # n_obs_steps=1 the window is one frame anyway, which
+                        # IS the batch that gets predicted on.
+                        if hasattr(policy, "_queues"):
+                            policy._queues = populate_queues(policy._queues, batch)
                     actions = policy.predict_action_chunk(batch)
                     if postprocessor is not None:
                         actions = postprocessor(actions)
