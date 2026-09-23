@@ -5,7 +5,9 @@ this directory. They run on the **GPU/training PC** (lerobot + torch, no ROS)
 except `deploy_policy.py`, which runs on the **robot PC** (crisp_gym + ROS).
 
 All are crisp-import-free where they run on the GPU PC, so you can copy a single
-file to the training machine. lerobot 0.4.x and ≥0.5 (verified 0.4.4 / 0.6.1)
+file to the training machine — with one exception: `scripts/train_groot.sh` is a
+launcher that resolves two siblings by path and needs them beside it (see
+[below](#copying-it-to-a-training-server)). lerobot 0.4.x and ≥0.5 (verified 0.4.4 / 0.6.1)
 are both supported — each launcher patches whichever dataset factory that
 version exposes and **raises** rather than silently training unwrapped.
 
@@ -160,6 +162,50 @@ bash scripts/train_groot.sh \
     --dataset datasets/franka_electricbox/lerobot \
     --output  outputs/groot_electricbox
 ```
+
+#### Copying it to a training server
+
+Unlike every other script here, this one is **not** self-contained. It locates
+itself and then reaches for two siblings by path:
+
+```bash
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/.." && pwd)"
+...
+"$REPO/crisp_gym/scripts/groot_preflight.py"        # the preflight gate
+"$REPO/crisp_gym/scripts/lerobot_relative_pose.py"  # --se3 only
+```
+
+So `train_groot.sh` must sit in a directory called `scripts/`, and the two
+python files must sit at `../crisp_gym/scripts/` relative to it. Four files in
+two directories are enough — no git clone, no installed `crisp_gym` package,
+no `PYTHONPATH`:
+
+```
+<anywhere>/
+├── scripts/
+│   ├── train_groot.sh            # the launcher
+│   └── check_trained_groot.sh    # optional; standalone, run it after
+└── crisp_gym/scripts/
+    ├── groot_preflight.py        # needed unless --skip-preflight
+    └── lerobot_relative_pose.py  # needed only for --se3
+```
+
+Both python files are import-clean by design — `groot_preflight.py` uses numpy
+and pandas, `lerobot_relative_pose.py` numpy, torch and lerobot. Neither
+imports `crisp_gym`; `lerobot_relative_pose.py` carries its own copy of the
+rot6d helpers for exactly this reason (its header says to keep them identical
+to `crisp_gym/util/rot6d.py`).
+
+Copy the launcher on its own and it fails in two different ways:
+
+| missing | symptom |
+|---|---|
+| `groot_preflight.py` | `python3: can't open file '.../groot_preflight.py'`, then **`Preflight FAILED — not starting training. Fix the dataset`** — exit 1. The advice is wrong: the dataset is fine, the gate script is absent |
+| `lerobot_relative_pose.py` (with `--se3`) | `--se3 needs <path>, which is missing.` — exit 2 |
+
+`check_gpu_groot.sh` and `check_trained_groot.sh` really are single files and
+can be scp'd anywhere on their own.
 
 | flag | meaning |
 |---|---|

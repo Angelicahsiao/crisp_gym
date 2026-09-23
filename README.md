@@ -194,6 +194,12 @@ bash scripts/check_trained_groot.sh \
   export `HF_TOKEN` — `HF_TOKEN` beats `HF_HOME`, which matters because a
   `huggingface-cli login` done under your real `HOME` is invisible once
   `HF_HOME` points into a bind mount.
+- **Training on a separate server?** `train_groot.sh` is the one script here
+  that is not self-contained: it resolves `groot_preflight.py` and (for
+  `--se3`) `lerobot_relative_pose.py` by path, as `../crisp_gym/scripts/*`
+  relative to its own `scripts/` directory. Copy those two alongside it — four
+  files in two directories, no clone and no installed package — or the
+  preflight gate fails claiming the *dataset* is at fault.
 - **Deploying one** needs `pixi.toml`'s `lerobot` extras to include `groot`.
   Without it the policy imports and the checkpoint loads, but `dm-tree` is
   demanded inside `prepare_input` — so the rollout dies on its first frame,
