@@ -168,25 +168,48 @@ and on Hugging Face access before it starts, so a bad run costs seconds instead
 of GPU-hours:
 
 ```bash
-bash scripts/check_gpu_groot.sh                    # 1. is this machine ready?
+export HF_TOKEN=hf_...                                # 0. the backbone repo is GATED
+bash scripts/check_gpu_groot.sh                       # 1. is this machine ready?
 python crisp_gym/scripts/groot_preflight.py \
-    datasets/franka_electricbox/lerobot            # 2. is the dataset fit?
+    datasets/franka_electricbox/lerobot               # 2. is the dataset fit?
 bash scripts/train_groot.sh \
     --dataset datasets/franka_electricbox/lerobot \
-    --output  outputs/groot_electricbox            # 3. train (runs 2 itself)
+    --output  outputs/train/groot_electricbox         # 3. train (runs 2 itself)
 bash scripts/check_trained_groot.sh \
-    outputs/groot_electricbox                      # 4. did the flags survive?
+    outputs/train/groot_electricbox                   # 4. did the flags survive?
 ```
+
+Datasets live at `datasets/<name>/lerobot` — the directory holding `meta/` and
+`data/` — and runs at `outputs/train/<run>`, as everywhere else in this repo.
+`--dataset` is absolutised by the launcher, so a relative path is safe;
+`--output` is passed through verbatim, so it is relative to wherever you run
+the command from.
+
+There are **two launchers**, with the same gates and the same pinned flags:
+
+```bash
+bash scripts/train_groot.sh --dataset DIR --output DIR [--se3]   # flags
+SE3=1 ./train_groot_server.sh                                    # environment
+```
+
+`train_groot_server.sh` defaults every path off its own directory — datasets at
+`$WORKDIR/datasets/angelica/<name>`, runs at `$WORKDIR/output/train/`, and the
+Hugging Face cache at `$WORKDIR/.home` so the ~10 GB download survives a
+container restart — which is what you want on a training box with a bind mount.
+Its cross-embodiment mode is `SE3=1` (add `WRT_START=0` for a 10-D state)
+rather than `--se3`. **The two forms are not interchangeable**: each script
+ignores the other's, silently, so `SE3=1` on the flag script trains the wrong
+mode without complaining.
 
 - **Feed it the ABSOLUTE dataset.** GR00T builds its own relative actions from
   absolute ones, so a `lerobot_relative_pose.py` output makes it learn deltas of
   deltas — the launcher refuses one. For a fine-tune that conversion is
   componentwise subtraction, not SE(3): the synthesized `new_embodiment` action
   config is hardcoded `NON_EEF`/`DEFAULT`.
-- **`--se3` is the cross-embodiment mode.** GR00T never relativizes the
+- **`--se3` / `SE3=1` is the cross-embodiment mode.** GR00T never relativizes the
   *observation* — in lerobot and Isaac-GR00T alike the state is only ever a
   reference — and an absolute TCP pose lives in the robot's own base frame, so
-  the same motion is different numbers on a Franka and a UR. `--se3` routes
+  the same motion is different numbers on a Franka and a UR. It routes
   training through the UMI wrapper, which does relativize it, and switches
   GR00T's own action conversion off so nothing is converted twice.
 - **The backbone repo is gated.** GR00T pulls `nvidia/GR00T-N1.7-3B` *and*
@@ -194,12 +217,12 @@ bash scripts/check_trained_groot.sh \
   export `HF_TOKEN` — `HF_TOKEN` beats `HF_HOME`, which matters because a
   `huggingface-cli login` done under your real `HOME` is invisible once
   `HF_HOME` points into a bind mount.
-- **Training on a separate server?** `train_groot.sh` is the one script here
-  that is not self-contained: it resolves `groot_preflight.py` and (for
-  `--se3`) `lerobot_relative_pose.py` by path, as `../crisp_gym/scripts/*`
-  relative to its own `scripts/` directory. Copy those two alongside it — four
-  files in two directories, no clone and no installed package — or the
-  preflight gate fails claiming the *dataset* is at fault.
+- **Neither launcher is self-contained.** Both resolve `groot_preflight.py`
+  and, for cross-embodiment mode, `lerobot_relative_pose.py` by path — at
+  `../crisp_gym/scripts/*` for `train_groot.sh`, at
+  `$WORKDIR/crisp_gym/crisp_gym/scripts/*` (a clone) for
+  `train_groot_server.sh`. Copy or clone them accordingly, or the preflight
+  gate fails claiming the *dataset* is at fault.
 - **Deploying one** needs `pixi.toml`'s `lerobot` extras to include `groot`.
   Without it the policy imports and the checkpoint loads, but `dm-tree` is
   demanded inside `prepare_input` — so the rollout dies on its first frame,

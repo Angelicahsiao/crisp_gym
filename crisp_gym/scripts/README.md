@@ -28,7 +28,7 @@ record  ──►  (optional preprocess)  ──►  train  ──►  deploy
 | **relative** pose (`T_rel`) | `lerobot_relative_pose.py` | `relative_lerobot_policy` |
 | **absolute** next pose | `train_absolute_next_pose.py` | `absolute_lerobot_policy` |
 | absolute **commanded** pose | swap offline → `train_absolute_next_pose.py` | `absolute_lerobot_policy` |
-| **GR00T N1.7** (dataset stays absolute) | `scripts/train_groot.sh` | `groot_lerobot_policy` |
+| **GR00T N1.7** (dataset stays absolute) | `scripts/train_groot.sh` (flags) or `scripts/train_groot_server.sh` (env vars) | `groot_lerobot_policy` |
 
 ---
 
@@ -252,6 +252,84 @@ Deploy with `groot_lerobot_policy`. That config is written for a **default-mode*
 checkpoint (`action_repr: absolute`, `state_input: absolute` — GR00T's own
 postprocessor already decodes the action back to absolute); an `--se3`
 checkpoint needs the opposite on both.
+
+---
+
+### `scripts/train_groot_server.sh` — the same run, driven by environment
+
+The env-var sibling of `train_groot.sh`. Same gates, same pinned flags; it
+differs in how you drive it and where it puts things.
+
+| | `train_groot.sh` | `train_groot_server.sh` |
+|---|---|---|
+| driven by | flags (`--dataset`, `--output`, `--se3`) | environment (`DATASET_NAME`, `OUT`, `SE3=1`) |
+| paths | you pass both, every run | defaults off the script's **own** directory |
+| output name | exactly your `--output` | `groot[_se3]_<name>_<timestamp>` |
+| `HOME` | untouched | redirected into the bind mount |
+| extra flags | — | `--policy.device=cuda`, `--wandb.enable=false` |
+| missing preflight script | hard fail | warns and continues |
+
+Use the flag one when you choose paths per run; use this one on a training box
+where the script sits in a bind mount and the platform picks the cwd.
+
+**Layout.** Everything defaults off `WORKDIR`, the directory holding the
+script:
+
+```
+$WORKDIR/
+├── train_groot_server.sh
+├── crisp_gym/                            a CLONE of this repo
+│   ├── scripts/check_trained_groot.sh
+│   └── crisp_gym/scripts/
+│       ├── groot_preflight.py            the gate (warns + continues if absent)
+│       └── lerobot_relative_pose.py      SE3=1 only (exit 2 if absent)
+├── datasets/angelica/<DATASET_NAME>/     meta/ + data/, or .../lerobot/meta
+├── output/train/                         runs land here; created for you
+└── .home/.cache/huggingface/             ~10 GB base checkpoint; warns below 20 GB free
+```
+
+Note the doubled `crisp_gym/crisp_gym/` — the clone directory, then the package
+directory inside it. `DATASET=/full/path` and `OUT=/full/path` escape the
+layout entirely, e.g. onto an NFS mount.
+
+**Export the token, don't rely on a login.** This script sets
+`HOME="$WORKDIR/.home"` so the ~10 GB download survives container restarts —
+and `huggingface-cli` writes its token to `$HF_HOME/token`, so a login done
+under your *real* home becomes invisible the moment `HF_HOME` moves, and the
+gated backbone answers 401 anonymously:
+
+```bash
+export HF_TOKEN=hf_...
+```
+
+`HF_TOKEN` is read before `HF_HOME`, so it sidesteps the redirect. Only
+`nvidia/Cosmos-Reason2-2B` is gated; accept its terms with the same account.
+
+```bash
+./train_groot_server.sh                       # defaults
+SE3=1 ./train_groot_server.sh                 # cross-embodiment, 16-D state
+SE3=1 WRT_START=0 ./train_groot_server.sh     # ... 10-D plain relative state
+STEPS=2000 ./train_groot_server.sh            # smoke test
+```
+
+| variable | default | meaning |
+|---|---|---|
+| `DATASET_NAME` | `open_electribox_sum` | selects `$WORKDIR/datasets/angelica/<name>` |
+| `DATASET` | that path | a dataset anywhere; descends into `lerobot/` if `meta/` isn't directly there |
+| `OUT` | `$WORKDIR/output/train/groot[_se3]_<name>_<timestamp>` | the run directory |
+| `SE3` | `0` | `1` = cross-embodiment mode (see `--se3` above) |
+| `WRT_START` | `1` | with `SE3=1`: `0` gives the 10-D state instead of 16-D |
+| `STEPS` | `100000` | |
+| `BATCH_SIZE` | `32` | |
+| `SAVE_FREQ` | `20000` | |
+| `NUM_WORKERS` | `8` | |
+| `SKIP_PREFLIGHT` | `0` | `1` bypasses the dataset gate |
+| `SKIP_HUB_CHECK` | `0` | `1` bypasses the hub gate (fully cached offline) |
+| `DRY_RUN` | `0` | `1` prints the command and launches nothing |
+
+Anything on the command line is appended to the lerobot command. On success it
+prints the exact `state_input` / `action_repr` / `compose_mode` to deploy with,
+which differ between the two modes — read that rather than guessing.
 
 ---
 
