@@ -596,6 +596,84 @@ column (arm ← `extra.target_cartesian`, gripper kept), recomputes the action
 stats, and refuses on FACTR/JIC data (constant `target_cartesian`). Same-frame
 swap — identical training target to the online wrapper.
 
+### Train GR00T N1.7
+
+GR00T goes through a launcher rather than `lerobot-train` directly, because
+three of lerobot's GR00T defaults are wrong for a rot6d pose dataset and each
+one fails **silently**: `use_relative_actions=false` decodes relative actions
+against absolute statistics, `relative_exclude_joints=[]` trains the gripper as
+a delta, and `push_to_hub=true` aborts a local run after the dataset has
+loaded. The launcher pins all three and gates on the dataset and on Hugging
+Face access first, so a bad run costs seconds instead of GPU-hours.
+
+**Feed it the dataset as recorded.** GR00T builds its own relative actions from
+absolute ones, so a `lerobot_relative_pose.py` output makes it learn deltas of
+deltas — the launcher refuses one. For a fine-tune that conversion is
+componentwise subtraction, not SE(3): the synthesized `new_embodiment` action
+config is hardcoded `NON_EEF`/`DEFAULT`.
+
+**Export the token first.** GR00T pulls `nvidia/GR00T-N1.7-3B` *and*
+`nvidia/Cosmos-Reason2-2B`; only the second is **gated**, which is why the hub
+check can look half-working. Accept its terms with the account whose token you
+use:
+
+```bash
+export HF_TOKEN=hf_...
+```
+
+`HF_TOKEN` is read before `HF_HOME`, which matters on a box where a launcher
+redirects `HOME`: `huggingface-cli login` writes to `$HF_HOME/token`, so a
+login under your real home goes invisible and the gated repo answers 401.
+
+Then the four steps — datasets at `datasets/<name>/lerobot`, runs at
+`outputs/train/<run>`, as everywhere else here:
+
+```bash
+bash scripts/check_gpu_groot.sh                       # 1. is this machine ready?
+python crisp_gym/scripts/groot_preflight.py \
+    datasets/franka_electricbox/lerobot               # 2. is the dataset fit?
+bash scripts/train_groot.sh \
+    --dataset datasets/franka_electricbox/lerobot \
+    --output  outputs/train/groot_electricbox         # 3. train (runs 2 itself)
+bash scripts/check_trained_groot.sh \
+    outputs/train/groot_electricbox                   # 4. did the flags survive?
+```
+
+`--dataset` is absolutised by the launcher, so a relative path is safe;
+`--output` is passed through verbatim, so it is relative to your cwd.
+
+**Two launchers, same gates and same pinned flags.** `scripts/train_groot.sh`
+takes flags, as above. `scripts/train_groot_server.sh` is driven by the
+environment and defaults every path off its own directory — datasets at
+`$WORKDIR/datasets/<name>`, runs at `$WORKDIR/output/train/`, the Hugging Face
+cache at `$WORKDIR/.home` so the ~10 GB download survives a container restart —
+which is what you want on a training box with a bind mount:
+
+```bash
+SE3=1 ./train_groot_server.sh                 # cross-embodiment, 16-D state
+SE3=1 WRT_START=0 ./train_groot_server.sh     # ... 10-D plain relative state
+STEPS=2000 ./train_groot_server.sh            # smoke test
+```
+
+**The two flag forms are not interchangeable**, and both fail quietly: `SE3=1`
+on the flag launcher is ignored (it assigns `SE3=0` before parsing flags) and
+trains the default mode; `--se3` on the env launcher is passed through to
+lerobot, which rejects it.
+
+**Cross-embodiment mode** (`--se3` / `SE3=1`) is the one that relativizes the
+**observation**. GR00T never does — in lerobot and Isaac-GR00T alike the state
+is only ever a reference, never transformed — and an absolute TCP pose lives in
+the robot's own base frame, so the same motion is different numbers on a Franka
+and a UR. It routes training through `lerobot_relative_pose.py` (§8 above) and
+switches GR00T's own action conversion off so nothing is converted twice. The
+dataset on disk stays absolute either way.
+
+**Neither launcher is self-contained**: both resolve `groot_preflight.py` and,
+for cross-embodiment mode, `lerobot_relative_pose.py` by path. Every flag,
+every environment variable, the file layout each one needs, and the three
+checkers are in
+[crisp_gym/scripts/README.md](crisp_gym/scripts/README.md#scriptstrain_grootsh--gr00t-n17-fine-tuning-launcher).
+
 ---
 
 ## 9. Deploy a trained policy
@@ -684,6 +762,50 @@ end-effector (0.085 for the 2F-85) and `reference_width` to the recording value
 > (no inversion) and only rescales by `device_max_width`/`reference_width`.
 > `invert_gripper` stays `false`; it exists only for legacy datasets whose
 > *action* gripper was stored inverted.
+
+### Deploy a GR00T checkpoint
+
+```bash
+python -m crisp_gym.scripts.deploy_policy \
+    --env-config    dric_franka_oakw_deploy_groot \
+    --policy-config groot_lerobot_policy \
+    --path outputs/train/<run>/checkpoints/<step>/pretrained_model \
+    --task 'open the electric box' --n-action-steps 32
+```
+
+**The policy config encodes which mode the checkpoint was trained in**, and
+getting it wrong is silent. `groot_lerobot_policy.yaml` is written for a
+**default-mode** checkpoint:
+
+| | default mode | cross-embodiment (`--se3` / `SE3=1`) |
+|---|---|---|
+| `state_input` | `absolute` | `relative_wrt_start`, or `relative` with `WRT_START=0` |
+| `action_repr` | `absolute` | `relative` |
+| `compose_mode` | not consulted | `coupled` |
+
+`absolute`/`absolute` is right for the default mode because GR00T's own
+postprocessor already decodes the action back to absolute — leaving
+`action_repr: auto` there would wrongly pick relative. For a cross-embodiment
+checkpoint `auto` resolves correctly on both: `lerobot_relative_pose.py` stamps
+`pose_repr.json`, and the absent `action_repr.json` makes `auto` fall back to
+relative. Both launchers print the exact values for the mode they just ran, at
+the end of a successful run — read that rather than guessing.
+
+**Install the `groot` extra before the first rollout.** `pixi.toml`'s `lerobot`
+dependency needs `extras = ["dataset", "groot"]`. Without it the policy class
+imports, the checkpoint loads and the processors build — but `dm-tree` is
+demanded inside `GR00TN17.prepare_input`, which runs on the **first
+`get_action`**, so the rollout dies on its first frame with the robot already
+homed. `bash scripts/check_gpu_groot.sh` on the deploy machine catches this.
+
+**Give it the camera's native frame.** GR00T resizes and crops internally
+(`image_target_size` then `image_crop_size` from the checkpoint's processor
+sidecars — typically 256² then a 230² centre crop, ~90% of the field of view
+retained). Downscaling to a square yourself would crop ~37% before GR00T ever
+sees it, so the deploy env keeps the camera's own resolution:
+`config/envs/dric_franka_oakw_deploy_groot.yaml` sets `resolution: [800, 1280]`.
+`bash scripts/check_trained_groot.sh <run>` prints the geometry a checkpoint
+will apply.
 
 ---
 
