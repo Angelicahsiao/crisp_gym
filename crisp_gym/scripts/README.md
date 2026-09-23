@@ -248,10 +248,10 @@ lerobot only creates the directory when it writes a checkpoint.
 That step subtracts, which is wrong for rot6d: if it appears, stop, because the
 checkpoint is not carrying native relative statistics.
 
-Deploy with `groot_lerobot_policy`. That config is written for a **default-mode**
-checkpoint (`action_repr: absolute`, `state_input: absolute` — GR00T's own
-postprocessor already decodes the action back to absolute); an `--se3`
-checkpoint needs the opposite on both.
+Deploy a default-mode checkpoint with `groot_lerobot_policy` (`action_repr:
+absolute`, `state_input: absolute` — GR00T's own postprocessor already decodes
+the action back to absolute) and an `--se3` one with `groot_se3_lerobot_policy`,
+which inverts both.
 
 ---
 
@@ -456,8 +456,18 @@ python -m crisp_gym.scripts.deploy_policy \
 - `absolute_lerobot_policy.yaml` — same class with `action_repr: absolute`;
   sends the model pose to the CIC directly. Auto-detects "absolute" from
   `action_repr.json` next to the checkpoint.
+- `groot_lerobot_policy.yaml` — a GR00T N1.7 checkpoint from the **default**
+  training mode. `action_repr: absolute`, because GR00T decodes the action back
+  to absolute itself. `auto` is WRONG here: no launcher stamps
+  `action_repr.json` for a GR00T run, so it would fall back to relative and
+  compose a second time.
+- `groot_se3_lerobot_policy.yaml` — a GR00T checkpoint from **cross-embodiment**
+  mode (`--se3` / `SE3=1`). `action_repr: relative` and
+  `state_input: relative_wrt_start` (set it to `relative` if you trained
+  `--no-wrt-start`), because that mode turns GR00T's own action conversion off
+  and the UMI wrapper's relative action reaches the wrapper untouched.
 
-Both require `device_max_width` (0.085 for the Robotiq 2F-85) and
+All require `device_max_width` (0.085 for the Robotiq 2F-85) and
 `reference_width` (0.09) to match the record config's gripper scaling.
 
 > **Gripper convention (both configs):** one convention everywhere — the device

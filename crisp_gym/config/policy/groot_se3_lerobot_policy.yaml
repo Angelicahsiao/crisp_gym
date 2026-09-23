@@ -1,0 +1,106 @@
+# Local (in-process) deployment of a CROSS-EMBODIMENT GR00T N1.7 checkpoint —
+# one trained with `train_groot.sh --se3` / `SE3=1 ./train_groot_server.sh`.
+#
+# The sibling of groot_lerobot_policy.yaml, which is for a DEFAULT-mode
+# checkpoint. Three fields differ and every one of them is silent when wrong:
+# a mismatched state_input feeds the policy numbers it never saw, and a
+# mismatched action_repr either composes an already-absolute pose or sends a
+# relative one straight to the controller. Nothing raises either way.
+#
+# Use with config/envs/dric_franka_oakw_deploy_groot.yaml — the SAME env config
+# as the default mode. --se3 changes nothing about what the ROBOT produces: the
+# env still emits the 10-D state, and the inference worker appends the 6
+# wrt-start dims itself (relative_lerobot_policy.py _verify_state_dim adds
+# wrt_extra = 6 for this mode).
+#
+#   python -m crisp_gym.scripts.deploy_policy \
+#       --env-config dric_franka_oakw_deploy_groot \
+#       --policy-config groot_se3_lerobot_policy \
+#       --path <.../checkpoints/last/pretrained_model>
+#
+# check_trained_groot.sh verifies the flags survived the run; the launcher
+# prints these same three values when it finishes.
+name: "relative_lerobot_policy"   # the WRAPPER class; the checkpoint's own
+                                  # config.json says type: groot
+
+# ── THE SETTING THAT MATTERS MOST ────────────────────────────────────────────
+# RELATIVE, the opposite of the default mode.
+#
+# --se3 passes --policy.use_relative_actions=false, and GrootN17ActionDecodeStep
+# gates its reference-state addback on exactly that flag:
+#
+#     if self.use_relative_action:
+#         raw_state = self.pack_step.get_cached_raw_state() ...
+#
+# With it false the decode step adds nothing, so the model emits what the UMI
+# wrapper trained it on — a RELATIVE pose — and the deploy side must compose
+# T_cmd = T_base @ T_rel. In the default mode GR00T decodes to absolute
+# internally and composing again would double-apply; here, NOT composing would
+# send a near-origin pose to the controller.
+#
+# "auto" happens to resolve correctly for this mode — there is no
+# action_repr.json (crisp_gym's launchers write that stamp, lerobot does not)
+# and relative_lerobot_policy.py:492 falls back to relative when it is absent.
+# It is stated explicitly anyway: the same fallback is WRONG for a default-mode
+# checkpoint, so the two configs must not look interchangeable.
+action_repr: "relative"
+
+# The UMI wrapper re-expressed observation.state relative to the current frame
+# (T_base^-1 @ T) and appended rot_wrt_start, giving the 16-D UMI-parity layout
+# [rel_pose9, gripper1, wrt_start6].
+#
+# Trained with WRT_START=0 / --no-wrt-start instead? Set this to "relative" —
+# that is the plain 10-D relative state, with no wrt-start block.
+#
+# "auto" also resolves correctly here (lerobot_relative_pose.py stamps
+# pose_repr.json with state_includes_wrt_start), but a stale pose_repr.json in
+# a parent directory of --path would silently win, so it is pinned.
+state_input: "relative_wrt_start"
+
+# LIVE in this config, unlike the default mode where nothing is composed.
+# "coupled" is the UMI form T_cmd = T_base @ T_rel
+# (relative_lerobot_policy.py:439), the inverse of the wrapper's
+# make_relative(base, T) = T_base^-1 @ T. "decoupled" would not match training.
+compose_mode: "coupled"
+
+# Gripper units, matching umi_robot_full_record.yaml's gripper_params. The
+# wrapper passes the gripper dim through untouched, so these are unchanged from
+# the default-mode config.
+device_max_width: 0.085        # Robotiq 2F-85 stroke
+reference_width: 0.09          # shared UMI reference width
+
+# ── control-loop rate ────────────────────────────────────────────────────────
+# GR00T's native chunk is 40 steps. At the trained 15 fps that is 2667 ms of
+# open-loop command per inference — a long time for a contact-rich task. Lower
+# n_action_steps to re-observe more often; the rest of each chunk is discarded.
+# null -> execute the checkpoint's full 40.
+n_action_steps: null
+
+# Diffusion-only knobs, inert here: relative_lerobot_policy.py:1055 is a no-op
+# for non-diffusion policies, and null skips the block entirely. GR00T's
+# equivalent lever is num_inference_timesteps (flow-matching steps, checkpoint
+# default 4) — set it through `overrides` below if inference misses the budget.
+num_inference_steps: null
+scheduler: null
+# overrides: {num_inference_timesteps: 2}
+
+# The dataset was recorded natively in rot6d, not migrated from the Euler
+# recorder, so no target conversion is needed.
+target_to_euler: false
+
+# Obs, command and the record config all use the device convention
+# (0=closed / 1=open). Symptom of this being wrong: the gripper oscillates.
+invert_gripper: false
+
+# FALSE so a wrong camera_name in the deploy env raises instead of being
+# silently filled with black frames.
+pad_missing_images: false
+
+# Log the first N steps of every chunk (model action, command, T_base, gripper)
+# to check conventions on the first deployment. 0 = off. Worth setting to 5 for
+# the first run: with action_repr relative you should see the command differ
+# from the model's pose — it is T_base composed with it — and the first
+# observation.state logged should have |pos| near zero, not workspace scale.
+log_actions: 0
+
+async_inference: false

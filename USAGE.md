@@ -773,23 +773,35 @@ python -m crisp_gym.scripts.deploy_policy \
     --task 'open the electric box' --n-action-steps 32
 ```
 
-**The policy config encodes which mode the checkpoint was trained in**, and
-getting it wrong is silent. `groot_lerobot_policy.yaml` is written for a
-**default-mode** checkpoint:
+**Pick the policy config that matches how the checkpoint was trained**, because
+getting it wrong is silent — a mismatched `action_repr` either composes an
+already-absolute pose or sends a relative one straight to the controller, and
+nothing raises:
 
-| | default mode | cross-embodiment (`--se3` / `SE3=1`) |
-|---|---|---|
-| `state_input` | `absolute` | `relative_wrt_start`, or `relative` with `WRT_START=0` |
-| `action_repr` | `absolute` | `relative` |
-| `compose_mode` | not consulted | `coupled` |
+| trained with | policy config | `state_input` | `action_repr` |
+|---|---|---|---|
+| default mode | `groot_lerobot_policy` | `absolute` | `absolute` |
+| `--se3` / `SE3=1` | `groot_se3_lerobot_policy` | `relative_wrt_start` | `relative` |
+| `--se3 --no-wrt-start` / `SE3=1 WRT_START=0` | `groot_se3_lerobot_policy`, with `state_input: relative` | `relative` | `relative` |
 
-`absolute`/`absolute` is right for the default mode because GR00T's own
-postprocessor already decodes the action back to absolute — leaving
-`action_repr: auto` there would wrongly pick relative. For a cross-embodiment
-checkpoint `auto` resolves correctly on both: `lerobot_relative_pose.py` stamps
-`pose_repr.json`, and the absent `action_repr.json` makes `auto` fall back to
-relative. Both launchers print the exact values for the mode they just ran, at
-the end of a successful run — read that rather than guessing.
+**The env config is the same for all three.** Cross-embodiment mode changes
+nothing about what the robot produces — the env still emits the 10-D state, and
+the inference worker appends the 6 wrt-start dims itself.
+
+Why the two modes invert: in the default mode GR00T's own postprocessor decodes
+the action back to absolute, so composing again would double-apply. `--se3`
+passes `--policy.use_relative_actions=false`, and `GrootN17ActionDecodeStep`
+gates its reference-state addback on exactly that flag — with it false the
+model emits the relative pose the UMI wrapper trained it on, so the deploy side
+must compose `T_cmd = T_base @ T_rel` (`compose_mode: coupled`, inert in the
+default mode and live here).
+
+Both configs pin `state_input` and `action_repr` rather than using `auto`.
+`auto` resolves correctly for a cross-embodiment checkpoint and **incorrectly**
+for a default-mode one — it falls back to relative when no `action_repr.json`
+is present, and a GR00T checkpoint never has one — so the two must not look
+interchangeable. Both launchers also print the right values at the end of a
+successful run.
 
 **Install the `groot` extra before the first rollout.** `pixi.toml`'s `lerobot`
 dependency needs `extras = ["dataset", "groot"]`. Without it the policy class
