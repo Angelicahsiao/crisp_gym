@@ -193,7 +193,7 @@ SE3=1 ./train_groot_server.sh                                    # environment
 ```
 
 `train_groot_server.sh` defaults every path off its own directory — datasets at
-`$WORKDIR/datasets/angelica/<name>`, runs at `$WORKDIR/output/train/`, and the
+`$WORKDIR/datasets/<name>`, runs at `$WORKDIR/output/train/`, and the
 Hugging Face cache at `$WORKDIR/.home` so the ~10 GB download survives a
 container restart — which is what you want on a training box with a bind mount.
 Its cross-embodiment mode is `SE3=1` (add `WRT_START=0` for a 10-D state)

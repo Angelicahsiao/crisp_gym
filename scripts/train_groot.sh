@@ -29,7 +29,7 @@
 #   nothing errors.
 #
 # USAGE
-#   bash scripts/train_groot.sh --dataset datasets/angelica/open_electribox_sum \
+#   bash scripts/train_groot.sh --dataset datasets/open_electribox_sum/lerobot \
 #                               --output outputs/groot_electricbox
 #
 #   --dataset DIR      dataset root holding meta/ and data/   (required)

@@ -23,7 +23,7 @@ cd "$WORKDIR"
 #   │   └── crisp_gym/scripts/
 #   │       ├── groot_preflight.py     the dataset gate (warn + continue if absent)
 #   │       └── lerobot_relative_pose.py   SE3=1 only (hard fail if absent)
-#   ├── datasets/angelica/<DATASET_NAME>/  meta/ + data/, or .../lerobot/meta
+#   ├── datasets/<DATASET_NAME>/           meta/ + data/, or .../lerobot/meta
 #   ├── output/train/                  runs land here; created below
 #   └── .home/.cache/huggingface/      ~10 GB of base checkpoint; needs 20 GB free
 #
@@ -72,7 +72,7 @@ cd "$WORKDIR"
 # Anything passed on the command line is appended to the lerobot command.
 
 DATASET_NAME="${DATASET_NAME:-open_electribox_sum}"
-DATASET="${DATASET:-$WORKDIR/datasets/angelica/$DATASET_NAME}"
+DATASET="${DATASET:-$WORKDIR/datasets/$DATASET_NAME}"
 PREFLIGHT="$WORKDIR/crisp_gym/crisp_gym/scripts/groot_preflight.py"
 _mode_tag=""
 [ "${SE3:-0}" -ne 0 ] && _mode_tag="_se3"

@@ -283,7 +283,7 @@ $WORKDIR/
 │   └── crisp_gym/scripts/
 │       ├── groot_preflight.py            the gate (warns + continues if absent)
 │       └── lerobot_relative_pose.py      SE3=1 only (exit 2 if absent)
-├── datasets/angelica/<DATASET_NAME>/     meta/ + data/, or .../lerobot/meta
+├── datasets/<DATASET_NAME>/              meta/ + data/, or .../lerobot/meta
 ├── output/train/                         runs land here; created for you
 └── .home/.cache/huggingface/             ~10 GB base checkpoint; warns below 20 GB free
 ```
@@ -314,7 +314,7 @@ STEPS=2000 ./train_groot_server.sh            # smoke test
 
 | variable | default | meaning |
 |---|---|---|
-| `DATASET_NAME` | `open_electribox_sum` | selects `$WORKDIR/datasets/angelica/<name>` |
+| `DATASET_NAME` | `open_electribox_sum` | selects `$WORKDIR/datasets/<name>` |
 | `DATASET` | that path | a dataset anywhere; descends into `lerobot/` if `meta/` isn't directly there |
 | `OUT` | `$WORKDIR/output/train/groot[_se3]_<name>_<timestamp>` | the run directory |
 | `SE3` | `0` | `1` = cross-embodiment mode (see `--se3` above) |
