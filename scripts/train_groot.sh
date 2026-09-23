@@ -22,9 +22,11 @@
 #   This script pins all three and refuses to start if the dataset is not fit,
 #   so a bad run costs seconds instead of GPU-hours.
 #
-# IT ALSO REFUSES a relative-converted dataset. GR00T composes its own relative
-#   actions from absolute ones; feeding it a lerobot_relative_pose.py output
-#   makes it learn deltas of deltas, and nothing errors.
+# IT ALSO REFUSES a relative-converted dataset. GR00T derives its own relative
+#   actions from absolute ones -- componentwise subtraction of the cached
+#   state, not SE(3), for a new_embodiment finetune; feeding it a
+#   lerobot_relative_pose.py output makes it learn deltas of deltas, and
+#   nothing errors.
 #
 # USAGE
 #   bash scripts/train_groot.sh --dataset datasets/angelica/open_electribox_sum \

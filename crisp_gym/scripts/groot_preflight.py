@@ -20,14 +20,21 @@ WHY THIS EXISTS
        aggregated dataset may not.
 
     2. GR00T wants ABSOLUTE actions. GrootN17PackInputsStep caches the raw
-       state and GrootN17ActionDecodeStep composes the prediction back through
-       it, so the relative conversion is GR00T's job, done with SE(3)
-       composition on xyz+rot6d. Feeding it a dataset that crisp_gym already
-       converted to relative double-converts. Nothing errors -- the model just
-       learns deltas of deltas.
+       state and GrootN17ActionDecodeStep adds it back, so relativizing the
+       action is GR00T's job. That conversion is COMPONENTWISE SUBTRACTION,
+       not SE(3): _build_n1_7_relative_action_processor_assets synthesizes a
+       `new_embodiment` whose action config is hardcoded NON_EEF/DEFAULT, and
+       relative_eef_to_absolute -- the one SE(3) path -- runs only for type
+       "eef" with format "xyz+rot6d". Either way, feeding it a dataset that
+       crisp_gym already converted to relative double-converts. Nothing errors
+       -- the model just learns deltas of deltas.
 
-    3. The pose block must be xyz(3) + rot6d(6). GR00T's relative_eef_to_absolute
-       consumes the first 9 dims that way; euler or quaternion poses do not map.
+    3. The pose block must be xyz(3) + rot6d(6). That subtraction is
+       componentwise, so it is only meaningful on a continuous
+       representation: euler wraps at +/-pi and quaternions carry a sign
+       ambiguity. rot6d is also what crisp_gym's own relative path
+       (train_groot.sh --se3) and the deploy wrapper assume, and the layout
+       relative_eef_to_absolute consumes on the SE(3) branch.
 
     This script answers all three from the dataset alone. It reads parquet and
     info.json only -- no torch, no lerobot, no GPU -- so it runs on a laptop
@@ -190,7 +197,8 @@ def check_absolute(root: Path, df: pd.DataFrame, names: list[str] | None) -> Non
     if radius < 0.02:
         report("G2 absolute actions", FAIL,
                f"median |action xyz| = {radius:.4f} m — these look RELATIVE")
-        detail("GR00T composes its own relative actions from absolute ones. Training on")
+        detail("GR00T derives its own relative actions from absolute ones (by")
+        detail("componentwise subtraction of the cached state). Training on")
         detail("an already-relative dataset makes it learn deltas of deltas.")
         detail("Point it at the raw recording, not a lerobot_relative_pose.py output.")
     else:
@@ -263,7 +271,7 @@ def check_layout(info: dict, names: list[str] | None) -> None:
            f"observation.state {s_dim}, action {a_dim}")
     if s_dim and a_dim and s_dim != a_dim:
         detail(f"state and action widths differ ({s_dim} vs {a_dim}). Fine in general,")
-        detail("but GR00T's relative composition pairs action dims with STATE dims —")
+        detail("but GR00T's relative conversion pairs action dims with STATE dims —")
         detail("confirm the pose block occupies the same indices in both.")
 
 
