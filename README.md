@@ -156,6 +156,53 @@ Notes:
   [USAGE.md §6](USAGE.md#6-post-process-align-and-merge-datasets).
 - Full step-by-step commands: [USAGE.md](USAGE.md).
 
+## Training GR00T N1.7
+
+GR00T is trained through a launcher rather than `lerobot-train` directly,
+because three of lerobot's GR00T defaults are wrong for a rot6d pose dataset and
+each one fails **silently** — `use_relative_actions=false` decodes relative
+actions against absolute statistics, `relative_exclude_joints=[]` trains the
+gripper as a delta, and `push_to_hub=true` aborts a local run after the dataset
+has loaded. `scripts/train_groot.sh` pins all three, and gates on the dataset
+and on Hugging Face access before it starts, so a bad run costs seconds instead
+of GPU-hours:
+
+```bash
+bash scripts/check_gpu_groot.sh                    # 1. is this machine ready?
+python crisp_gym/scripts/groot_preflight.py \
+    datasets/franka_electricbox/lerobot            # 2. is the dataset fit?
+bash scripts/train_groot.sh \
+    --dataset datasets/franka_electricbox/lerobot \
+    --output  outputs/groot_electricbox            # 3. train (runs 2 itself)
+bash scripts/check_trained_groot.sh \
+    outputs/groot_electricbox                      # 4. did the flags survive?
+```
+
+- **Feed it the ABSOLUTE dataset.** GR00T builds its own relative actions from
+  absolute ones, so a `lerobot_relative_pose.py` output makes it learn deltas of
+  deltas — the launcher refuses one. For a fine-tune that conversion is
+  componentwise subtraction, not SE(3): the synthesized `new_embodiment` action
+  config is hardcoded `NON_EEF`/`DEFAULT`.
+- **`--se3` is the cross-embodiment mode.** GR00T never relativizes the
+  *observation* — in lerobot and Isaac-GR00T alike the state is only ever a
+  reference — and an absolute TCP pose lives in the robot's own base frame, so
+  the same motion is different numbers on a Franka and a UR. `--se3` routes
+  training through the UMI wrapper, which does relativize it, and switches
+  GR00T's own action conversion off so nothing is converted twice.
+- **The backbone repo is gated.** GR00T pulls `nvidia/GR00T-N1.7-3B` *and*
+  `nvidia/Cosmos-Reason2-2B`; only the second is gated. Accept its terms and
+  export `HF_TOKEN` — `HF_TOKEN` beats `HF_HOME`, which matters because a
+  `huggingface-cli login` done under your real `HOME` is invisible once
+  `HF_HOME` points into a bind mount.
+- **Deploying one** needs `pixi.toml`'s `lerobot` extras to include `groot`.
+  Without it the policy imports and the checkpoint loads, but `dm-tree` is
+  demanded inside `prepare_input` — so the rollout dies on its first frame,
+  after the robot has homed.
+
+Every flag, both modes, the artefacts a run leaves behind, and the three
+checkers:
+[crisp_gym/scripts/README.md](crisp_gym/scripts/README.md#scriptstrain_grootsh--gr00t-n17-fine-tuning-launcher).
+
 ## Deploying a trained policy
 
 Models trained with `scripts/lerobot_relative_pose.py` output UMI-style
