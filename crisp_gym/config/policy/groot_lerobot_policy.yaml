@@ -41,9 +41,17 @@ action_repr: "absolute"
 # action conventions are easy to confuse, so both are stated explicitly.
 state_input: "absolute"
 
-# Gripper units, matching umi_robot_full_record.yaml's gripper_params.
-device_max_width: 0.085        # Robotiq 2F-85 stroke
-reference_width: 0.09          # shared UMI reference width
+# Gripper units. Both at the SAME value makes the conversion identity:
+# gripper_device_to_ref = clip(value * device_max_width / reference_width, 0, 1),
+# so a fully-open gripper reads 1.0 rather than the 0.944 that 0.085/0.09 gave.
+#
+# This deliberately does NOT match umi_robot_full_record.yaml, which still
+# records at 0.09 / 0.085. A checkpoint trained on that data sees the gripper
+# dim shifted by ~6% at full open, and the action side rescales symmetrically
+# on the way out — intended here, for a 0.05 m-stroke end-effector; change the
+# record config too before treating new recordings as the same scale.
+device_max_width: 0.05         # end-effector stroke
+reference_width: 0.05          # == device_max_width -> conversion is identity
 
 # ── control-loop rate ────────────────────────────────────────────────────────
 # GR00T's native chunk is 40 steps. At the trained 15 fps that is 2667 ms of
