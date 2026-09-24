@@ -14,10 +14,18 @@ name: "relative_lerobot_policy"
 # Physical gripper width in meters at Gripper.value = 1.0 — REQUIRED, must
 # match the record config's device_max_width:
 #   0.140 Robotiq 2F-140 | 0.085 Robotiq 2F-85 | 0.08 Franka Hand
-device_max_width: 0.085        # Robotiq 2F-85 (matches umi_robot_full_record.yaml)
+#
+# Equal to reference_width below, which makes the unit conversion identity:
+# gripper_device_to_ref = clip(value * device_max_width / reference_width, 0, 1),
+# so a fully-open gripper reads 1.0 rather than the 0.944 that 0.085/0.09 gave.
+device_max_width: 0.05         # end-effector stroke
 
 # Shared UMI reference width used at recording (gripper.width_normalized).
-reference_width: 0.09
+# NOTE: umi_robot_full_record.yaml still records at 0.09 / 0.085, so a
+# checkpoint trained on that data sees the gripper dim shifted ~6% at full
+# open. Change the record config too before treating new recordings as the
+# same scale.
+reference_width: 0.05          # == device_max_width -> conversion is identity
 
 # ── control-loop rate knobs (tune these if the arm drifts at low FPS) ────────
 # The policy was trained at a fixed fps (e.g. 15). If the deploy loop runs much

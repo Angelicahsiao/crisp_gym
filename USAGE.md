@@ -234,6 +234,54 @@ then use `config/recording/umi_robot_ext_effort_record.yaml` (which pulls it via
 `source: robot.sensor`, `name: ext_effort`). This is the JOINT-space signal,
 complementary to the Cartesian `/force_torque_sensor_broadcaster` wrench.
 
+### Streamed teleop (phone / VR) with full-state recording
+
+`--use-streamed-teleop` replaces the leader **arm** with a pose stream, so you
+can drive the follower from a phone or VR controller and still record the full
+UMI contract plus the `extra.*` columns above:
+
+```bash
+python crisp_gym/scripts/record_lerobot_format_leader_follower.py \
+    --record-config crisp_gym/config/recording/umi_robot_full_record.yaml \
+    --follower-config <your_env> --follower-namespace <ns> \
+    --use-streamed-teleop \
+    --repo-id my_org/umi_stream_full --fps 15
+```
+
+**No leader flags.** `--leader-config` and `--leader-namespace` are skipped —
+the script only prompts for them when neither `--use-streamed-teleop` nor
+`--use-factr` is set. Passing them does nothing.
+
+**Two topics**, subscribed with sensor-data QoS. The script constructs the
+streamer with no namespace, so there is no prefix:
+
+| topic | type | meaning |
+|---|---|---|
+| `/phone_pose` | `geometry_msgs/PoseStamped` | the leader pose |
+| `/phone_gripper` | `std_msgs/Float32` | gripper command, device convention (0 = closed, 1 = open) |
+
+**Cartesian control only.** The script raises
+
+```
+ValueError: Streamed teleop is only compatible with Cartesian control.
+            Please disable joint control.
+```
+
+if the env's control type is anything else — checked before recording starts,
+not mid-episode.
+
+**It drives on deltas.** `make_streamer_drive_fn` commands
+`pose[t] - pose[t-1]` from the stream each tick, plus the raw gripper value. It
+returns `None` until two poses have arrived, so the first ticks after start are
+no-ops while it seeds — if the arm does not move at all, check the stream is
+actually publishing (`ros2 topic hz /phone_pose`) before suspecting the env.
+
+What lands in the dataset is unchanged by the driving mode: the follower's
+**measured** TCP pose, exactly as in §2 and §3. The stream itself is never
+recorded. The flag combines with any record config — `umi_robot_full_record.yaml`
+here for the full-state extras, `umi_robot_record.yaml` for the plain UMI
+contract.
+
 ---
 
 ## 6. Post-process: align and merge datasets
