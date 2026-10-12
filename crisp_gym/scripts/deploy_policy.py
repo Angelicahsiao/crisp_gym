@@ -88,8 +88,13 @@ def main():
     parser.add_argument(
         "--path",
         type=str,
+        action="append",
+        dest="paths",
         default=None,
-        help="Path to the pretrained model (if not provided, a prompt will ask you to select one from 'outputs/train')",
+        help="Path to the pretrained model (if not provided, a prompt will ask "
+        "you to select one from 'outputs/train'). Repeatable: pass it once per "
+        "--policy-config, in the same order, to load several policies in ONE "
+        "process and cycle between them with <p> between episodes.",
     )
     parser.add_argument(
         "--env-config",
@@ -100,8 +105,12 @@ def main():
     parser.add_argument(
         "--policy-config",
         type=str,
+        action="append",
+        dest="policy_configs",
         default=None,
-        help="Path to a custom policy configuration file (YAML). If not provided, the default configuration for the selected policy will be used.",
+        help="Path to a custom policy configuration file (YAML). If not "
+        "provided, the default configuration for the selected policy will be "
+        "used. Repeatable, paired positionally with --path.",
     )
     parser.add_argument(
         "--env-namespace",
@@ -189,7 +198,7 @@ def main():
         )
         logger.info(f"Using repository ID: {args.repo_id}")
 
-    if args.path is None:
+    if args.paths is None:
         logger.info(" No path provided. Searching for models in 'outputs/train' directory.")
 
         # We check recursively in the 'outputs/train' directory for 'pretrained_model's recursively
@@ -198,12 +207,14 @@ def main():
             models = [model for model in models_path.glob("**/pretrained_model") if model.is_dir()]
             models_names = sorted([str(model) for model in models], key=lambda x: x.lower())
 
-            args.path = prompt.prompt(
-                message="Please select a model to use for deployment:",
-                options=models_names,
-                default=models_names[0] if models else None,
-            )
-            logger.info(f"Using model path: {args.path}")
+            args.paths = [
+                prompt.prompt(
+                    message="Please select a model to use for deployment:",
+                    options=models_names,
+                    default=models_names[0] if models else None,
+                )
+            ]
+            logger.info(f"Using model path: {args.paths[0]}")
         else:
             logger.error("'outputs/models' directory does not exist.")
             logger.error(
@@ -228,13 +239,26 @@ def main():
         )
         logger.info(f"Using follower configuration: {args.env_config}")
 
-    if args.policy_config is None:
+    if args.policy_configs is None:
         policy_configs = list_policy_configs()
-        args.policy_config = prompt.prompt(
-            "Please select the policy configuration to use.",
-            options=policy_configs,
-            default=policy_configs[0],
+        args.policy_configs = [
+            prompt.prompt(
+                "Please select the policy configuration to use.",
+                options=policy_configs,
+                default=policy_configs[0],
+            )
+        ]
+
+    # Paired positionally, so a mismatch is a usage error rather than a silent
+    # zip() truncation that would quietly drop the extra checkpoint.
+    if len(args.policy_configs) != len(args.paths):
+        logger.error(
+            "--policy-config and --path must be given the same number of times "
+            "(got %d policy config(s) and %d path(s)). They pair up in order.",
+            len(args.policy_configs),
+            len(args.paths),
         )
+        exit(2)
 
     if args.evaluate:
         logger.info("Evaluation mode enabled. Will evaluate the performance after each episode.")
@@ -242,14 +266,14 @@ def main():
         evaluation_file = (
             prompt.prompt(
                 "Please enter the output file for evaluation results",
-                default=f"evaluation_results_{args.path.replace('/', '_')}_{datetime_now}",
+                default=f"evaluation_results_{args.paths[0].replace('/', '_')}_{datetime_now}",
             )
             + ".csv"
         )
     else:
         evaluation_file = "evaluation_results.csv"
 
-    policy = None
+    policies = None
     try:
         ctrl_type = "cartesian" if not args.joint_control else "joint"
         env = make_env(
@@ -294,22 +318,45 @@ def main():
             policy_overrides["scheduler"] = args.scheduler
         if args.async_inference:  # only override when explicitly requested
             policy_overrides["async_inference"] = True
-        policy = make_policy(
-            name_or_config_name=args.policy_config,
-            pretrained_path=args.path,
-            env=env,
-            **policy_overrides,
-        )
+        # One process, one env, one crisp_py Robot -> ONE publisher on the
+        # controller's target topic. That is the whole reason this is a list
+        # rather than two processes: two Robots both republish their last
+        # target from a timer at publish_frequency whether or not their policy
+        # is stepping, so the arm would be pulled between them.
+        #
+        # policy_overrides apply to EVERY policy, which is what you want for a
+        # matched A/B and worth knowing if you don't.
+        policies = [
+            make_policy(
+                name_or_config_name=cfg,
+                pretrained_path=path,
+                env=env,
+                **policy_overrides,
+            )
+            for cfg, path in zip(args.policy_configs, args.paths)
+        ]
+        recording_manager.policy_count = len(policies)
+        if len(policies) > 1:
+            logger.info(
+                "Loaded %d policies; press <p> between episodes to cycle:", len(policies)
+            )
+            for i, (cfg, path) in enumerate(zip(args.policy_configs, args.paths)):
+                logger.info("  [%d] %s  <- %s", i, cfg, path)
 
         logger.info("Homing robot before starting with recording.")
 
         env.home()
         env.reset()
 
+        # Which policy drives the episode now being recorded. Set at the top
+        # of each loop iteration and read by on_start, so reset() always lands
+        # on the policy that is about to run.
+        active = {"policy": policies[0], "name": args.policy_configs[0]}
+
         def on_start():
             """Hook function to be called when starting a new episode."""
             env.reset()
-            policy.reset()
+            active["policy"].reset()
             evaluator.start_timer()
 
         def on_end():
@@ -322,17 +369,28 @@ def main():
 
             logger.info("Waiting for user to decide on success/failure if evaluating...")
             if recording_manager.state != "exit":
-                evaluator.evaluate(episode=recording_manager.episode_count)
+                evaluator.evaluate(
+                    episode=recording_manager.episode_count,
+                    policy=active["name"],
+                )
 
         with evaluator.start_eval(overwrite=True, activate=args.evaluate):
             with recording_manager:
                 while not recording_manager.done():
+                    idx = recording_manager.active_policy
+                    active["policy"] = policies[idx]
+                    active["name"] = args.policy_configs[idx]
                     logger.info(
                         f"→ Episode {recording_manager.episode_count + 1} / {recording_manager.num_episodes}"
+                        + (
+                            f"  |  policy [{idx}] {active['name']} <- {args.paths[idx]}"
+                            if len(policies) > 1
+                            else ""
+                        )
                     )
 
                     recording_manager.record_episode(
-                        data_fn=policy.make_data_fn(),
+                        data_fn=active["policy"].make_data_fn(),
                         task=args.task,
                         on_start=on_start,
                         on_end=on_end,
@@ -341,8 +399,9 @@ def main():
                     logger.info("Episode finished.")
 
         # Shutdown inference process
-        logger.info("Shutting down inference process.")
-        policy.shutdown()
+        logger.info("Shutting down inference process(es).")
+        for p in policies:
+            p.shutdown()
 
         logger.info("Homing robot.")
         env.home()
@@ -353,8 +412,8 @@ def main():
         logger.info("Finished recording.")
     except Exception as e:
         logger.exception(e)
-        if policy is not None:
-            policy.shutdown()
+        for p in policies or []:
+            p.shutdown()
 
 
 if __name__ == "__main__":

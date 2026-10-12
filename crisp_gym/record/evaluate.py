@@ -51,9 +51,16 @@ class Evaluator:
             yield
             return
 
-        if overwrite and self.output_file.exists():
+        # Write the header when the file is NEW or EMPTY as well as when
+        # overwriting. Previously this was guarded by `exists()`, so the very
+        # first run opened a missing file in append mode and never wrote one —
+        # the CSV came out headerless, which the `policy` column below would
+        # have made impossible to tell from an older schema.
+        self.output_file.parent.mkdir(parents=True, exist_ok=True)
+        fresh = not self.output_file.exists() or self.output_file.stat().st_size == 0
+        if overwrite or fresh:
             with self.output_file.open("w") as f:
-                f.write("episode,success,score,time\n")
+                f.write("episode,policy,success,score,time\n")
 
         self.eval_writer = self.output_file.open("a")
 
@@ -66,13 +73,16 @@ class Evaluator:
         """Start the evaluation timer."""
         self.start_time = time.time()
 
-    def evaluate(self, episode: int):
+    def evaluate(self, episode: int, policy: str | None = None):
         """Evaluate the performance of the model after an episode using user input.
 
         We only evaluate the episode if the eval_writer is set, which means we are in evaluation mode.
 
         Args:
             episode (int): The episode number to evaluate.
+            policy (str, optional): Which policy drove the episode. Recorded so
+                a run that cycles between several checkpoints stays readable
+                afterwards; empty for a single-policy deployment.
         """
         if self.start_time is None:
             logger.warning(
@@ -99,10 +109,18 @@ class Evaluator:
             if not (0 <= score <= 10):
                 raise ValueError("Score must be between 0 and 10.")
 
-            self.eval_writer.write(f"{episode},{success},{score},{elapsed_time:.2f}\n")
+            # elapsed_time is None when the timer was never started (logged
+            # above); formatting that with :.2f used to raise TypeError and
+            # lose the user's just-entered success/score with it.
+            time_str = "" if elapsed_time is None else f"{elapsed_time:.2f}"
+            self.eval_writer.write(
+                f"{episode},{policy or ''},{success},{score},{time_str}\n"
+            )
             self.eval_writer.flush()
             logger.info(
-                f"Recorded evaluation for episode {episode}: success={success}, score={score}, time={elapsed_time:.2f} seconds."
+                f"Recorded evaluation for episode {episode}: "
+                f"policy={policy or '-'}, success={success}, score={score}, "
+                f"time={time_str or 'n/a'} seconds."
             )
         else:
             logger.debug("Evaluation writer is not set. Skipping evaluation.")

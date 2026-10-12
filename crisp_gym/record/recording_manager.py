@@ -92,6 +92,14 @@ class RecordingManager(ABC):
 
         self.episode_count = 0
 
+        # Which of the caller's policies drives the next episode. The manager
+        # knows nothing about policies — it cycles an index within a count the
+        # caller sets, and the caller maps it to whatever list it holds. Left
+        # at a count of 1, the index can never leave 0 and every existing
+        # caller is unaffected.
+        self.policy_count: int = 1
+        self._active_policy: int = 0
+
         self.queue_capacity = self.config.resolved_queue_size()
         if self.config.queue_seconds is not None:
             logger.info(
@@ -159,6 +167,27 @@ class RecordingManager(ABC):
     def state(self, value: str) -> None:
         with self._state_lock:
             self._state = value
+
+    @property
+    def active_policy(self) -> int:
+        """Index of the policy that drives the next episode (thread-safe).
+
+        Always 0 unless the caller raised `policy_count`, so a single-policy
+        deployment reads the same value it always would have.
+        """
+        with self._state_lock:
+            return self._active_policy
+
+    def cycle_active_policy(self) -> int:
+        """Advance to the next policy index, wrapping. Returns the new index.
+
+        A no-op at policy_count <= 1. Written by the input thread and read by
+        the recording loop, so it shares `state`'s lock.
+        """
+        with self._state_lock:
+            if self.policy_count > 1:
+                self._active_policy = (self._active_policy + 1) % self.policy_count
+            return self._active_policy
 
     @property
     def dataset_directory(self) -> Path:
@@ -1197,7 +1226,13 @@ class KeyboardRecordingManager(RecordingManager):
             "<s> To [b]S[/b]ave the current recorded episode.\n"
             "<d> To [b]D[/b]elete the current episode.\n"
             "<q> To [b]Q[/b]uit the recording.\n"
-            "\nPress key then ENTER."
+            + (
+                f"<p> To cycle the active [b]P[/b]olicy "
+                f"({self.active_policy + 1}/{self.policy_count}).\n"
+                if self.policy_count > 1
+                else ""
+            )
+            + "\nPress key then ENTER."
         )
 
     def _input_loop(self) -> None:
@@ -1231,6 +1266,10 @@ class KeyboardRecordingManager(RecordingManager):
                 self.state = "recording"
             elif key == "q":
                 self.state = "exit"
+            elif key == "p":
+                # Only between episodes: the arm is homed and parked by the
+                # caller's on_end, so the handover never happens mid-motion.
+                self.cycle_active_policy()
 
         elif self.state == "recording":
             if key == "r":
