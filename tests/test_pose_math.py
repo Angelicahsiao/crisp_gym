@@ -199,10 +199,16 @@ def test_remote_policy_chunk_base_is_obs_time():
     polpol.Action = object
     polpol.Observation = dict
     polpol.register_policy = lambda name: (lambda cls: cls)
+    # remote_policy imports its sibling wire module; the stub package has to
+    # carry it or the import resolves against an empty namespace.
+    proto = _load("rproto_test", REPO / "crisp_gym" / "policy" / "remote_protocol.py")
+    pol.remote_protocol = proto
     saved = {k: sys.modules.get(k) for k in
-             ("crisp_gym", "crisp_gym.policy", "crisp_gym.policy.policy")}
+             ("crisp_gym", "crisp_gym.policy", "crisp_gym.policy.policy",
+              "crisp_gym.policy.remote_protocol")}
     sys.modules.update(
-        {"crisp_gym": pkg, "crisp_gym.policy": pol, "crisp_gym.policy.policy": polpol}
+        {"crisp_gym": pkg, "crisp_gym.policy": pol, "crisp_gym.policy.policy": polpol,
+         "crisp_gym.policy.remote_protocol": proto}
     )
     try:
         rp = _load("rp_test", REPO / "crisp_gym" / "policy" / "remote_policy.py")

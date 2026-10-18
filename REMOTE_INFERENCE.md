@@ -14,10 +14,15 @@ runs on any Python with torch + lerobot.
 └─────────────────────────────────────────┘      └─────────────────────────────┘
 ```
 
-The client half lives in crisp_gym; the **server is not part of this repo**
-(you run it on the GPU machine). This document defines the contract both
-sides must satisfy. Status: the client (`crisp_gym/policy/remote_policy.py`)
-is the top roadmap item in HANDOFF.md §4; the config format below is final.
+The client half lives in crisp_gym (`crisp_gym/policy/remote_policy.py`) and
+speaks **protocol v1**, defined below. The wire format itself is a single
+shared module, `crisp_gym/policy/remote_protocol.py`, which BOTH sides import
+so they cannot drift — it needs only numpy and msgpack, no torch, no ROS.
+`tests/test_remote_protocol.py` runs the real client against a real server
+over a loopback socket and pins every rule in §2.
+
+**v1 is not compatible with the earlier untagged format**, and deliberately
+so: see "Why v1" below.
 
 **Version policy (canonical deployment mode).** Training AND rollout both run
 only on the GPU machine; crisp_gym acts purely as the websocket client. The
@@ -61,35 +66,101 @@ the client verifies it field-by-field against the YAML and **refuses to run
 on mismatch**. A wrong rotation layout or gripper scale does not crash — it
 moves the robot wrongly. Never disable `verify_handshake`.
 
-## 2. Wire protocol (msgpack-numpy over websocket, openpi-style)
+## 2. Wire protocol — v1
 
-Persistent websocket; binary frames are msgpack with the msgpack-numpy
-extension (arrays travel with dtype+shape intact). Three message types:
+Persistent websocket, binary frames, msgpack. Arrays travel as a tagged map
+carrying dtype and shape, so they arrive bit-exact rather than as nested
+lists. Build and parse frames with `remote_protocol.py`; do not hand-roll
+them.
 
-**Client → server**
-```python
-{"type": "reset"}                          # episode start: clear policy state
-{"type": "infer",
- "obs": {
-   "observation.state.cartesian": np.ndarray (n_obs_steps, 9),  # ABSOLUTE
-   "observation.state.gripper":   np.ndarray (n_obs_steps, 1),
-   "observation.images.primary":  np.ndarray (n_obs_steps, 224, 224, 3) uint8,
- },
- "task": "pick the lego block",
- "obs_timestamp": float}                   # monotonic time of capture
-```
+### Why v1
 
-**Server → client**
-```python
-# on connect (handshake):
-{"type": "meta", "model_id": ..., "observation": {...}, "action": {...},
- "normalization": "server_side", "protocol_version": "1"}
-# per infer:
-{"type": "actions", "actions": np.ndarray (chunk_size, 10)}   # raw units
-{"type": "error", "message": str}
-```
+The earlier format was an untagged request/reply: the client sent
+`{"type": "infer", "obs": ...}` and read `result["actions"]` off whatever came
+back next. Nothing said **which request a reply belonged to**, and that is not
+cosmetic. After an infer timeout the late reply is still queued, so the next
+`recv()` returns the PREVIOUS observation's chunk — which the client then
+composes against the base pose captured for the NEW observation. That is
+exactly the error `RemotePolicy` caches `_chunk_base` to avoid; its own
+comment puts the cost at "~doubles velocity, tens of mm / tens of degrees by
+step 8". One dropped deadline was enough, silently.
 
-Division of labor (fixed by design, do not move it):
+Two more things the old format described but never did: `verify_handshake`
+existed in three config files and in this document and in **zero lines of
+Python**, and the contract configs could not be loaded at all —
+`RemotePolicy.__init__` took five scalars while the YAMLs declared `server`,
+`observation`, `action`, `normalization`, `reset_on_episode_start` and
+`verify_handshake`, so `make_policy` raised `TypeError`.
+
+### Every frame
+
+Three mandatory fields. An unknown `v`, a missing field, or a frame arriving
+from the wrong direction is a `ProtocolError` — refuse, do not guess.
+
+| field | type | meaning |
+|---|---|---|
+| `v` | int | protocol version; `1` |
+| `t` | str | frame type |
+| `id` | uint64 | client-monotonic request id, **echoed by the server on every reply** |
+
+### Client → server
+
+| `t` | fields | notes |
+|---|---|---|
+| `hello` | `contract`, `contract_digest` | first frame on every connection |
+| `reset` | `episode` | episode start; must be acked before any `infer` |
+| `infer` | `obs`, `task`, `obs_t` | `obs_t` = client monotonic clock at capture |
+| `bye` | — | clean close |
+
+### Server → client
+
+| `t` | fields | notes |
+|---|---|---|
+| `hello_ok` | `model_id`, `observation`, `action`, `chunk_size`, `normalization`, `image`, `contract`, `contract_digest` | derived from the checkpoint, never hardcoded |
+| `reset_ok` | — | echoes the `reset` id |
+| `actions` | `actions` (chunk, dim) float32, `server_t` | echoes the `infer` id; raw units |
+| `error` | `code`, `message`, `fatal` | `fatal` is derived from `code`, so the two cannot disagree |
+
+### Error codes
+
+| code | fatal | meaning |
+|---|---|---|
+| `bad_version` | yes | peer speaks another protocol version |
+| `bad_frame` | yes | malformed or wrong-direction frame |
+| `contract_mismatch` | yes | the server rejected the client's contract |
+| `not_ready` | no | `infer` arrived before `reset` was acked |
+| `stale_obs` | no | the observation queued too long; resend a fresh one |
+| `infer_failed` | no | the model raised on this observation |
+
+### The rules both sides must obey
+
+1. **One outstanding id.** The client discards any `actions` whose `id` is not
+   the one it is waiting for, and never executes a chunk whose id does not
+   match the `_chunk_base` captured with it.
+2. **The reset barrier.** No `infer` until `reset_ok`. The client sends the
+   reset itself if it finds it has not been acked, so a chunk computed from
+   the previous episode's state cannot be executed in this one.
+3. **The handshake decides.** The client sends its contract and a digest; the
+   server answers with its own, derived from the checkpoint. On any difference
+   the client **refuses to start** and prints both sides field by field. Only
+   fields that change what the robot DOES are compared (layouts, widths,
+   `pose_repr`, `normalization`) — timeouts and hostnames are local choices.
+   `verify_handshake: false` downgrades this to a warning. Leave it on: a
+   wrong rotation layout or gripper scale does not crash, it moves the robot
+   wrongly.
+4. **The server owns the image encoding.** `hello_ok.image` carries
+   `{encoding: raw|jpeg, quality, shape}` and the client obeys. Lossy encoding
+   changes what the model sees relative to training, so the side that holds
+   the checkpoint decides it. Raw 800x1280x3 is 3.07 MB a frame — 46 MB/s at
+   15 Hz, which saturates 1 GbE; that is when `jpeg` earns its place.
+5. **Staleness is measured on the client's clock.** The two machines' monotonic
+   clocks are not comparable, so the server compares `obs_t` against the
+   previous `obs_t` on the same connection, never against its own clock.
+6. **A dropped socket is reopened with backoff**, and the handshake and reset
+   are redone from scratch — a reconnected server has no memory of the episode.
+
+### Division of labor (fixed by design, do not move it)
+
 - **Client sends absolute poses / raw units.** The server owns the relative
   conversion — it must byte-match training
   (`RelativePoseDataset.convert_item` in `scripts/lerobot_relative_pose.py`)
@@ -140,13 +211,19 @@ The server is out of scope here, but to satisfy the contract it must:
 
 ## 5. Failure modes the client must handle
 
+All of these are implemented in `WebsocketPolicyClient` and pinned by
+`tests/test_remote_protocol.py`.
+
 | Event | Behavior |
 |---|---|
-| handshake mismatch | refuse to start, print both sides' contract |
-| infer timeout | hold last commanded pose, retry next tick |
-| socket drop | hold pose, reconnect with backoff, send `reset` on reconnect |
-| stale obs source (camera/pose older than 2× period) | skip tick + warn |
-| server `error` message | stop episode, surface message |
+| handshake mismatch | refuse to start, printing both digests and every differing field |
+| infer timeout | raise to `RemotePolicy`, which holds the last commanded pose; the id stays outstanding so the late reply is dropped, not executed |
+| late reply after a timeout | discarded with a warning — never returned for the following request |
+| socket drop | reconnect with exponential backoff, then re-`hello` and re-`reset` |
+| `infer` before `reset_ok` | the client sends the reset itself and waits for the ack |
+| retryable server `error` (`stale_obs`, `infer_failed`, `not_ready`) | raise for this tick, hold pose, socket stays up |
+| fatal server `error` (`bad_version`, `bad_frame`, `contract_mismatch`) | stop the episode, surface the code and message |
+| a v0 text frame | `ProtocolError` saying a v0 server cannot talk to a v1 client |
 
 ## 6. Promoted-state models
 
