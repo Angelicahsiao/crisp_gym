@@ -152,6 +152,7 @@ Repos involved (same owner, branch conventions apply to all):
 | `tests/test_relative_deploy.py` | Deploy math vs training reference on synthetic SE(3): composition inverts `make_relative`, obs-time chunk base, gripper ref<->device scaling parity with the record source, obs frame layout, training `observation.state` conversion, worker window conversion == training conversion. Numpy-only (torch stubbed). |
 | `crisp_gym/scripts/migrate_euler_delta_to_rot6d.py` | One-time migration of LEGACY datasets (Euler pose + delta-command action from the old `stream_fn` recorder) to the UMI absolute rot6d schema. File surgery: copies the dataset (videos byte-identical, NO re-encode), rewrites only low-dim parquet columns (cartesian Euler(6)→rot6d(9), rebuilt `observation.state`, reconstructed `next_tcp_pose` action) + `info.json` + stats. Handles BOTH v2.x (`episode_*.parquet`) and v3.0 (`data/file-*.parquet` multi-episode + `meta/episodes/*.parquet` stats) layouts. USAGE.md §11. |
 | `crisp_gym/scripts/check_relative_pose.py` | Verify a rot6d dataset's relative-pose conversion: identity (current frame → identity), round-trip (`T_current ∘ T_rel` recovers the on-disk absolute `next_tcp_pose` — deploy parity), Δpos magnitude, gripper pass-through. Runs `RelativePoseDataset` with no start-pose noise. USAGE.md §8. |
+| `crisp_gym/scripts/viz_encoder_attention.py` | What a DiffusionPolicy's vision encoder learned: reads the K spatial-softmax heat maps out of each camera's `rgb_encoder.pool` via a forward hook (keypoints re-derived from the maps and asserted equal to the module's output, so the maps are exact), optional occlusion-sensitivity maps, and a per-keypoint CSV (sharpness, entropy, motion → heuristic tracking/static/diffuse label). Input: dataset episodes (e.g. a `deploy_policy.py` rollout dataset, to compare successes vs failures) or loose `--image-files` (e.g. handheld vs robot camera). Image path only — independent of pose repr, so it works for relative and absolute checkpoints alike. GPU-PC, crisp-import-free. Verified on lerobot 0.4.4 and 0.6.1 (image + video datasets, separate + shared encoders) with synthetic fixtures — not yet on a trained checkpoint. USAGE.md §8. |
 | `crisp_gym/util/lerobot_features.py` | LEGACY feature schema (no---record-config path only; config-driven recording uses `RecordConfig.to_features`). Rotation-rep-aware dims/names AND v0.4.x/v0.5.x lerobot compatibility + fps parameter — both aspects must survive future edits. ROS-free at import time. |
 | `crisp_gym/util/rot6d.py` | CANONICAL in-package rot6d/pose9d helpers (used by remote_policy, umi_handheld_env). `lerobot_relative_pose.py` and `migrate_euler_delta_to_rot6d.py` keep local copies BY DESIGN (must stay crisp-import-free); tests/test_pose_math.py pins the convention. |
 | `crisp_py/utils/geometry.py` | `OrientationRepresentation.ROTATION_6D` lives here. |
@@ -165,10 +166,24 @@ Repos involved (same owner, branch conventions apply to all):
 | `crisp_gym/scripts/swap_action_offline.py` | OFFLINE fallback for the action swap: rewrites the on-disk `action` column (arm ← `extra.target_cartesian`, gripper kept, same-frame), copies videos byte-identical, recomputes action stats (reuses migrate's stats helpers), refuses on constant `target_cartesian`. For lerobot versions that fix the windowed-key set at dataset construction, where the online wrapper cannot window a non-policy key. Train the copy with `train_absolute_next_pose.py`. |
 | `tests/test_swap_action_offline.py` | Offline swap core: `swap_arm` (arm←target, gripper kept, no input mutation) + feature guard. pandas/migrate stubbed, numpy-only. |
 
-LeRobot version target: **0.4.4** (module path `lerobot.datasets.lerobot_dataset`;
-train entry `lerobot.scripts.lerobot_train`; diffusion defaults n_obs_steps=2,
-horizon=16, n_action_steps=8). ROS2 Humble limits Python to 3.11 — which is why
-model inference must be decoupled (see roadmap).
+LeRobot version target: **0.6.1** — what the owner trains on and what
+`scripts/setup_lerobot.sh` clones by default; **0.4.4** is still supported by the
+training scripts. Both resolve module path `lerobot.datasets.lerobot_dataset` and
+train entry `lerobot.scripts.lerobot_train`. **`DiffusionConfig` defaults DIFFER**
+between them (read from the installed packages, 2026-10):
+
+| default | 0.4.4 | 0.6.1 |
+|---|---|---|
+| `horizon` | 16 | **64** |
+| `n_action_steps` | 8 | **32** |
+| `use_separate_rgb_encoder_per_camera` | False | **True** |
+| `n_obs_steps` / `spatial_softmax_num_keypoints` / `crop_shape` | 2 / 32 / None | 2 / 32 / None |
+
+So a 0.6.1 run that omits `--policy.horizon` / `--policy.n_action_steps` executes
+32 steps open-loop per chunk — 4× the 0.4.4 behaviour this pipeline was built
+around. Pin them explicitly (the USAGE.md §8 example pins 16 / 8); a checkpoint's
+actual values are in `pretrained_model/config.json`. ROS2 Humble limits Python to
+3.11 — which is why model inference must be decoupled (see roadmap).
 
 ---
 
@@ -284,8 +299,8 @@ norm ~1.0 and dot ~0.0 (they are rows of a real rotation matrix).
 - When touching pose math anywhere, re-run the verification suite in section 3
   before pushing. Compare rotations as matrices.
 - The user typically records on a ROS2 Humble/Python 3.11 machine and trains on
-  a separate GPU PC with lerobot 0.4.4 — keep the training/inference files free
-  of crisp/ROS imports.
+  a separate GPU PC with lerobot 0.6.1 (0.4.4 still supported) — keep the
+  training/inference files free of crisp/ROS imports.
 
 ---
 
