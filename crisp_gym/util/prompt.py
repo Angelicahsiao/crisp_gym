@@ -31,7 +31,7 @@ def prompt(
 
         while True:
             logger.info("Enter number, text, or press Enter for default: ")
-            choice = input().strip()
+            choice = input().strip().strip("'\"")
             if not choice:
                 if default:
                     return default
@@ -55,7 +55,7 @@ def prompt(
             logger.info(message)
             logger.info("-" * 40)
             logger.info("Enter string or press Enter for default: ")
-            response = input().strip()
+            response = input().strip().strip("'\"")
             if response:
                 return response
             elif default is not None:

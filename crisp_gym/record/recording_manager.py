@@ -586,6 +586,15 @@ class RecordingManager(ABC):
             f"Encoder preflight OK: {encoder.vcodec} opens for "
             f"{sorted((w, h) for h, w in shapes)} with {options}."
         )
+    def _pause_stdin(self) -> None:
+        """Pause stdin consumption before on_end() / evaluate() runs.
+
+        Subclasses that read stdin in a background thread must override this
+        so that ``input()`` calls in on_end() are not starved.
+        """
+
+    def _resume_stdin(self) -> None:
+        """Resume stdin consumption after on_end() / evaluate() returns."""
 
     def _create_dataset(self) -> LeRobotDataset:
         """Factory function to create a dataset object."""
@@ -904,7 +913,14 @@ class RecordingManager(ABC):
         timing.log_summary(extra=extra)
 
         if on_end:
-            on_end()
+            # Pause the background stdin reader (KeyboardRecordingManager) so
+            # that input() calls inside on_end() (e.g. evaluation prompts) are
+            # not starved by the keyboard listener thread.
+            self._pause_stdin()
+            try:
+                on_end()
+            finally:
+                self._resume_stdin()
 
         self._handle_post_episode()
 
@@ -1217,6 +1233,10 @@ class KeyboardRecordingManager(RecordingManager):
         super().__init__(config=config, **kwargs)
         self._running = False
         self._thread: threading.Thread | None = None
+        # When cleared, _input_loop yields stdin to the main thread (e.g. for
+        # evaluation prompts).  Set by default so keyboard control works.
+        self._keyboard_active = threading.Event()
+        self._keyboard_active.set()
 
     @override
     def get_instructions(self) -> str:
@@ -1245,10 +1265,18 @@ class KeyboardRecordingManager(RecordingManager):
         import select
 
         while self._running:
+            if not self._keyboard_active.is_set():
+                # Evaluation prompt is active — yield stdin to main thread
+                time.sleep(0.05)
+                continue
             try:
                 readable, _, _ = select.select([sys.stdin], [], [], 0.2)
                 if not readable:
                     continue  # timeout: re-check _running
+                if not self._keyboard_active.is_set():
+                    # _pause_stdin fired while we sat in select(): the pending
+                    # line belongs to evaluate()'s input(), not to us.
+                    continue
                 line = sys.stdin.readline()
                 if line == "":
                     # EOF — stdin closed / not a TTY; no input will ever come.
@@ -1283,6 +1311,18 @@ class KeyboardRecordingManager(RecordingManager):
             elif key == "d":
                 self.state = "to_be_deleted"
 
+    @override
+    def _pause_stdin(self) -> None:
+        """Pause keyboard listener so main-thread input() calls work correctly."""
+        self._keyboard_active.clear()
+        # Give the loop one iteration to exit its select() call
+        time.sleep(0.15)
+
+    @override
+    def _resume_stdin(self) -> None:
+        """Resume keyboard listener after main-thread input() is done."""
+        self._keyboard_active.set()
+
     def stop(self) -> None:
         """Stop stdin listener thread."""
         self._running = False
@@ -1298,6 +1338,7 @@ class KeyboardRecordingManager(RecordingManager):
         if self._thread is not None:
             self._thread.join(timeout=1.0)
         super().__exit__(exc_type, exc_value, traceback)
+
 
 def make_recording_manager(
     recording_manager_type: Literal["keyboard", "ros"],

@@ -26,7 +26,11 @@ from typing_extensions import override
 
 from crisp_gym.envs.manipulator_env import ManipulatorBaseEnv
 from crisp_gym.policy.policy import Action, Observation, Policy, register_policy
-from crisp_gym.util.lerobot_features import concatenate_state_features, numpy_obs_to_torch
+from crisp_gym.util.lerobot_features import (
+    concatenate_state_features,
+    get_features,
+    numpy_obs_to_torch,
+)
 from crisp_gym.util.setup_logger import setup_logging
 
 try:
@@ -39,6 +43,190 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _is_local_path(path: str) -> bool:
+    """Return True if path looks like a local filesystem path rather than a HF repo-id."""
+    return path.startswith("/") or path.startswith("./") or path.startswith("../")
+
+
+def _resolve_checkpoint_paths(pretrained_path: str) -> tuple[str, str]:
+    """Resolve a checkpoint path to (train_config_path, model_load_path).
+
+    lerobot training produces this layout::
+
+        {run}/
+          {step}/
+            pretrained_model/        <- HF-format model dir
+              train_config.json      <- training config
+              config.json            <- policy config
+              model.safetensors
+            training_state/
+
+    ``TrainPipelineConfig.from_pretrained`` uses ``os.path.isfile()`` to
+    detect a local path, so it must receive the actual ``.json`` file, not a
+    directory.  ``policy.from_pretrained`` accepts a directory and expects
+    HF-format content (the ``pretrained_model`` subdirectory).
+
+    For HuggingFace repo-ids (e.g. ``"user/repo"``) both values are the
+    original string unchanged.
+
+    Returns:
+        (train_config_path, model_load_path)
+    """
+    if not _is_local_path(pretrained_path):
+        # HF repo-id — leave unchanged
+        return pretrained_path, pretrained_path
+
+    p = Path(pretrained_path)
+
+    if not p.exists():
+        raise FileNotFoundError(
+            f"Checkpoint path does not exist: {pretrained_path}\n"
+            "Check that the path is correct and that the filesystem is mounted.\n"
+            "Hint: if the path starts with '/workspaces', the Docker bind mount "
+            "may be at '/workspace' (no trailing 's') instead."
+        )
+
+    if p.is_file():
+        # Caller already pointed at the config file directly
+        return str(p), str(p.parent)
+
+    # p is a directory — search for the train config file.
+    # lerobot saves train_config.json inside pretrained_model/ within the step dir.
+    train_config_candidates = [
+        p / "train_config.json",
+        p / "config.json",
+        p / "pretrained_model" / "train_config.json",
+        p / "pretrained_model" / "config.json",
+        p.parent / "train_config.json",
+    ]
+    train_config_path = None
+    for candidate in train_config_candidates:
+        if candidate.exists():
+            train_config_path = str(candidate)
+            break
+    if train_config_path is None:
+        searched = "\n  ".join(str(c) for c in train_config_candidates)
+        raise FileNotFoundError(
+            f"Could not find a training config for checkpoint {pretrained_path}.\n"
+            f"Searched:\n  {searched}"
+        )
+
+    # Use the pretrained_model/ subdirectory for policy.from_pretrained when present
+    pretrained_model_subdir = p / "pretrained_model"
+    model_load_path = str(pretrained_model_subdir) if pretrained_model_subdir.is_dir() else str(p)
+
+    return train_config_path, model_load_path
+
+
+def _apply_umilike_state(obs: dict) -> dict:
+    """Overwrite observation.state with concat(cartesian, gripper) in-place.
+
+    Called inside the inference worker when the loaded model was trained with
+    umilike state (observation.state = cartesian + gripper).  The individual
+    sub-keys remain untouched so the recording side is unaffected.
+    """
+    cart = np.asarray(obs["observation.state.cartesian"], dtype=np.float32).ravel()
+    grip = np.asarray(obs["observation.state.gripper"], dtype=np.float32).ravel()
+    obs["observation.state"] = np.concatenate([cart, grip])
+    return obs
+
+
+def _umilike_names_and_dim(env: ManipulatorBaseEnv) -> tuple[list[str], int] | None:
+    """Return (names, dim) of the umilike state for this env, or None if unavailable.
+
+    The umilike state is concat(observation.state.cartesian, observation.state.gripper).
+    Names and shapes are derived exactly the way the recording pipeline / the
+    add_umilike_state_observation.py script produce them, so they can be compared
+    against the training dataset's stored observation.state names.
+    """
+    try:
+        env_features = get_features(env, use_video=True)
+    except Exception:
+        return None
+
+    cart = env_features.get("observation.state.cartesian")
+    grip = env_features.get("observation.state.gripper")
+    if cart is None or grip is None:
+        return None
+
+    names = list(cart["names"]) + list(grip["names"])
+    dim = int(np.prod(cart["shape"])) + int(np.prod(grip["shape"]))
+    return names, dim
+
+
+def _detect_umilike(
+    policy,
+    env: ManipulatorBaseEnv,
+    train_config: TrainPipelineConfig,
+    logger: logging.Logger,
+) -> bool:
+    """Return True if the loaded policy expects umilike state.
+
+    Detection order:
+      1. Name-based (most reliable): compare the training dataset's stored
+         observation.state names against the env's umilike names
+         (cartesian + gripper).  Requires the training dataset to be reachable.
+      2. Dim-based fallback: compare the model's expected observation.state dim
+         against the umilike dim.  Works offline with only the model + env.
+
+    Falls back to the full concatenated state when neither check confirms umilike.
+    """
+    feat = getattr(policy.config, "robot_state_feature", None)
+    if feat is None:
+        logger.info("[Inference] Policy has no robot_state_feature; using full state.")
+        return False
+    expected_dim = int(feat.shape[0])
+
+    umilike = _umilike_names_and_dim(env)
+    if umilike is None:
+        logger.info(
+            "[Inference] cartesian/gripper features unavailable in env; using full state."
+        )
+        return False
+    umilike_names, umilike_dim = umilike
+
+    # 1) Name-based check against the training dataset metadata.
+    try:
+        meta = LeRobotDatasetMetadata(repo_id=train_config.dataset.repo_id)
+        state_feature = meta.info["features"].get("observation.state", {})
+        state_names = state_feature.get("names")
+        if state_names is not None:
+            if list(state_names) == umilike_names:
+                logger.info(
+                    f"[Inference] Training observation.state names {list(state_names)} "
+                    f"match umilike. Using umilike state."
+                )
+                return True
+            logger.info(
+                f"[Inference] Training observation.state names {list(state_names)} "
+                f"do not match umilike names {umilike_names}. Using full state."
+            )
+            return False
+        logger.info(
+            "[Inference] Training metadata has no observation.state names; "
+            "falling back to dim comparison."
+        )
+    except Exception as e:
+        logger.info(
+            f"[Inference] Could not read training dataset metadata ({e}); "
+            "falling back to dim comparison."
+        )
+
+    # 2) Dim-based fallback.
+    if expected_dim == umilike_dim:
+        logger.info(
+            f"[Inference] Model expects {expected_dim}D state = umilike dim "
+            f"({umilike_names}). Using umilike state."
+        )
+        return True
+
+    logger.info(
+        f"[Inference] Model expects {expected_dim}D state (umilike would be "
+        f"{umilike_dim}D). Using full concatenated state."
+    )
+    return False
 
 
 @register_policy("lerobot_policy")
@@ -80,21 +268,15 @@ class LerobotPolicy(Policy):
         self.inf_proc.start()
 
     @override
-    def make_data_fn(self) -> Callable[[], Tuple[Observation, Action]]:  # noqa: ANN002, ANN003
+    def make_data_fn(self) -> Callable[[], Tuple[Observation, Action]]:
         """Generate observation and action by communicating with the inference worker."""
 
         def _fn() -> tuple:
-            """Function to apply the policy in the environment.
-
-            This function observes the current state of the environment, sends the observation
-            to the inference worker, receives the action, and steps the environment.
-
-            Returns:
-                tuple: A tuple containing the observation from the environment and the action taken.
-            """
             logger.debug("Requesting action from policy...")
             obs_raw: Observation = self.env.get_obs()
 
+            # Build the full flat state; the inference worker will overwrite
+            # observation.state with the umilike vector if the model needs it.
             obs_raw["observation.state"] = concatenate_state_features(obs_raw)
 
             self.parent_conn.send(obs_raw)
@@ -127,11 +309,18 @@ def inference_worker(
     pretrained_path: str,
     env: ManipulatorBaseEnv,
     overrides: dict | None = None,
-):  # noqa: ANN001
-    """Policy inference process: loads policy on GPU, receives observations via conn, returns actions, and exits on None.
+):
+    """Policy inference process.
+
+    Loads the policy on GPU, receives observations via conn, returns actions,
+    and exits on None.
+
+    For models trained with umilike state (observation.state = cartesian + gripper),
+    the worker automatically rewrites observation.state before calling select_action.
+    Models trained with the full concatenated state work unchanged.
 
     Args:
-        conn (Connection): The connection to the parent process for sending and receiving data.
+        conn (Connection): The connection to the parent process.
         pretrained_path (str): Path to the pretrained policy model.
         env (ManipulatorBaseEnv): The environment in which the policy will be applied.
         overrides (dict | None): Optional overrides for the policy configuration.
@@ -153,13 +342,13 @@ def inference_worker(
         logger.info(f"[Inference] Using device: {device}")
 
         logger.info(f"[Inference] Loading training config from {pretrained_path}...")
+        train_config_path, model_load_path = _resolve_checkpoint_paths(pretrained_path)
+        logger.info(f"[Inference] Resolved train config: {train_config_path}")
+        logger.info(f"[Inference] Resolved model path:   {model_load_path}")
 
-        train_config = TrainPipelineConfig.from_pretrained(pretrained_path)
-
+        train_config = TrainPipelineConfig.from_pretrained(train_config_path)
         _check_dataset_metadata(train_config, env, logger)
-
         logger.info("[Inference] Loaded training config.")
-
         logger.debug(f"[Inference] Train config: {train_config}")
 
         if train_config.policy is None:
@@ -170,11 +359,12 @@ def inference_worker(
 
         logger.info("[Inference] Loading policy...")
         policy_cls = get_policy_class(train_config.policy.type)
-        policy = policy_cls.from_pretrained(pretrained_path)
+        policy = policy_cls.from_pretrained(model_load_path)
 
         for override_key, override_value in (overrides or {}).items():
             logger.warning(
-                f"[Inference] Overriding policy config: {override_key} = {getattr(policy.config, override_key)} -> {override_value}"
+                f"[Inference] Overriding policy config: {override_key} = "
+                f"{getattr(policy.config, override_key)} -> {override_value}"
             )
             setattr(policy.config, override_key, override_value)
 
@@ -185,10 +375,19 @@ def inference_worker(
         policy.to(device).eval()
 
         if USE_LEROBOT_PROCESSORS:
-            preprocessor, postprocessor = make_pre_post_processors(policy_cfg=policy.config, pretrained_path=pretrained_path)
+            preprocessor, postprocessor = make_pre_post_processors(
+                policy_cfg=policy.config, pretrained_path=model_load_path
+            )
 
+        # Detect whether the model was trained with umilike state.
+        # If so, the worker rewrites observation.state before calling select_action.
+        use_umilike = _detect_umilike(policy, env, train_config, logger)
+
+        # ── Warm-up ──────────────────────────────────────────────────────────────────────────
         warmup_obs_raw = env.observation_space.sample()
         warmup_obs_raw["observation.state"] = concatenate_state_features(warmup_obs_raw)
+        if use_umilike:
+            warmup_obs_raw = _apply_umilike_state(warmup_obs_raw)
         warmup_obs = numpy_obs_to_torch(warmup_obs_raw)
         if USE_LEROBOT_PROCESSORS:
             warmup_obs = preprocessor(warmup_obs)
@@ -202,22 +401,20 @@ def inference_worker(
                 start = time.time()
                 _ = policy.select_action(warmup_obs)
                 end = time.time()
-                elapsed = end - start
-                elapsed_list.append(elapsed)
+                elapsed_list.append(end - start)
 
             torch.cuda.synchronize()
 
         avg_elapsed = sum(elapsed_list) / len(elapsed_list)
         std_elapsed = np.std(elapsed_list)
-        max_elapsed = max(elapsed_list)
-        min_elapsed = min(elapsed_list)
         logger.info(
             f"[Inference] Warm-up timing over 100 runs: "
-            f"avg={avg_elapsed * 1000:.2f}ms, std={std_elapsed * 1000:.2f}ms, max={max_elapsed * 1000:.2f}ms, min={min_elapsed * 1000:.2f}ms"
+            f"avg={avg_elapsed * 1000:.2f}ms, std={std_elapsed * 1000:.2f}ms, "
+            f"max={max(elapsed_list) * 1000:.2f}ms, min={min(elapsed_list) * 1000:.2f}ms"
         )
-
         logger.info("[Inference] Warm-up complete")
 
+        # ── Inference loop ──────────────────────────────────────────────────────────────
         while True:
             obs_raw = conn.recv()
             if obs_raw is None:
@@ -229,6 +426,9 @@ def inference_worker(
                     preprocessor.reset()
                     postprocessor.reset()
                 continue
+
+            if use_umilike:
+                obs_raw = _apply_umilike_state(obs_raw)
 
             with torch.inference_mode():
                 obs = numpy_obs_to_torch(obs_raw)

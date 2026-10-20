@@ -1,0 +1,50 @@
+# lerobot-train config for diffusion policy trained with umilike observation.state
+#
+# observation.state has been replaced with concat(cartesian, gripper) by
+# add_umilike_state_observation.py, so no special input_features mapping is needed
+# — lerobot policies find 'observation.state' automatically.
+#
+# Usage:
+#   lerobot-train --config scripts/training_configs/diffusion_umilike.yaml
+#
+# CLI args override YAML values, e.g.:
+#   HF_LEROBOT_HOME=/path/to/datasets lerobot-train --config diffusion_umilike.yaml --output-dir /runs/run1
+#
+# Local dataset:
+#   Set HF_LEROBOT_HOME to the parent of <user>/<dataset> before running:
+#     HF_LEROBOT_HOME=/dric_workspaces/lerobot_ws/test_dataset_hf lerobot-train --config diffusion_umilike.yaml
+#   Then repo_id should be just "dric/franka_dual_open_panel_mix1_2_3_umi" (not the full path).
+#
+# Before running, verify shapes against your dataset's meta/info.json:
+#   - observation.state shape   (7 for euler cartesian+gripper, 8 for quaternion)
+#   - observation.images.* shape (typically [3, 256, 256])
+#   action shape is read automatically from the dataset
+#
+# Camera keys depend on your env config:
+#   - AlohaFrankaEnvConfig (left/right): observation.images.primary, observation.images.wrist
+#   - OnlyWristCamFrankaEnvConfig:       observation.images.camera
+#   - RobotiqFrankaEnvConfig:            observation.images.camera
+
+dataset:
+  repo_id: "your_user/your_dataset_umilike"   # <-- set to your dataset name
+  delta_timestamps:
+    observation.state: [0.0]
+    observation.images.primary: [0.0]          # remove if your setup has no primary camera
+    observation.images.wrist: [0.0]            # remove if your setup has no wrist camera
+    # action chunk: adjust length and spacing to match your control frequency
+    # example below: 16 steps at 25 Hz (0.04s per step) = 0.6s horizon
+    action: [0.0, 0.04, 0.08, 0.12, 0.16, 0.20, 0.24, 0.28, 0.32, 0.36, 0.40, 0.44, 0.48, 0.52, 0.56, 0.60]
+
+policy:
+  type: diffusion
+  input_features:
+    observation.state:
+      type: STATE
+      shape: [7]              # 6D cartesian (euler) + 1D gripper; use [8] for quaternion
+    observation.images.primary:
+      type: VISUAL
+      shape: [3, 256, 256]    # remove if your setup has no primary camera
+    observation.images.wrist:
+      type: VISUAL
+      shape: [3, 256, 256]    # remove if your setup has no wrist camera
+  # output_features (action) is auto-detected from the dataset's meta/info.json
