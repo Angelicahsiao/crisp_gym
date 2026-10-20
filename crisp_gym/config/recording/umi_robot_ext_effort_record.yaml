@@ -43,7 +43,7 @@ observations:
 
   # ── external joint effort (saved, NOT a policy input) ──────────────────────
   - key: extra.external_effort
-    source: robot.sensor
+    source: sensor.value
     name: ext_effort               # must match the env sensor_config name
     shape: [6]                     # 6 = UR, 7 = Franka
     include_in_state: false

@@ -73,6 +73,24 @@ def register_source(name: str):
     return _wrap
 
 
+# Renamed sources, {old: canonical}. The old name still LOADS: it is normalized
+# in ObsFieldConfig.__post_init__, so the stamped data contract carries the
+# canonical name either way and datasets recorded before and after a rename stay
+# mixable (`source` is part of contracts_compatible for in-state observations).
+# Aliases are deliberately NOT in SOURCE_REGISTRY: one executable name keeps the
+# "Available: [...]" list in the unknown-source error honest.
+DEPRECATED_SOURCES: Dict[str, str] = {
+    # Reads env.sensors — a sibling of env.robot, built alongside env.cameras
+    # and owned by neither. The robot.* prefix made sense while the only users
+    # were the F/T wrench and external joint effort (robot proprioception, read
+    # next to robot.joint_efforts); tactile skin mounted on the gripper made it
+    # actively misleading.
+    "robot.sensor": "sensor.value",
+}
+
+_source_deprecation_warned: set = set()
+
+
 def _pose_to_array(pose, representation: str) -> np.ndarray:
     """crisp_py Pose -> array in the requested representation."""
     from crisp_py.utils.geometry import OrientationRepresentation
@@ -119,11 +137,17 @@ def _src_joint_efforts(env, **_) -> np.ndarray:
     return np.asarray(env.robot.current_joint_effort, dtype=np.float32)
 
 
-@register_source("robot.sensor")
+@register_source("sensor.value")
 def _src_sensor(env, name: str = "", **_) -> np.ndarray:
     """Value of a configured env sensor by name (crisp_py Sensor.value).
 
-    Generic path for any sensor_config in the env: F/T wrench
+    Reads env.sensors, NOT env.robot — the sensors are built from the env
+    config's sensor_configs alongside env.cameras. Formerly registered as
+    "robot.sensor", which still loads via DEPRECATED_SOURCES.
+
+    Generic path for any sensor_config in the env: tactile skin
+    (sensor_type: float32_array, e.g. crisp_py sensors/anyskin_sensor.yaml),
+    F/T wrench
     (sensor_type: force_torque) OR external joint effort published by the
     robot bring-up node (sensor_type: float32_array on `external_joint_effort`,
     from crisp_controllers_robot_demos external_effort_node). No Pinocchio /
@@ -249,6 +273,21 @@ class ObsFieldConfig:
     # For state features: explicit dim (else derived); for images: (H, W, C).
     shape: List[int] | None = None
     include_in_state: bool = True   # concatenated into observation.state
+
+    def __post_init__(self) -> None:
+        """Normalize a renamed source so the stamped contract is canonical."""
+        canonical = DEPRECATED_SOURCES.get(self.source)
+        if canonical is None:
+            return
+        if self.source not in _source_deprecation_warned:
+            _source_deprecation_warned.add(self.source)
+            logger.warning(
+                "Record-config source '%s' was renamed to '%s'; update the "
+                "config. The old name still loads and the dataset is stamped "
+                "with '%s' either way, so nothing breaks today.",
+                self.source, canonical, canonical,
+            )
+        self.source = canonical
 
     def resolved_shape(self) -> tuple:
         if self.shape is not None:

@@ -68,7 +68,7 @@ observations:
   # record with an env that does not. The deploy env has no sensor_configs, but
   # it never records.
   - key: extra.ext_torque
-    source: robot.sensor                        # -> env sensor_configs "ext_torque"
+    source: sensor.value                        # -> env sensor_configs "ext_torque"
     name: ext_torque
     shape: [7]
     include_in_state: false

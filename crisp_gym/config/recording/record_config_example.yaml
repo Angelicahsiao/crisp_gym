@@ -44,7 +44,7 @@ rate_hz: 15.0
 #                       gripper.width_normalized  gripper opening in [0,1]
 #                       camera.image              one camera frame
 #                     (the full registry also has robot.joint_velocities,
-#                     robot.joint_efforts, robot.sensor, gripper.raw_value —
+#                     robot.joint_efforts, sensor.value, gripper.raw_value —
 #                     see the @register_source docstrings for their params)
 #                     (extend with @register_source("your.name") — new sources
 #                     need no changes to the recording loop)

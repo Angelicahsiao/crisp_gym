@@ -231,7 +231,7 @@ Add a matching sensor to the env config and record it as an extra:
   data_topic: "/external_joint_effort"
 ```
 then use `config/recording/umi_robot_ext_effort_record.yaml` (which pulls it via
-`source: robot.sensor`, `name: ext_effort`). This is the JOINT-space signal,
+`source: sensor.value`, `name: ext_effort`). This is the JOINT-space signal,
 complementary to the Cartesian `/force_torque_sensor_broadcaster` wrench.
 
 ### Streamed teleop (phone / VR) with full-state recording
