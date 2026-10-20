@@ -157,6 +157,7 @@ Repos involved (same owner, branch conventions apply to all):
 | `crisp_gym/scripts/fix_dataset_task.py` | Inspect/repair a dataset's task strings. They live in FOUR places that must agree (`meta/tasks.parquet`, `info.json` `total_tasks` — a COUNT, not the strings — the `tasks` column in `meta/episodes/*.parquet`, and `task_index` on every frame). `--rename` preserves `task_index` so frame data is untouched; `--set-all` rewrites it. The task is a MODEL INPUT for a VLA, so a stale label trains an unusable mapping. |
 | `crisp_gym/scripts/deploy_preflight.py` | Pre-rollout checks against a real checkpoint: lerobot version + the four APIs the deploy wrapper calls; `pose_repr.json`/`action_repr.json` discovery with the wrapper's own walk-up; image keys and `observation.state` width vs the dataset (expected width derived from the pose_repr MODE, +6 for `relative_wrt_start`); and whether `batch["task"]` needs a list wrap (lerobot 0.6.1: it does NOT — a bare str tokenizes identically). Probes the NORMALIZER for the true state width rather than trusting `input_features`. HANDOFF §4c. |
 | `crisp_gym/scripts/check_relative_pose.py` | Verify a rot6d dataset's relative-pose conversion: identity (current frame → identity), round-trip (`T_current ∘ T_rel` recovers the on-disk absolute `next_tcp_pose` — deploy parity), Δpos magnitude, gripper pass-through. Runs `RelativePoseDataset` with no start-pose noise. USAGE.md §8. |
+| `crisp_gym/scripts/viz_encoder_attention.py` | What a DiffusionPolicy's vision encoder learned: reads the K spatial-softmax heat maps out of each camera's `rgb_encoder.pool` via a forward hook (keypoints re-derived from the maps and asserted equal to the module's output, so the maps are exact), optional occlusion-sensitivity maps, and a per-keypoint CSV (sharpness, entropy, motion → heuristic tracking/static/diffuse label). Input: dataset episodes (e.g. a `deploy_policy.py` rollout dataset, to compare successes vs failures) or loose `--image-files` (e.g. handheld vs robot camera). Image path only — independent of pose repr, so it works for relative and absolute checkpoints alike. GPU-PC, crisp-import-free. Verified on lerobot 0.4.4 and 0.6.1 (image + video datasets, separate + shared encoders) with synthetic fixtures — not yet on a trained checkpoint. USAGE.md §8. |
 | `crisp_gym/util/lerobot_features.py` | LEGACY feature schema (no---record-config path only; config-driven recording uses `RecordConfig.to_features`). Rotation-rep-aware dims/names AND v0.4.x/v0.5.x lerobot compatibility + fps parameter — both aspects must survive future edits. ROS-free at import time. |
 | `crisp_gym/util/rot6d.py` | CANONICAL in-package rot6d/pose9d helpers (used by remote_policy, umi_handheld_env). `lerobot_relative_pose.py` and `migrate_euler_delta_to_rot6d.py` keep local copies BY DESIGN (must stay crisp-import-free); tests/test_pose_math.py pins the convention. |
 | `crisp_py/utils/geometry.py` | `OrientationRepresentation.ROTATION_6D` lives here. |
@@ -172,20 +173,37 @@ Repos involved (same owner, branch conventions apply to all):
 | `crisp_gym/util/loop_timing.py` | Phase timing for the record/deploy loop (`LoopTimingRecorder` producer side, `WriterTimingRecorder` consumer side). Attributes a dropped control rate to `data` (producer) vs `put` (writer back-pressure) vs `sleep`. Stdlib only — no ROS/numpy/lerobot, so the writer subprocess can import it. MEASUREMENT ONLY: no control flow depends on it. USAGE.md §12. |
 | `tests/test_loop_timing.py` | Pins the attribution in all three regimes against a REAL `mp.JoinableQueue` with a slow consumer, plus `make_record_fn`'s `.timing` publication. Stdlib + numpy; stubs `crisp_py.utils.geometry`. |
 
-LeRobot version target: **0.6.1** — what `scripts/setup_lerobot.sh` clones by
-default and what `pixi.toml`'s `humble-lerobot` env is built for (Python 3.12 +
-numpy 2). The training wrappers and the recording path still support **0.4.x**
-and seam into whichever API that version exposes; 0.4.4 and 0.6.1 are the two
-verified points. Stable across both: module path
-`lerobot.datasets.lerobot_dataset`, train entry `lerobot.scripts.lerobot_train`,
-diffusion defaults n_obs_steps=2, horizon=16, n_action_steps=8.
+LeRobot version target: **0.6.1** — what the owner trains on, what
+`scripts/setup_lerobot.sh` clones by default, and what `pixi.toml`'s
+`humble-lerobot` env is built for (Python 3.12 + numpy 2). The training
+wrappers and the recording path still support **0.4.x** and seam into whichever
+API that version exposes; 0.4.4 and 0.6.1 are the two verified points. Stable
+across both: module path `lerobot.datasets.lerobot_dataset`, train entry
+`lerobot.scripts.lerobot_train`.
 
-(The older note here said Humble limits Python to 3.11 and that this is why
-inference must be decoupled. The Python limit is no longer true —
-robostack-humble resolves against numpy 2 and Python 3.12 once
-`ros-humble-image-transport-plugins` is dropped, which `pixi.toml` now does.
-Decoupled inference is still right, for the version-independence reason in
-REMOTE_INFERENCE.md, not for a Python-version one.)
+**`DiffusionConfig` defaults DIFFER** between them, though (read from the
+installed packages, 2026-10):
+
+| default | 0.4.4 | 0.6.1 |
+|---|---|---|
+| `horizon` | 16 | **64** |
+| `n_action_steps` | 8 | **32** |
+| `use_separate_rgb_encoder_per_camera` | False | **True** |
+| `n_obs_steps` / `spatial_softmax_num_keypoints` / `crop_shape` | 2 / 32 / None | 2 / 32 / None |
+
+So a 0.6.1 run that omits `--policy.horizon` / `--policy.n_action_steps`
+executes 32 steps open-loop per chunk — 4x the 0.4.4 behaviour this pipeline
+was built around. Pin them explicitly (the USAGE.md §8 example pins 16 / 8); a
+checkpoint's actual values are in `pretrained_model/config.json`.
+
+(Two older notes here are wrong and have been removed. One said Humble limits
+Python to 3.11 and that this is why inference must be decoupled: the Python
+limit is no longer true — robostack-humble resolves against numpy 2 and Python
+3.12 once `ros-humble-image-transport-plugins` is dropped, which `pixi.toml`
+now does. Decoupled inference is still right, for the version-independence
+reason in REMOTE_INFERENCE.md, not for a Python-version one. The other said the
+diffusion defaults were stable across both versions; the table above is
+measured and supersedes it.)
 
 ---
 
@@ -673,8 +691,8 @@ order. It matches today only because `_collect_obs` iterates
 - When touching pose math anywhere, re-run the verification suite in section 3
   before pushing. Compare rotations as matrices.
 - The user typically records on a ROS2 Humble/Python 3.11 machine and trains on
-  a separate GPU PC with lerobot 0.4.4 — keep the training/inference files free
-  of crisp/ROS imports.
+  a separate GPU PC with lerobot 0.6.1 (0.4.4 still supported) — keep the
+  training/inference files free of crisp/ROS imports.
 
 ---
 

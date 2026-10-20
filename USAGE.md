@@ -545,6 +545,8 @@ python lerobot_relative_pose.py \
     --policy.push_to_hub=false \
     --policy.use_separate_rgb_encoder_per_camera=true \
     --policy.spatial_softmax_num_keypoints=64 \
+    --policy.horizon=16 \
+    --policy.n_action_steps=8 \
     --num_workers=8 \
     --output_dir=outputs/train/franka_dual_open_panel_..._rot6d_diffusion \
     --batch_size=64 --steps=500000 \
@@ -555,10 +557,19 @@ Parameter notes:
 - `--policy.use_separate_rgb_encoder_per_camera=true` — one ResNet encoder per
   camera instead of a shared one. Use for **multi-camera** setups (env_cam +
   wrist_cam) so each view learns its own features; costs more params/VRAM.
+  The default flipped (False on lerobot 0.4.4, True on 0.6.1) — keep the flag so
+  the behaviour does not depend on the installed version.
 - `--policy.spatial_softmax_num_keypoints=64` — spatial-softmax keypoints per
   camera feature map (diffusion default 32). 64 gives the vision head more
   spatial detail; must be a plain integer (a stray char, e.g. `64ls`, makes
   draccus raise `invalid literal for int()`).
+- `--policy.horizon=16 --policy.n_action_steps=8` — predict 16 steps, execute 8
+  before re-observing (the lerobot 0.4.4 defaults this pipeline was built
+  around). **Always pass them on lerobot 0.6.1**: its defaults are 64 / 32, so
+  leaving them out silently makes every chunk run 32 steps open-loop (4× longer
+  between observations, and relative actions drift for the whole stretch).
+  `horizon` must be a multiple of `2**len(down_dims)` (8 by default). Check what
+  an existing checkpoint used in `pretrained_model/config.json`.
 - `--batch_size=64 --steps=500000` — full run; smoke-test with `--steps=100`
   first. Diffusion often converges well before 500k, so a mid checkpoint may
   suffice. Bigger `batch_size` = more VRAM + peak GPU power; total training seen
@@ -582,6 +593,36 @@ deploy-consistent (identity + round-trip + magnitude checks):
 python crisp_gym/scripts/check_relative_pose.py /path/to/dataset_rot6d
 # expect: identity err ~1e-16, round-trip err ~1e-8, small |Δpos|, PASS
 ```
+
+### Inspect what the vision encoder learned (diffusion)
+
+`viz_encoder_attention.py` reads the spatial-softmax heat maps (one per
+keypoint, per camera) straight out of a diffusion checkpoint and overlays them
+on dataset frames. Standalone like `check_policy_openloop.py` — GPU PC, needs
+only lerobot + torch + matplotlib; works for relative and absolute checkpoints.
+
+```bash
+python3 crisp_gym/scripts/viz_encoder_attention.py \
+    --path outputs/train/<run>/checkpoints/<step>/pretrained_model \
+    --repo-id /path/to/dataset --episodes 0 3 --stride 10 --max-frames 30 \
+    --occlusion --out-dir viz_out
+# or on loose images, e.g. a robot-camera frame vs a handheld one:
+#   --image-files robot.png handheld.png --camera observation.images.wrist
+```
+
+Per frame and camera it writes a PNG (the eval crop, the max over all keypoint
+maps with each keypoint marked, the occlusion map, and the most informative
+individual keypoints) plus `keypoint_stats_<camera>.csv` (sharpness, entropy,
+motion, and a heuristic tracking/static/diffuse label). What to look for:
+- keypoints on the object and gripper that move with them through the episode;
+- static env-camera keypoints are usually background; static wrist-camera
+  keypoints are often the fingers (useful — they encode gripper opening);
+- many diffuse keypoints, or few distinct peak cells, means K is being wasted;
+- the marker is the softmax's *expected* position, so a two-peaked map puts it
+  between the peaks.
+
+Point `--repo-id` at a `deploy_policy.py` rollout dataset to compare successful
+and failed episodes.
 
 ### Train ABSOLUTE (no relative conversion)
 
