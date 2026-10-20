@@ -26,15 +26,25 @@ import ast
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-SOURCE = REPO / "crisp_gym" / "policy" / "relative_lerobot_policy.py"
+# Both local inference workers push through populate_queues and both are used
+# with GR00T checkpoints, so both need the guard. The async worker gained it
+# when claude/add-umi-state-observation-84vsF landed, which rewrote its loop.
+SOURCES = {
+    "relative": REPO / "crisp_gym" / "policy" / "relative_lerobot_policy.py",
+    "async": REPO / "crisp_gym" / "policy" / "async_lerobot_policy.py",
+}
+
+worker_source = pytest.mark.parametrize("source", list(SOURCES.values()), ids=list(SOURCES))
 
 
-def _worker() -> ast.FunctionDef:
-    tree = ast.parse(SOURCE.read_text())
+def _worker(source: Path) -> ast.FunctionDef:
+    tree = ast.parse(source.read_text())
     return next(
         fn for fn in tree.body
         if isinstance(fn, ast.FunctionDef) and fn.name == "inference_worker"
@@ -52,9 +62,10 @@ def _populate_calls(node: ast.AST) -> list[ast.Call]:
 
 # ── the regression ────────────────────────────────────────────────────────────
 
-def test_populate_queues_is_guarded():
+@worker_source
+def test_populate_queues_is_guarded(source):
     """An unguarded push is the GR00T crash."""
-    worker = _worker()
+    worker = _worker(source)
     calls = _populate_calls(worker)
     assert calls, "populate_queues vanished from inference_worker"
     guarded = [
@@ -72,10 +83,11 @@ def test_populate_queues_is_guarded():
     )
 
 
-def test_prediction_is_not_inside_the_queue_guard():
+@worker_source
+def test_prediction_is_not_inside_the_queue_guard(source):
     """Skipping the queue push must still reach predict_action_chunk --
     otherwise GR00T would return no chunk instead of crashing."""
-    worker = _worker()
+    worker = _worker(source)
     guards = [
         node for node in ast.walk(worker)
         if isinstance(node, ast.If)

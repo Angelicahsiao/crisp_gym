@@ -254,12 +254,21 @@ def inference_worker(  # noqa: D417
                 # Drop the action placeholder so it doesn't pollute the ACTION queue.
                 batch.pop(ACTION, None)
                 # Replicate select_action: combine image features into OBS_IMAGES
-                # before populating the queue.
-                if policy.config.image_features:
+                # before populating the queue. A preprocessor may already have
+                # packed and POPPED the per-camera keys (GR00T's pack step writes
+                # obs["video"] and deletes every observation.images.* key), so
+                # stack only what is still present instead of raising KeyError on
+                # the first frame.
+                image_features = policy.config.image_features
+                if image_features and all(key in batch for key in image_features):
                     batch[OBS_IMAGES] = torch.stack(
-                        [batch[key] for key in policy.config.image_features], dim=-4
+                        [batch[key] for key in image_features], dim=-4
                     )
-                policy._queues = populate_queues(policy._queues, batch)
+                # Policies with no observation queue (GR00T: n_obs_steps == 1,
+                # reset() builds only _action_queue) read the batch directly in
+                # predict_action_chunk, so there is nothing to populate.
+                if hasattr(policy, "_queues"):
+                    policy._queues = populate_queues(policy._queues, batch)
 
             # Generate the full action chunk from the populated queue.
             chunk = policy.predict_action_chunk(batch)

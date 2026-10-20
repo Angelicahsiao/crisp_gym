@@ -279,3 +279,55 @@ if __name__ == "__main__":
         fn()
         print(f"PASS {fn.__name__}")
     print(f"\nAll {len(fns)} deploy image-key tests passed.")
+
+
+# ── the same guard in the async worker ────────────────────────────────────────
+# async_lerobot_policy's inference_worker stacks inline in its request loop
+# rather than in a _prepare closure, so there is no closure to exec out; the
+# assertion goes on the shipped AST instead. Same GR00T failure mode: its pack
+# step pops every observation.images.* key, so an unconditional stack is a
+# KeyError on the first frame of every rollout.
+
+ASYNC_SOURCE = REPO / "crisp_gym" / "policy" / "async_lerobot_policy.py"
+
+
+def _async_worker() -> ast.FunctionDef:
+    tree = ast.parse(ASYNC_SOURCE.read_text())
+    return next(
+        fn for fn in tree.body
+        if isinstance(fn, ast.FunctionDef) and fn.name == "inference_worker"
+    )
+
+
+def _obs_images_stacks(node: ast.AST) -> list[ast.Assign]:
+    return [
+        n for n in ast.walk(node)
+        if isinstance(n, ast.Assign)
+        and any(
+            isinstance(t, ast.Subscript) and "OBS_IMAGES" in ast.dump(t.slice)
+            for t in n.targets
+        )
+    ]
+
+
+def test_async_worker_still_stacks_into_obs_images():
+    assert _obs_images_stacks(_async_worker()), (
+        "the OBS_IMAGES stack vanished from the async worker -- diffusion/ACT "
+        "read that key out of the observation queue"
+    )
+
+
+def test_async_worker_guards_the_image_stack():
+    """An unconditional stack is the GR00T KeyError, in the other worker."""
+    worker = _async_worker()
+    guarded = [
+        node for node in ast.walk(worker)
+        if isinstance(node, ast.If)
+        and _obs_images_stacks(ast.Module(body=node.body, type_ignores=[]))
+    ]
+    assert guarded, "the OBS_IMAGES stack is not inside an `if`"
+    tests = [ast.dump(node.test) for node in guarded]
+    assert any("'all'" in t and "image_features" in t for t in tests), (
+        "the guard does not check that EVERY declared image key is still in the "
+        f"batch (a bare `if image_features:` is the crash): {tests}"
+    )
