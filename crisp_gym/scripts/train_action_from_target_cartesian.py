@@ -346,13 +346,27 @@ def stamp_action_repr(cfg, dataset) -> None:
 # ── Training launcher ─────────────────────────────────────────────────────────
 
 def main():
-    """Run lerobot-train with the target-cartesian action swap injected."""
+    """Run lerobot-train with the target-cartesian action swap injected.
+
+    CLI: --epochs N schedules by EPOCHS instead of lerobot's --steps (see
+    crisp_gym/util/epoch_steps.py). OUR flag, stripped before draccus parses.
+    """
+    import sys
+
     import lerobot.scripts.lerobot_train as lerobot_train
+
+    from crisp_gym.util.epoch_steps import pop_epochs_flag, resolve_epoch_steps
+
+    epochs, remaining = pop_epochs_flag(sys.argv[1:])
+    sys.argv = [sys.argv[0]] + remaining
 
     def _wrap(dataset, cfg):
         wrapped = TargetCartesianActionDataset(dataset)
         logger.info("Wrapped dataset: action arm dims := extra.target_cartesian.")
         recompute_action_stats(wrapped)
+        # AFTER wrapping (the wrapper is what the dataloader sees) and BEFORE
+        # lerobot_train.main() reads cfg.steps.
+        resolve_epoch_steps(cfg, wrapped, epochs)
         stamp_action_repr(cfg, wrapped)
         return wrapped
 

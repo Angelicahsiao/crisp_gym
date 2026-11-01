@@ -403,12 +403,21 @@ def _installed_lerobot_version() -> str:
             return "unknown"
 
 
-def stamp_pose_repr(cfg, dataset) -> None:
+def stamp_pose_repr(cfg, dataset, epoch_plan=None) -> None:
     """Write pose_repr.json next to the checkpoints (HANDOFF §4.2).
 
     Records what the model ACTUALLY sees, so the serving side (remote policy
     server / local RelativeLerobotPolicy) can verify its contract instead of
     guessing. Never fails training.
+
+    Args:
+        cfg: lerobot TrainPipelineConfig.
+        dataset: The wrapped dataset the dataloader will see.
+        epoch_plan: Optional `EpochPlan` from `resolve_epoch_steps`, recorded
+            under a "schedule" key. Without it the file is written as before.
+            Stamping this matters: it is the only durable record of how many
+            EPOCHS a checkpoint was trained for, which is what makes two runs
+            on different-sized datasets comparable after the fact.
     """
     import json
     from pathlib import Path
@@ -505,6 +514,8 @@ def stamp_pose_repr(cfg, dataset) -> None:
             # humans reading pose_repr.json next to a checkpoint.
             "lerobot_version_target": _installed_lerobot_version(),
         }
+        if epoch_plan is not None:
+            info["schedule"] = epoch_plan.as_dict()
         out_dir = Path(cfg.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "pose_repr.json").write_text(json.dumps(info, indent=2))
@@ -532,13 +543,26 @@ def main():
     CLI: --no-wrt-start trains a plain 10-D relative-state model; the default
     (--wrt-start) appends rot_wrt_start for the 16-D UMI-parity state. Deploy
     must match (RelativeLerobotPolicy state_input relative vs relative_wrt_start).
+
+    CLI: --epochs N schedules the run by EPOCHS instead of lerobot's --steps,
+    converting to steps once the dataset length is known. Use it whenever
+    comparing runs across datasets whose episode lengths differ: at a fixed
+    --steps, a dataset of shorter episodes is traversed more times and overfits
+    first. See crisp_gym/util/epoch_steps.py for the arithmetic and for upstream
+    reference epoch counts (UMI uses 120 for a UNet denoiser, 200 for a
+    transformer). Without --epochs the schedule is untouched and the equivalent
+    epoch count is only logged.
+
     These are OUR flags — stripped from argv before draccus parses the rest.
     """
     import sys
 
     import lerobot.scripts.lerobot_train as lerobot_train
 
+    from crisp_gym.util.epoch_steps import pop_epochs_flag, resolve_epoch_steps
+
     append_wrt, remaining = _pop_wrt_start_flag(sys.argv[1:])
+    epochs, remaining = pop_epochs_flag(remaining)
     sys.argv = [sys.argv[0]] + remaining
     logging.basicConfig(level=logging.INFO)
     logger.info(
@@ -550,7 +574,10 @@ def main():
         wrapped = RelativePoseDataset(dataset, append_wrt_start_to_state=append_wrt)
         logger.info("Wrapped dataset with RelativePoseDataset (UMI-style relative poses).")
         recompute_relative_stats(wrapped)
-        stamp_pose_repr(cfg, wrapped)
+        # AFTER wrapping: the wrapper is what the dataloader sees, so its len()
+        # is the epoch denominator. BEFORE lerobot_train.main() reads cfg.steps.
+        plan = resolve_epoch_steps(cfg, wrapped, epochs)
+        stamp_pose_repr(cfg, wrapped, epoch_plan=plan)
         return wrapped
 
     if hasattr(lerobot_train, "make_train_eval_datasets"):  # lerobot >= 0.5

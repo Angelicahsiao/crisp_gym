@@ -102,14 +102,25 @@ def main():
     recorded. The factory name differs by lerobot version (>=0.5:
     make_train_eval_datasets; 0.4.x: make_dataset); both are handled so the
     script runs against either.
+
+    CLI: --epochs N schedules by EPOCHS instead of lerobot's --steps (see
+    crisp_gym/util/epoch_steps.py). OUR flag, stripped before draccus parses.
     """
+    import sys
+
     import lerobot.scripts.lerobot_train as lerobot_train
+
+    from crisp_gym.util.epoch_steps import pop_epochs_flag, resolve_epoch_steps
+
+    epochs, remaining = pop_epochs_flag(sys.argv[1:])
+    sys.argv = [sys.argv[0]] + remaining
 
     if hasattr(lerobot_train, "make_train_eval_datasets"):  # lerobot >= 0.5
         original_pair = lerobot_train.make_train_eval_datasets
 
         def make_train_eval_stamped(cfg):
             dataset, eval_dataset = original_pair(cfg)
+            resolve_epoch_steps(cfg, dataset, epochs)
             stamp_action_repr(cfg, dataset)
             return dataset, eval_dataset
 
@@ -120,6 +131,7 @@ def main():
 
         def make_dataset_stamped(cfg):
             dataset = original_single(cfg)
+            resolve_epoch_steps(cfg, dataset, epochs)
             stamp_action_repr(cfg, dataset)
             return dataset
 
@@ -129,6 +141,20 @@ def main():
         # Unlike the relative wrapper, running unpatched here is still CORRECT
         # (no transform is the whole point) — so warn and proceed rather than
         # refuse. Only the provenance stamp is lost.
+        #
+        # ...UNLESS --epochs was passed: without the hook there is nowhere to
+        # read len(dataset), so the epoch target would be silently dropped and
+        # the run would use the default --steps schedule while LOOKING correct.
+        # That is exactly the failure this flag exists to prevent, so refuse.
+        if epochs is not None:
+            raise RuntimeError(
+                "--epochs was requested but lerobot_train exposes neither "
+                "'make_train_eval_datasets' (>=0.5) nor 'make_dataset' (0.4.x), so "
+                "the dataset length cannot be read and the epoch target cannot be "
+                "applied. Refusing to fall back to the --steps schedule silently. "
+                "Either drop --epochs and pass --steps explicitly, or update the "
+                "factory name in this script."
+            )
         logger.warning(
             "lerobot_train exposes neither make_train_eval_datasets nor "
             "make_dataset — training proceeds with no provenance stamp."
