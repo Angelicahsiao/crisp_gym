@@ -15,6 +15,7 @@ import pytest
 
 from crisp_gym.util.epoch_steps import (
     EXTRA_CHECKPOINTS,
+    MAX_SAVE_FREQ,
     checkpoint_schedule,
     effective_batch_size,
     epochs_for_steps,
@@ -156,10 +157,36 @@ def test_checkpoint_schedule_zero_extra_is_target_only():
     assert total == target == 16_875
 
 
-@pytest.mark.parametrize("bad", [(0, 5, 2), (-1, 5, 2), (100, 5, -1)])
+@pytest.mark.parametrize("bad", [(0, 5, 2), (-1, 5, 2), (100, 5, -1), (100, 5, 2, 0)])
 def test_checkpoint_schedule_rejects_bad_input(bad):
     with pytest.raises(ValueError):
         checkpoint_schedule(*bad)
+
+
+def test_checkpoint_schedule_cap_adds_checkpoints():
+    # 112,500 / 5 = 22,500 > 20,000 -> 6 checkpoints of 18,750.
+    assert checkpoint_schedule(112_500, 5, 2, 20_000) == (18_750, 112_500, 150_000, 6)
+    # Same input with the cap disabled keeps the sparse spacing.
+    assert checkpoint_schedule(112_500, 5, 2, None) == (22_500, 112_500, 157_500, 5)
+
+
+def test_checkpoint_schedule_cap_boundary_is_inclusive():
+    # Exactly 20,000 is allowed: no extra checkpoint.
+    assert checkpoint_schedule(100_000, 5, 2, 20_000) == (20_000, 100_000, 140_000, 5)
+    # One step over forces a sixth checkpoint.
+    save, target, _, n = checkpoint_schedule(100_001, 5, 2, 20_000)
+    assert n == 6 and save <= 20_000 and target >= 100_001
+
+
+@pytest.mark.parametrize("target", [1, 19_999, 20_000, 20_001, 99_999, 112_500, 199_969, 1_234_567])
+@pytest.mark.parametrize("n", [1, 5, 10])
+def test_checkpoint_schedule_never_exceeds_the_cap(target, n):
+    save, target_step, total, n_used = checkpoint_schedule(target, n, 2, 20_000)
+    assert 1 <= save <= 20_000
+    assert target_step == n_used * save
+    assert target <= target_step < target + n_used     # covers epochs; overshoot < n
+    assert total == target_step + 2 * save
+    assert n_used >= min(n, target)                     # the cap only ADDS checkpoints
 
 
 # ── resolve_epoch_steps: without --epochs ─────────────────────────────────────
@@ -185,6 +212,15 @@ def test_resolve_without_epochs_tolerates_missing_save_freq():
     assert plan.save_freq is None
 
 
+def test_cap_does_not_apply_without_epochs():
+    # Agreed scope: an explicit --save_freq above the cap is left as given.
+    cfg = _cfg(steps=200_000, save_freq=50_000)
+    plan = resolve_epoch_steps(cfg, _Dataset(9_000), None)
+    assert cfg.save_freq == 50_000
+    assert cfg.steps == 200_000
+    assert plan.save_freq_capped is False
+
+
 # ── resolve_epoch_steps: the checkpoint schedule ──────────────────────────────
 
 def test_worked_example_lands_on_target_then_two_more_intervals():
@@ -202,10 +238,57 @@ def test_worked_example_lands_on_target_then_two_more_intervals():
 
 
 def test_two_more_checkpoints_than_the_incoming_schedule():
+    # Small target (16,875 steps): the save_freq cap never fires here.
     for steps, save in [(100_000, 20_000), (100_000, 10_000), (50_000, 5_000), (30_000, 30_000)]:
         cfg = _cfg(steps=steps, save_freq=save)
         plan = resolve_epoch_steps(cfg, _Dataset(9_000), 120)
         assert len(plan.checkpoint_steps) == round(steps / save) + EXTRA_CHECKPOINTS
+        assert plan.save_freq_capped is False
+
+
+def test_cap_worked_example():
+    """The agreed example: 60,000 samples, batch 64, --epochs 120."""
+    cfg = _cfg()                                      # 100k / 20k -> 5 checkpoints
+    plan = resolve_epoch_steps(cfg, _Dataset(60_000), 120)
+
+    assert plan.target_steps_min == 112_500
+    assert plan.save_freq_uncapped == 22_500          # what 5 checkpoints would need
+    assert plan.save_freq_capped is True
+    assert cfg.save_freq == 18_750                    # 20 epochs per checkpoint
+    assert plan.n_target_checkpoints == 6
+    assert plan.target_step == 112_500                # exactly on target
+    assert cfg.steps == 150_000                       # target + 2 x 18,750
+    assert plan.checkpoint_steps == [18_750 * i for i in range(1, 9)]
+    assert plan.epochs_target == pytest.approx(120.0)
+    assert plan.epochs_after == pytest.approx(160.0)
+
+
+def test_cap_still_gives_exactly_two_extra_checkpoints():
+    cfg = _cfg()
+    plan = resolve_epoch_steps(cfg, _Dataset(60_000), 120)
+    after = [s for s in plan.checkpoint_steps if s > plan.target_step]
+    assert after == [131_250, 150_000]
+
+
+@pytest.mark.parametrize("n_samples", [9_000, 53_000, 60_000, 64_001, 250_000, 1_000_000])
+@pytest.mark.parametrize("incoming_save", [5_000, 20_000, 50_000, 100_000])
+def test_save_freq_never_exceeds_cap_with_epochs(n_samples, incoming_save):
+    cfg = _cfg(steps=100_000, save_freq=incoming_save)
+    plan = resolve_epoch_steps(cfg, _Dataset(n_samples), 120)
+    assert cfg.save_freq <= MAX_SAVE_FREQ == 20_000
+    assert plan.target_step in plan.checkpoint_steps
+    assert plan.epochs_target >= 120
+    assert cfg.steps == plan.target_step + 2 * cfg.save_freq
+
+
+def test_incoming_save_freq_above_cap_is_tightened_with_epochs():
+    # An explicit --save_freq 50000 with --epochs: the cap fires even though the
+    # incoming spacing, not the epoch target, is what made it sparse.
+    cfg = _cfg(steps=100_000, save_freq=50_000)       # 2 checkpoints incoming
+    plan = resolve_epoch_steps(cfg, _Dataset(60_000), 120)
+    assert cfg.save_freq <= 20_000
+    assert plan.save_freq_capped is True
+    assert plan.n_target_checkpoints == 6             # ceil(112,500 / 20,000)
 
 
 def test_exactly_two_checkpoints_land_after_the_target():
@@ -315,6 +398,9 @@ def test_plan_as_dict_is_json_serializable_and_records_the_schedule():
     assert d["epochs_target"] == pytest.approx(120.0)
     assert d["epochs"] == pytest.approx(168.0)
     assert d["save_freq"] == 3_375
+    assert d["max_save_freq"] == MAX_SAVE_FREQ
+    assert d["save_freq_capped"] is False
+    assert d["n_checkpoints_incoming"] == 5
     assert d["n_target_checkpoints"] == 5
     assert d["extra_checkpoints"] == EXTRA_CHECKPOINTS
     assert d["checkpoint_steps"] == [3_375 * i for i in range(1, 8)]
@@ -330,6 +416,15 @@ def test_describe_shows_target_and_extra_checkpoints():
     assert "+ 2 extra checkpoint intervals -> steps = 23625" in text
     assert text.count("<- epoch target") == 1
     assert text.count("<- extra") == 2
+
+
+def test_describe_reports_the_cap_only_when_it_fires():
+    capped = resolve_epoch_steps(_cfg(), _Dataset(60_000), 120).describe()
+    assert "save_freq capped at 20000" in capped
+    assert "every 22500 steps, so 6 are used instead" in capped
+
+    uncapped = resolve_epoch_steps(_cfg(), _Dataset(9_000), 120).describe()
+    assert "capped" not in uncapped
 
 
 def test_describe_elides_long_tables_but_keeps_target_and_extras():

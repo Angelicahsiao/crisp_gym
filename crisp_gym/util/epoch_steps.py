@@ -71,11 +71,15 @@ PAST the epoch target, with one checkpoint landing exactly on the target:
 1. ``target_steps_min = ceil(epochs * num_samples / effective_batch)``.
 2. ``n = round(steps_before / save_freq_before)`` — the number of checkpoints
    the incoming schedule would have produced (lerobot default 100k / 20k = 5).
-3. ``save_freq = ceil(target_steps_min / n)``; the epoch-target checkpoint is
+3. ``save_freq`` is capped at ``MAX_SAVE_FREQ`` (20,000): if
+   ``ceil(target_steps_min / n)`` would exceed it, ``n`` is raised to
+   ``ceil(target_steps_min / MAX_SAVE_FREQ)``. The cap adds checkpoints; it
+   never moves the target or drops a checkpoint.
+4. ``save_freq = ceil(target_steps_min / n)``; the epoch-target checkpoint is
    at ``target_step = n * save_freq``. That rounds the target UP by fewer than
    ``n`` steps when ``target_steps_min`` is not a multiple of ``n``, so the
    requested epochs are always fully covered.
-4. ``steps = target_step + EXTRA_CHECKPOINTS * save_freq`` — so the run saves
+5. ``steps = target_step + EXTRA_CHECKPOINTS * save_freq`` — so the run saves
    ``n + 2`` checkpoints: ``n`` up to the epoch target, then 2 beyond it.
 
 Example: 9,000 samples, batch 64, ``--epochs 120``, lerobot defaults::
@@ -83,6 +87,16 @@ Example: 9,000 samples, batch 64, ``--epochs 120``, lerobot defaults::
     target 16,875 steps (120 ep); save every 3,375 steps (24 ep)
     checkpoints at 3,375 ... 16,875 (target) | 20,250, 23,625 (extra)
     steps = 23,625 (168 ep)
+
+Example where the cap applies: 60,000 samples, batch 64, ``--epochs 120``::
+
+    target 112,500 steps; 5 checkpoints would be every 22,500 (> 20,000)
+    -> 6 checkpoints, every 18,750 steps (20 ep)
+    checkpoints at 18,750 ... 112,500 (target) | 131,250, 150,000 (extra)
+    steps = 150,000 (160 ep)
+
+The cap applies only with ``--epochs``. Without it, an explicit ``--save_freq``
+above 20,000 is left exactly as given, like the rest of the schedule.
 
 The two extra checkpoints show whether training past the target helps or starts
 to overfit. Because lerobot's LR schedule spans the whole run (``cfg.steps``),
@@ -110,6 +124,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "EXTRA_CHECKPOINTS",
+    "MAX_SAVE_FREQ",
     "EpochPlan",
     "pop_epochs_flag",
     "effective_batch_size",
@@ -123,6 +138,11 @@ __all__ = [
 # Not applied without --epochs: there is no epoch target to extend past then,
 # and the schedule is left exactly as lerobot received it.
 EXTRA_CHECKPOINTS = 2
+
+# Upper bound on save_freq (in optimizer steps) whenever --epochs is given. A
+# spacing that would exceed it is tightened by adding checkpoints, so one still
+# lands on the epoch target. Not applied without --epochs.
+MAX_SAVE_FREQ = 20_000
 
 # Longest checkpoint table printed in full; longer ones elide the middle.
 _MAX_TABLE_ROWS = 12
@@ -147,6 +167,13 @@ class EpochPlan:
         save_freq: `cfg.save_freq` as written back (None when absent and
             epochs was None).
         n_target_checkpoints: Checkpoints up to and including the target.
+        n_checkpoints_incoming: Checkpoints the incoming schedule implied
+            (``round(steps_before / save_freq_before)``; 0 without epochs).
+        max_save_freq: The save_freq cap applied (None without epochs).
+        save_freq_uncapped: The spacing the incoming checkpoint count would
+            have given (None without epochs). Above `max_save_freq` iff the
+            cap fired.
+        save_freq_capped: True when the cap raised the checkpoint count.
         extra_checkpoints: Checkpoint intervals trained past the target
             (`EXTRA_CHECKPOINTS` with epochs, else 0).
         epochs_requested: The ``--epochs`` value, or None.
@@ -168,6 +195,10 @@ class EpochPlan:
         save_freq: int | None = None,
         n_target_checkpoints: int = 0,
         extra_checkpoints: int = 0,
+        n_checkpoints_incoming: int = 0,
+        max_save_freq: int | None = None,
+        save_freq_uncapped: int | None = None,
+        save_freq_capped: bool = False,
     ) -> None:
         self.num_samples = num_samples
         self.batch_size = batch_size
@@ -182,6 +213,10 @@ class EpochPlan:
         self.save_freq = save_freq
         self.n_target_checkpoints = n_target_checkpoints
         self.extra_checkpoints = extra_checkpoints
+        self.n_checkpoints_incoming = n_checkpoints_incoming
+        self.max_save_freq = max_save_freq
+        self.save_freq_uncapped = save_freq_uncapped
+        self.save_freq_capped = save_freq_capped
 
     def _epochs(self, steps: int) -> float:
         return epochs_for_steps(steps, self.effective_batch, self.num_samples)
@@ -232,6 +267,9 @@ class EpochPlan:
             "target_step": self.target_step,
             "epochs_target": round(self.epochs_target, 3),
             "save_freq": self.save_freq,
+            "max_save_freq": self.max_save_freq,
+            "save_freq_capped": self.save_freq_capped,
+            "n_checkpoints_incoming": self.n_checkpoints_incoming,
             "n_target_checkpoints": self.n_target_checkpoints,
             "extra_checkpoints": self.extra_checkpoints,
             "checkpoint_steps": self.checkpoint_steps,
@@ -278,6 +316,17 @@ class EpochPlan:
                 rounded,
             )
         )
+        if self.save_freq_capped:
+            lines.append(
+                "[epochs] save_freq capped at %d: %d checkpoints up to the target "
+                "would be every %d steps, so %d are used instead"
+                % (
+                    self.max_save_freq,
+                    self.n_checkpoints_incoming,
+                    self.save_freq_uncapped,
+                    self.n_target_checkpoints,
+                )
+            )
         lines.append(
             "[epochs] + %d extra checkpoint intervals -> steps = %d (%.1f epochs)  "
             "(was %d, i.e. %.1f epochs)"
@@ -408,7 +457,10 @@ def steps_for_epochs(epochs: float, effective_batch: int, num_samples: int) -> i
 
 
 def checkpoint_schedule(
-    target_steps_min: int, n_checkpoints: int, extra_checkpoints: int = EXTRA_CHECKPOINTS
+    target_steps_min: int,
+    n_checkpoints: int,
+    extra_checkpoints: int = EXTRA_CHECKPOINTS,
+    max_save_freq: int | None = MAX_SAVE_FREQ,
 ) -> tuple[int, int, int, int]:
     """Lay checkpoints out so one lands exactly on the epoch target.
 
@@ -417,18 +469,28 @@ def checkpoint_schedule(
         n_checkpoints: Checkpoints wanted up to and including the target. Capped
             at `target_steps_min`, since save_freq cannot go below 1.
         extra_checkpoints: Checkpoint intervals to train past the target.
+        max_save_freq: Upper bound on the spacing. When `n_checkpoints` would
+            space them further apart, the count is raised to
+            ``ceil(target_steps_min / max_save_freq)`` instead. None disables.
 
     Returns:
         ``(save_freq, target_step, total_steps, n_used)`` where
-        ``target_step = n_used * save_freq >= target_steps_min`` (overshoot
-        below `n_used` steps) and ``total_steps = target_step +
-        extra_checkpoints * save_freq``.
+        ``save_freq <= max_save_freq``, ``target_step = n_used * save_freq >=
+        target_steps_min`` (overshoot below `n_used` steps) and ``total_steps =
+        target_step + extra_checkpoints * save_freq``.
     """
     if target_steps_min <= 0:
         raise ValueError("target_steps_min must be positive")
     if extra_checkpoints < 0:
         raise ValueError("extra_checkpoints must be >= 0")
+    if max_save_freq is not None and max_save_freq < 1:
+        raise ValueError("max_save_freq must be >= 1 (or None to disable)")
     n_used = max(1, min(n_checkpoints, target_steps_min))
+    if max_save_freq is not None:
+        # Fewest checkpoints whose spacing fits under the cap. Since
+        # target_steps_min / n_used <= max_save_freq and the cap is an integer,
+        # the ceil below cannot exceed it either.
+        n_used = max(n_used, math.ceil(target_steps_min / max_save_freq))
     save_freq = math.ceil(target_steps_min / n_used)
     target_step = n_used * save_freq
     total_steps = target_step + extra_checkpoints * save_freq
@@ -444,8 +506,9 @@ def resolve_epoch_steps(cfg: Any, dataset: Any, epochs: float | None) -> EpochPl
 
     With `epochs`, `cfg.steps`, `cfg.save_freq` and (if enabled)
     `cfg.eval_freq` are rewritten per the module's "Checkpoint schedule":
-    a checkpoint lands on the epoch target and training continues for
-    `EXTRA_CHECKPOINTS` more checkpoint intervals.
+    a checkpoint lands on the epoch target, `save_freq` never exceeds
+    `MAX_SAVE_FREQ`, and training continues for `EXTRA_CHECKPOINTS` more
+    checkpoint intervals.
 
     With ``epochs=None`` nothing is modified; the equivalent epoch count is
     still computed and logged, so a run's length in epochs is always on record.
@@ -519,8 +582,14 @@ def resolve_epoch_steps(cfg: Any, dataset: Any, epochs: float | None) -> EpochPl
     # shorter run does not silently save fewer checkpoints (and miss the best).
     n_checkpoints = max(1, round(steps_before / save_before))
     save_freq, target_step, steps_after, n_used = checkpoint_schedule(
-        target_steps_min, n_checkpoints, EXTRA_CHECKPOINTS
+        target_steps_min, n_checkpoints, EXTRA_CHECKPOINTS, MAX_SAVE_FREQ
     )
+    # What the incoming checkpoint count would have given without the cap —
+    # only for reporting whether (and why) the cap changed the layout.
+    save_freq_uncapped, _, _, n_uncapped = checkpoint_schedule(
+        target_steps_min, n_checkpoints, EXTRA_CHECKPOINTS, None
+    )
+    save_freq_capped = n_used > n_uncapped
 
     rescaled: dict[str, tuple[int, int]] = {}
     if save_freq != save_before:
@@ -551,6 +620,10 @@ def resolve_epoch_steps(cfg: Any, dataset: Any, epochs: float | None) -> EpochPl
         save_freq=save_freq,
         n_target_checkpoints=n_used,
         extra_checkpoints=EXTRA_CHECKPOINTS,
+        n_checkpoints_incoming=n_uncapped,
+        max_save_freq=MAX_SAVE_FREQ,
+        save_freq_uncapped=save_freq_uncapped,
+        save_freq_capped=save_freq_capped,
     )
     for line in plan.describe().splitlines():
         logger.info(line)
