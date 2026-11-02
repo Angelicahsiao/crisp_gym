@@ -20,11 +20,11 @@ meaningless and the shorter-episode model overfits first. Every diffusion-policy
 codebase upstream of this one therefore schedules in epochs, not steps (see the
 reference table below).
 
-This module converts an epoch target into the step count lerobot wants, and —
-because `cfg.steps` changes — rescales the step-denominated checkpoint and eval
-intervals so a shorter run still produces as many checkpoints as a longer one.
-`log_freq` is deliberately NOT rescaled: it controls console/wandb density,
-which should stay constant so logs remain readable across runs.
+This module converts an epoch target into the step count lerobot wants and lays
+the checkpoints out around it (see "Checkpoint schedule" below). `eval_freq` is
+rescaled by the same factor as `save_freq`. `log_freq` is deliberately NOT
+rescaled: it controls console/wandb density, which should stay constant so logs
+remain readable across runs.
 
 Reference epoch counts (read from upstream configs, not from memory)
 --------------------------------------------------------------------
@@ -63,17 +63,38 @@ own numbers and pass that to the handheld run::
     epochs_robot = steps_robot * batch / num_samples_robot
     python3 ... lerobot_relative_pose.py --epochs <epochs_robot> ...
 
+Checkpoint schedule
+-------------------
+With ``--epochs``, training runs ``EXTRA_CHECKPOINTS`` (2) checkpoint intervals
+PAST the epoch target, with one checkpoint landing exactly on the target:
+
+1. ``target_steps_min = ceil(epochs * num_samples / effective_batch)``.
+2. ``n = round(steps_before / save_freq_before)`` — the number of checkpoints
+   the incoming schedule would have produced (lerobot default 100k / 20k = 5).
+3. ``save_freq = ceil(target_steps_min / n)``; the epoch-target checkpoint is
+   at ``target_step = n * save_freq``. That rounds the target UP by fewer than
+   ``n`` steps when ``target_steps_min`` is not a multiple of ``n``, so the
+   requested epochs are always fully covered.
+4. ``steps = target_step + EXTRA_CHECKPOINTS * save_freq`` — so the run saves
+   ``n + 2`` checkpoints: ``n`` up to the epoch target, then 2 beyond it.
+
+Example: 9,000 samples, batch 64, ``--epochs 120``, lerobot defaults::
+
+    target 16,875 steps (120 ep); save every 3,375 steps (24 ep)
+    checkpoints at 3,375 ... 16,875 (target) | 20,250, 23,625 (extra)
+    steps = 23,625 (168 ep)
+
+The two extra checkpoints show whether training past the target helps or starts
+to overfit. Because lerobot's LR schedule spans the whole run (``cfg.steps``),
+the target checkpoint is NOT identical to the final checkpoint of a standalone
+run that stops at the target: its learning rate has not finished decaying.
+
 Usage
 -----
 ``--epochs N`` is consumed by `pop_epochs_flag` before draccus parses argv, then
 applied inside the dataset factory hook (the one place that has both the WRAPPED
 dataset — so ``len()`` is post-wrapping — and ``cfg``, before the training loop
 reads ``cfg.steps``).
-
-With ``--epochs``, the run is scheduled for ``EXTRA_STEPS`` (2) steps MORE than
-the epoch-derived count: ``steps = ceil(epochs * num_samples / effective_batch)
-+ EXTRA_STEPS``. The logged/stamped epoch count reflects the final total, so it
-reads very slightly above the requested value.
 
 Without ``--epochs`` nothing is rescaled, but the equivalent epoch count is
 still logged, so two runs can never again be compared without seeing it.
@@ -88,23 +109,23 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "EXTRA_STEPS",
+    "EXTRA_CHECKPOINTS",
     "EpochPlan",
     "pop_epochs_flag",
     "effective_batch_size",
     "epochs_for_steps",
     "steps_for_epochs",
+    "checkpoint_schedule",
     "resolve_epoch_steps",
 ]
 
-# Intervals rescaled alongside cfg.steps. log_freq is excluded on purpose: it
-# sets logging DENSITY, which should not change with run length.
-_RESCALED_FREQ_FIELDS = ("save_freq", "eval_freq")
-
-# Steps added on top of the epoch-derived step count whenever --epochs is given.
-# Not applied without --epochs: there is no epoch-derived count to add to then,
+# Checkpoint intervals trained PAST the epoch target whenever --epochs is given.
+# Not applied without --epochs: there is no epoch target to extend past then,
 # and the schedule is left exactly as lerobot received it.
-EXTRA_STEPS = 2
+EXTRA_CHECKPOINTS = 2
+
+# Longest checkpoint table printed in full; longer ones elide the middle.
+_MAX_TABLE_ROWS = 12
 
 
 class EpochPlan:
@@ -118,11 +139,16 @@ class EpochPlan:
         effective_batch: ``batch_size * grad_accum`` — samples per optimizer step.
         steps_before: `cfg.steps` as it arrived from the CLI/defaults.
         steps_after: `cfg.steps` as written back (== steps_before when epochs
-            was None). Includes `extra_steps`.
-        extra_steps: Steps added on top of the epoch-derived count
-            (`EXTRA_STEPS` when epochs was given, else 0).
-        epochs_before: Epoch equivalent of `steps_before`.
-        epochs_after: Epoch equivalent of `steps_after`.
+            was None). Includes the extra checkpoint intervals.
+        target_steps_min: ``ceil(epochs * num_samples / effective_batch)``, the
+            fewest steps covering the requested epochs (None without epochs).
+        target_step: Step of the checkpoint that lands on the epoch target,
+            ``>= target_steps_min`` (== steps_after without epochs).
+        save_freq: `cfg.save_freq` as written back (None when absent and
+            epochs was None).
+        n_target_checkpoints: Checkpoints up to and including the target.
+        extra_checkpoints: Checkpoint intervals trained past the target
+            (`EXTRA_CHECKPOINTS` with epochs, else 0).
         epochs_requested: The ``--epochs`` value, or None.
         rescaled: ``{field: (old, new)}`` for each interval actually rescaled.
     """
@@ -137,7 +163,11 @@ class EpochPlan:
         steps_after: int,
         epochs_requested: float | None,
         rescaled: dict[str, tuple[int, int]],
-        extra_steps: int = 0,
+        target_steps_min: int | None = None,
+        target_step: int | None = None,
+        save_freq: int | None = None,
+        n_target_checkpoints: int = 0,
+        extra_checkpoints: int = 0,
     ) -> None:
         self.num_samples = num_samples
         self.batch_size = batch_size
@@ -145,16 +175,47 @@ class EpochPlan:
         self.effective_batch = batch_size * grad_accum
         self.steps_before = steps_before
         self.steps_after = steps_after
-        self.extra_steps = extra_steps
         self.epochs_requested = epochs_requested
         self.rescaled = rescaled
-        self.epochs_before = epochs_for_steps(steps_before, self.effective_batch, num_samples)
-        self.epochs_after = epochs_for_steps(steps_after, self.effective_batch, num_samples)
+        self.target_steps_min = target_steps_min
+        self.target_step = steps_after if target_step is None else target_step
+        self.save_freq = save_freq
+        self.n_target_checkpoints = n_target_checkpoints
+        self.extra_checkpoints = extra_checkpoints
+
+    def _epochs(self, steps: int) -> float:
+        return epochs_for_steps(steps, self.effective_batch, self.num_samples)
+
+    @property
+    def epochs_before(self) -> float:
+        """Epoch equivalent of `steps_before`."""
+        return self._epochs(self.steps_before)
+
+    @property
+    def epochs_after(self) -> float:
+        """Epoch equivalent of `steps_after` (the whole run)."""
+        return self._epochs(self.steps_after)
+
+    @property
+    def epochs_target(self) -> float:
+        """Epoch equivalent of `target_step`."""
+        return self._epochs(self.target_step)
 
     @property
     def changed(self) -> bool:
         """True when the step count was actually rewritten."""
         return self.steps_after != self.steps_before
+
+    @property
+    def checkpoint_steps(self) -> list[int]:
+        """Steps at which interval checkpoints are saved (empty without epochs).
+
+        `steps_after` is a whole multiple of `save_freq` by construction, so the
+        last entry is the end of the run.
+        """
+        if self.epochs_requested is None or not self.save_freq:
+            return []
+        return list(range(self.save_freq, self.steps_after + 1, self.save_freq))
 
     def as_dict(self) -> dict[str, Any]:
         """JSON-safe summary for stamping next to a checkpoint."""
@@ -164,11 +225,16 @@ class EpochPlan:
             "grad_accum": self.grad_accum,
             "effective_batch": self.effective_batch,
             "steps": self.steps_after,
-            "extra_steps": self.extra_steps,
             "steps_before": self.steps_before,
             "epochs": round(self.epochs_after, 3),
             "epochs_before": round(self.epochs_before, 3),
             "epochs_requested": self.epochs_requested,
+            "target_step": self.target_step,
+            "epochs_target": round(self.epochs_target, 3),
+            "save_freq": self.save_freq,
+            "n_target_checkpoints": self.n_target_checkpoints,
+            "extra_checkpoints": self.extra_checkpoints,
+            "checkpoint_steps": self.checkpoint_steps,
             "rescaled_intervals": {k: {"from": v[0], "to": v[1]} for k, v in self.rescaled.items()},
         }
 
@@ -186,27 +252,69 @@ class EpochPlan:
                 "when their datasets differ in size." % (self.steps_after, self.epochs_after)
             )
             return "\n".join(lines)
+
         lines.append(
-            "[epochs] --epochs %g -> steps = ceil(%g x %d / %d) + %d = %d  (was %d, i.e. %.1f epochs)"
+            "[epochs] --epochs %g -> epoch target = ceil(%g x %d / %d) = %d steps"
             % (
                 self.epochs_requested,
                 self.epochs_requested,
                 self.num_samples,
                 self.effective_batch,
-                self.extra_steps,
+                self.target_steps_min,
+            )
+        )
+        rounded = ""
+        if self.target_step != self.target_steps_min:
+            rounded = " (rounded up from %d so it lands on a checkpoint)" % self.target_steps_min
+        lines.append(
+            "[epochs] %d checkpoints up to the target, every %d steps (%.1f epochs); "
+            "target checkpoint at step %d (%.2f epochs)%s"
+            % (
+                self.n_target_checkpoints,
+                self.save_freq,
+                self._epochs(self.save_freq),
+                self.target_step,
+                self.epochs_target,
+                rounded,
+            )
+        )
+        lines.append(
+            "[epochs] + %d extra checkpoint intervals -> steps = %d (%.1f epochs)  "
+            "(was %d, i.e. %.1f epochs)"
+            % (
+                self.extra_checkpoints,
                 self.steps_after,
+                self.epochs_after,
                 self.steps_before,
                 self.epochs_before,
             )
         )
         for field, (old, new) in self.rescaled.items():
-            lines.append(
-                "[epochs] rescaled %s %d -> %d (same count per run at the new step total)"
-                % (field, old, new)
-            )
-        if not self.rescaled:
-            lines.append("[epochs] no interval fields to rescale on this config")
+            lines.append("[epochs] rescaled %s %d -> %d" % (field, old, new))
+        lines.append("[epochs] checkpoints (step, epochs):")
+        lines.extend(self._checkpoint_table())
         return "\n".join(lines)
+
+    def _checkpoint_table(self) -> list[str]:
+        steps = self.checkpoint_steps
+        rows = []
+        for s in steps:
+            tag = ""
+            if s == self.target_step:
+                tag = "  <- epoch target"
+            elif s > self.target_step:
+                tag = "  <- extra"
+            rows.append("[epochs]   %9d  %8.2f%s" % (s, self._epochs(s), tag))
+        if len(rows) <= _MAX_TABLE_ROWS:
+            return rows
+        # Keep the head and everything from just before the target onward —
+        # the target and the extra checkpoints are the rows that matter.
+        tail = self.extra_checkpoints + 2
+        head = max(1, _MAX_TABLE_ROWS - tail - 1)
+        if head + tail >= len(rows):
+            return rows
+        hidden = len(rows) - head - tail
+        return [*rows[:head], "[epochs]   ... (%d more)" % hidden, *rows[-tail:]]
 
 
 def pop_epochs_flag(argv: list[str]) -> tuple[float | None, list[str]]:
@@ -299,12 +407,45 @@ def steps_for_epochs(epochs: float, effective_batch: int, num_samples: int) -> i
     return max(1, math.ceil(epochs * num_samples / effective_batch))
 
 
+def checkpoint_schedule(
+    target_steps_min: int, n_checkpoints: int, extra_checkpoints: int = EXTRA_CHECKPOINTS
+) -> tuple[int, int, int, int]:
+    """Lay checkpoints out so one lands exactly on the epoch target.
+
+    Args:
+        target_steps_min: Fewest steps that cover the requested epochs.
+        n_checkpoints: Checkpoints wanted up to and including the target. Capped
+            at `target_steps_min`, since save_freq cannot go below 1.
+        extra_checkpoints: Checkpoint intervals to train past the target.
+
+    Returns:
+        ``(save_freq, target_step, total_steps, n_used)`` where
+        ``target_step = n_used * save_freq >= target_steps_min`` (overshoot
+        below `n_used` steps) and ``total_steps = target_step +
+        extra_checkpoints * save_freq``.
+    """
+    if target_steps_min <= 0:
+        raise ValueError("target_steps_min must be positive")
+    if extra_checkpoints < 0:
+        raise ValueError("extra_checkpoints must be >= 0")
+    n_used = max(1, min(n_checkpoints, target_steps_min))
+    save_freq = math.ceil(target_steps_min / n_used)
+    target_step = n_used * save_freq
+    total_steps = target_step + extra_checkpoints * save_freq
+    return save_freq, target_step, total_steps, n_used
+
+
 def resolve_epoch_steps(cfg: Any, dataset: Any, epochs: float | None) -> EpochPlan:
     """Apply an epoch target to `cfg` in place and return the resolved plan.
 
     Call this from the dataset-factory hook, with the dataset the dataloader
     will actually see (i.e. AFTER any relative-pose wrapping — a wrapper can
     change ``len()``), and before the training loop reads ``cfg.steps``.
+
+    With `epochs`, `cfg.steps`, `cfg.save_freq` and (if enabled)
+    `cfg.eval_freq` are rewritten per the module's "Checkpoint schedule":
+    a checkpoint lands on the epoch target and training continues for
+    `EXTRA_CHECKPOINTS` more checkpoint intervals.
 
     With ``epochs=None`` nothing is modified; the equivalent epoch count is
     still computed and logged, so a run's length in epochs is always on record.
@@ -318,8 +459,9 @@ def resolve_epoch_steps(cfg: Any, dataset: Any, epochs: float | None) -> EpochPl
         The `EpochPlan`, for logging, stamping and tests.
 
     Raises:
-        RuntimeError: if `batch_size`/`steps` cannot be read off `cfg`, or the
-            dataset is empty.
+        RuntimeError: if `batch_size`/`steps` cannot be read off `cfg`, the
+            dataset is empty, or — with `epochs` — checkpointing is disabled or
+            `save_freq` is unusable (the extra checkpoints could not exist).
     """
     num_samples = len(dataset)
     if num_samples <= 0:
@@ -339,26 +481,62 @@ def resolve_epoch_steps(cfg: Any, dataset: Any, epochs: float | None) -> EpochPl
             "crisp_gym/util/epoch_steps.py:resolve_epoch_steps."
         )
 
-    rescaled: dict[str, tuple[int, int]] = {}
-    steps_after = steps_before
-    extra_steps = 0
+    if epochs is None:
+        save_freq = getattr(cfg, "save_freq", None)
+        plan = EpochPlan(
+            num_samples=num_samples,
+            batch_size=batch_size,
+            grad_accum=grad_accum,
+            steps_before=steps_before,
+            steps_after=steps_before,
+            epochs_requested=None,
+            rescaled={},
+            save_freq=save_freq if isinstance(save_freq, int) else None,
+        )
+        for line in plan.describe().splitlines():
+            logger.info(line)
+        return plan
 
-    if epochs is not None:
-        extra_steps = EXTRA_STEPS
-        steps_after = steps_for_epochs(epochs, effective_batch, num_samples) + extra_steps
-        # Keep the number of checkpoints/evals per run constant. Scaling by the
-        # step ratio means a 40k-step run saves as often per unit of training as
-        # a 100k-step one did, instead of producing 2.5x fewer checkpoints and
-        # possibly skipping the best one.
-        ratio = steps_after / steps_before
-        for field in _RESCALED_FREQ_FIELDS:
-            old = getattr(cfg, field, None)
-            if isinstance(old, int) and old > 0:
-                new = max(1, min(round(old * ratio), steps_after))
-                if new != old:
-                    setattr(cfg, field, new)
-                    rescaled[field] = (old, new)
-        cfg.steps = steps_after
+    # The extra checkpoints are the point of the schedule; refuse rather than
+    # train past the target with nothing saved to compare.
+    if getattr(cfg, "save_checkpoint", True) is False:
+        raise RuntimeError(
+            f"--epochs schedules {EXTRA_CHECKPOINTS} checkpoint intervals past the "
+            "epoch target, but checkpointing is disabled (save_checkpoint=false). "
+            "Enable checkpointing or drop --epochs."
+        )
+    save_before = getattr(cfg, "save_freq", None)
+    if not isinstance(save_before, int) or save_before <= 0:
+        raise RuntimeError(
+            f"--epochs schedules {EXTRA_CHECKPOINTS} checkpoint intervals past the "
+            f"epoch target, which needs a positive integer 'save_freq' (found "
+            f"{save_before!r}). lerobot may have renamed it — update "
+            "crisp_gym/util/epoch_steps.py:resolve_epoch_steps."
+        )
+
+    target_steps_min = steps_for_epochs(epochs, effective_batch, num_samples)
+    # Keep the checkpoint count the incoming schedule would have produced, so a
+    # shorter run does not silently save fewer checkpoints (and miss the best).
+    n_checkpoints = max(1, round(steps_before / save_before))
+    save_freq, target_step, steps_after, n_used = checkpoint_schedule(
+        target_steps_min, n_checkpoints, EXTRA_CHECKPOINTS
+    )
+
+    rescaled: dict[str, tuple[int, int]] = {}
+    if save_freq != save_before:
+        cfg.save_freq = save_freq
+        rescaled["save_freq"] = (save_before, save_freq)
+
+    # eval_freq follows save_freq by the same factor, so evals stay aligned with
+    # checkpoints wherever they were before. 0/absent = disabled: left alone.
+    eval_before = getattr(cfg, "eval_freq", None)
+    if isinstance(eval_before, int) and eval_before > 0:
+        eval_after = max(1, min(round(eval_before * save_freq / save_before), steps_after))
+        if eval_after != eval_before:
+            cfg.eval_freq = eval_after
+            rescaled["eval_freq"] = (eval_before, eval_after)
+
+    cfg.steps = steps_after
 
     plan = EpochPlan(
         num_samples=num_samples,
@@ -368,7 +546,11 @@ def resolve_epoch_steps(cfg: Any, dataset: Any, epochs: float | None) -> EpochPl
         steps_after=steps_after,
         epochs_requested=epochs,
         rescaled=rescaled,
-        extra_steps=extra_steps,
+        target_steps_min=target_steps_min,
+        target_step=target_step,
+        save_freq=save_freq,
+        n_target_checkpoints=n_used,
+        extra_checkpoints=EXTRA_CHECKPOINTS,
     )
     for line in plan.describe().splitlines():
         logger.info(line)

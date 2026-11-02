@@ -103,8 +103,9 @@ def main():
     make_train_eval_datasets; 0.4.x: make_dataset); both are handled so the
     script runs against either.
 
-    CLI: --epochs N schedules by EPOCHS instead of lerobot's --steps (see
-    crisp_gym/util/epoch_steps.py). OUR flag, stripped before draccus parses.
+    CLI: --epochs N schedules by EPOCHS instead of lerobot's --steps, landing a
+    checkpoint on the epoch target and training 2 checkpoint intervals past it
+    (see crisp_gym/util/epoch_steps.py). OUR flag, stripped before draccus parses.
     """
     import sys
 

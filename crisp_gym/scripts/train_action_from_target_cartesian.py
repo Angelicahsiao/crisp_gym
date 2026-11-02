@@ -348,8 +348,9 @@ def stamp_action_repr(cfg, dataset) -> None:
 def main():
     """Run lerobot-train with the target-cartesian action swap injected.
 
-    CLI: --epochs N schedules by EPOCHS instead of lerobot's --steps (see
-    crisp_gym/util/epoch_steps.py). OUR flag, stripped before draccus parses.
+    CLI: --epochs N schedules by EPOCHS instead of lerobot's --steps, landing a
+    checkpoint on the epoch target and training 2 checkpoint intervals past it
+    (see crisp_gym/util/epoch_steps.py). OUR flag, stripped before draccus parses.
     """
     import sys
 

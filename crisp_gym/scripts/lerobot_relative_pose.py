@@ -550,8 +550,10 @@ def main():
     --steps, a dataset of shorter episodes is traversed more times and overfits
     first. See crisp_gym/util/epoch_steps.py for the arithmetic and for upstream
     reference epoch counts (UMI uses 120 for a UNet denoiser, 200 for a
-    transformer). Without --epochs the schedule is untouched and the equivalent
-    epoch count is only logged.
+    transformer). A checkpoint lands exactly on the epoch target and training
+    then continues for 2 more checkpoint intervals, so the run is LONGER than N
+    epochs and the target checkpoint is the N-epoch model. Without --epochs the
+    schedule is untouched and the equivalent epoch count is only logged.
 
     These are OUR flags — stripped from argv before draccus parses the rest.
     """
