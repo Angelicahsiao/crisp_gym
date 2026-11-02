@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from crisp_gym.util.epoch_steps import (
+    EXTRA_STEPS,
     effective_batch_size,
     epochs_for_steps,
     pop_epochs_flag,
@@ -138,6 +139,7 @@ def test_resolve_without_epochs_changes_nothing_but_reports():
     assert cfg.eval_freq == 5_000        # untouched
     assert plan.changed is False
     assert plan.rescaled == {}
+    assert plan.extra_steps == 0         # no epoch-derived count to add to
     # ...but the epoch equivalent is still computed and reported.
     assert plan.epochs_after == pytest.approx(711.1, abs=0.1)
 
@@ -146,22 +148,42 @@ def test_resolve_with_epochs_sets_steps():
     cfg = _cfg(steps=100_000, batch_size=64)
     plan = resolve_epoch_steps(cfg, _Dataset(9_000), 284.4)
 
-    assert cfg.steps == plan.steps_after == steps_for_epochs(284.4, 64, 9_000)
+    assert cfg.steps == plan.steps_after == steps_for_epochs(284.4, 64, 9_000) + EXTRA_STEPS
     assert cfg.steps == pytest.approx(40_000, abs=50)   # ~40k, per the analysis
     assert plan.changed is True
-    assert plan.epochs_after == pytest.approx(284.4, abs=0.01)
+    # The extra steps push the epoch count fractionally past the request.
+    assert plan.epochs_after == pytest.approx(epochs_for_steps(cfg.steps, 64, 9_000))
+    assert plan.epochs_after > 284.4
     assert plan.steps_before == 100_000
 
 
+def test_epoch_derived_steps_get_exactly_two_extra():
+    """The run is scheduled EXTRA_STEPS (2) past the epoch-derived count."""
+    assert EXTRA_STEPS == 2
+    for epochs, n, batch in [(120, 9_000, 64), (1, 100, 64), (0.001, 100, 64), (284.4, 22_500, 32)]:
+        cfg = _cfg(steps=100_000, batch_size=batch)
+        plan = resolve_epoch_steps(cfg, _Dataset(n), epochs)
+        assert cfg.steps == steps_for_epochs(epochs, batch, n) + 2
+        assert plan.extra_steps == 2
+
+
+def test_extra_steps_also_apply_with_gradient_accumulation():
+    cfg = _cfg(steps=100_000, batch_size=64, gradient_accumulation_steps=2)
+    resolve_epoch_steps(cfg, _Dataset(9_000), 100)
+    # +2 OPTIMIZER steps on top of the effective-batch (128) count.
+    assert cfg.steps == steps_for_epochs(100, 128, 9_000) + 2
+
+
 def test_resolve_accounts_for_gradient_accumulation():
-    # Effective batch 128 => half the optimizer steps for the same epochs.
+    # Effective batch 128 => half the optimizer steps for the same epochs
+    # (compared on the epoch-derived part, before the fixed extra steps).
     cfg_plain = _cfg(steps=1000, batch_size=64)
     cfg_accum = _cfg(steps=1000, batch_size=64, gradient_accumulation_steps=2)
 
     resolve_epoch_steps(cfg_plain, _Dataset(9_000), 100)
     resolve_epoch_steps(cfg_accum, _Dataset(9_000), 100)
 
-    assert cfg_accum.steps == math.ceil(cfg_plain.steps / 2)
+    assert cfg_accum.steps - EXTRA_STEPS == math.ceil((cfg_plain.steps - EXTRA_STEPS) / 2)
 
 
 def test_resolve_rescales_save_and_eval_but_not_log():
@@ -224,10 +246,13 @@ def test_plan_as_dict_is_json_serializable_and_records_the_epochs():
 
     json.dumps(d)   # must not raise — it is stamped into pose_repr.json
     assert d["epochs_requested"] == 120
-    assert d["epochs"] == pytest.approx(120, abs=0.01)
+    # Recorded epochs reflect the FINAL step total, extra steps included.
+    assert d["epochs"] == pytest.approx(cfg.steps * 64 / 9_000, abs=0.001)
+    assert d["epochs"] == pytest.approx(120, abs=0.05)
     assert d["num_samples"] == 9_000
     assert d["effective_batch"] == 64
     assert d["steps"] == cfg.steps
+    assert d["extra_steps"] == EXTRA_STEPS
     assert d["rescaled_intervals"]["save_freq"]["from"] == 10_000
 
 
@@ -236,6 +261,8 @@ def test_describe_mentions_the_arithmetic():
     text = resolve_epoch_steps(cfg, _Dataset(9_000), 120).describe()
     assert "--epochs 120" in text
     assert "9000" in text and "64" in text
+    # The extra steps are visible in the logged arithmetic, not hidden.
+    assert f"+ {EXTRA_STEPS} = {cfg.steps}" in text
 
 
 def test_describe_without_epochs_explains_the_comparison_hazard():

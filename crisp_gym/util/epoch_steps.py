@@ -70,6 +70,11 @@ applied inside the dataset factory hook (the one place that has both the WRAPPED
 dataset — so ``len()`` is post-wrapping — and ``cfg``, before the training loop
 reads ``cfg.steps``).
 
+With ``--epochs``, the run is scheduled for ``EXTRA_STEPS`` (2) steps MORE than
+the epoch-derived count: ``steps = ceil(epochs * num_samples / effective_batch)
++ EXTRA_STEPS``. The logged/stamped epoch count reflects the final total, so it
+reads very slightly above the requested value.
+
 Without ``--epochs`` nothing is rescaled, but the equivalent epoch count is
 still logged, so two runs can never again be compared without seeing it.
 """
@@ -83,6 +88,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "EXTRA_STEPS",
     "EpochPlan",
     "pop_epochs_flag",
     "effective_batch_size",
@@ -94,6 +100,11 @@ __all__ = [
 # Intervals rescaled alongside cfg.steps. log_freq is excluded on purpose: it
 # sets logging DENSITY, which should not change with run length.
 _RESCALED_FREQ_FIELDS = ("save_freq", "eval_freq")
+
+# Steps added on top of the epoch-derived step count whenever --epochs is given.
+# Not applied without --epochs: there is no epoch-derived count to add to then,
+# and the schedule is left exactly as lerobot received it.
+EXTRA_STEPS = 2
 
 
 class EpochPlan:
@@ -107,7 +118,9 @@ class EpochPlan:
         effective_batch: ``batch_size * grad_accum`` — samples per optimizer step.
         steps_before: `cfg.steps` as it arrived from the CLI/defaults.
         steps_after: `cfg.steps` as written back (== steps_before when epochs
-            was None).
+            was None). Includes `extra_steps`.
+        extra_steps: Steps added on top of the epoch-derived count
+            (`EXTRA_STEPS` when epochs was given, else 0).
         epochs_before: Epoch equivalent of `steps_before`.
         epochs_after: Epoch equivalent of `steps_after`.
         epochs_requested: The ``--epochs`` value, or None.
@@ -124,6 +137,7 @@ class EpochPlan:
         steps_after: int,
         epochs_requested: float | None,
         rescaled: dict[str, tuple[int, int]],
+        extra_steps: int = 0,
     ) -> None:
         self.num_samples = num_samples
         self.batch_size = batch_size
@@ -131,6 +145,7 @@ class EpochPlan:
         self.effective_batch = batch_size * grad_accum
         self.steps_before = steps_before
         self.steps_after = steps_after
+        self.extra_steps = extra_steps
         self.epochs_requested = epochs_requested
         self.rescaled = rescaled
         self.epochs_before = epochs_for_steps(steps_before, self.effective_batch, num_samples)
@@ -149,6 +164,7 @@ class EpochPlan:
             "grad_accum": self.grad_accum,
             "effective_batch": self.effective_batch,
             "steps": self.steps_after,
+            "extra_steps": self.extra_steps,
             "steps_before": self.steps_before,
             "epochs": round(self.epochs_after, 3),
             "epochs_before": round(self.epochs_before, 3),
@@ -171,12 +187,13 @@ class EpochPlan:
             )
             return "\n".join(lines)
         lines.append(
-            "[epochs] --epochs %g -> steps = ceil(%g x %d / %d) = %d  (was %d, i.e. %.1f epochs)"
+            "[epochs] --epochs %g -> steps = ceil(%g x %d / %d) + %d = %d  (was %d, i.e. %.1f epochs)"
             % (
                 self.epochs_requested,
                 self.epochs_requested,
                 self.num_samples,
                 self.effective_batch,
+                self.extra_steps,
                 self.steps_after,
                 self.steps_before,
                 self.epochs_before,
@@ -324,9 +341,11 @@ def resolve_epoch_steps(cfg: Any, dataset: Any, epochs: float | None) -> EpochPl
 
     rescaled: dict[str, tuple[int, int]] = {}
     steps_after = steps_before
+    extra_steps = 0
 
     if epochs is not None:
-        steps_after = steps_for_epochs(epochs, effective_batch, num_samples)
+        extra_steps = EXTRA_STEPS
+        steps_after = steps_for_epochs(epochs, effective_batch, num_samples) + extra_steps
         # Keep the number of checkpoints/evals per run constant. Scaling by the
         # step ratio means a 40k-step run saves as often per unit of training as
         # a 100k-step one did, instead of producing 2.5x fewer checkpoints and
@@ -349,6 +368,7 @@ def resolve_epoch_steps(cfg: Any, dataset: Any, epochs: float | None) -> EpochPl
         steps_after=steps_after,
         epochs_requested=epochs,
         rescaled=rescaled,
+        extra_steps=extra_steps,
     )
     for line in plan.describe().splitlines():
         logger.info(line)
