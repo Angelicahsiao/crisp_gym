@@ -80,17 +80,30 @@ BATCH_SIZE=32 STEPS=100000 SAVE_FREQ=20000 NUM_WORKERS=8
 SKIP_PREFLIGHT=0 DRY_RUN=0 SE3=0 WRT_START=1
 EXTRA=()
 
+# Every value-taking option goes through this first. Without it, a flag given
+# last with no value (`... --epochs`) hung the script silently: `shift 2` with
+# only one argument left shifts NOTHING (bash refuses an out-of-range count),
+# so the loop read the same flag forever. A following flag taken as the value
+# (`--output --dry-run`) is the same mistake and is refused too; no value here
+# legitimately starts with "--".
+need_value() {
+    if [ $# -lt 2 ] || [ -z "$2" ] || [[ "$2" == --* ]]; then
+        echo "$1 needs a value (--help for the full list)" >&2
+        exit 2
+    fi
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
-        --dataset)        DATASET="${2:-}"; shift 2 ;;
-        --output)         OUTPUT="${2:-}"; shift 2 ;;
-        --repo-id)        REPO_ID="${2:-}"; shift 2 ;;
-        --batch-size)     BATCH_SIZE="${2:-}"; shift 2 ;;
-        --steps)          STEPS="${2:-}"; shift 2 ;;
-        --epochs)         EPOCHS="${2:-}"; shift 2 ;;
-        --job-name)       JOB_NAME="${2:-}"; shift 2 ;;
-        --save-freq)      SAVE_FREQ="${2:-}"; shift 2 ;;
-        --num-workers)    NUM_WORKERS="${2:-}"; shift 2 ;;
+        --dataset)        need_value "$@"; DATASET="$2"; shift 2 ;;
+        --output)         need_value "$@"; OUTPUT="$2"; shift 2 ;;
+        --repo-id)        need_value "$@"; REPO_ID="$2"; shift 2 ;;
+        --batch-size)     need_value "$@"; BATCH_SIZE="$2"; shift 2 ;;
+        --steps)          need_value "$@"; STEPS="$2"; shift 2 ;;
+        --epochs)         need_value "$@"; EPOCHS="$2"; shift 2 ;;
+        --job-name)       need_value "$@"; JOB_NAME="$2"; shift 2 ;;
+        --save-freq)      need_value "$@"; SAVE_FREQ="$2"; shift 2 ;;
+        --num-workers)    need_value "$@"; NUM_WORKERS="$2"; shift 2 ;;
         --se3)            SE3=1; shift ;;
         --no-wrt-start)   WRT_START=0; shift ;;
         --skip-preflight) SKIP_PREFLIGHT=1; shift ;;

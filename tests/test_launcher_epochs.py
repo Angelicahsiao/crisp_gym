@@ -314,6 +314,58 @@ def test_train_groot_rejects_bad_epochs_before_doing_anything(tmp_path, bad):
     assert "--epochs must be a positive number" in proc.stderr
 
 
+_VALUE_FLAGS = [
+    "--dataset", "--output", "--repo-id", "--batch-size", "--steps",
+    "--epochs", "--job-name", "--save-freq", "--num-workers",
+]
+
+
+def _groot_raw(tmp_path, *args):
+    # Short timeout on purpose: the bug these guard against was a silent hang,
+    # which must fail the test, not stall the suite.
+    return subprocess.run(
+        ["bash", str(REPO / "scripts" / "train_groot.sh"), *args],
+        capture_output=True, text=True, cwd=tmp_path, timeout=15,
+        env={**os.environ, "SKIP_HUB_CHECK": "1"},
+    )
+
+
+@pytest.mark.parametrize("flag", _VALUE_FLAGS)
+def test_train_groot_flag_without_value_exits_instead_of_hanging(tmp_path, flag):
+    ds = _dataset(tmp_path)
+    proc = _groot_raw(tmp_path, "--dataset", str(ds), "--output", str(tmp_path / "o"),
+                      "--skip-preflight", "--dry-run", flag)
+    assert proc.returncode == 2
+    assert f"{flag} needs a value" in proc.stderr
+
+
+@pytest.mark.parametrize("flag", _VALUE_FLAGS)
+def test_train_groot_refuses_a_flag_taken_as_the_value(tmp_path, flag):
+    proc = _groot_raw(tmp_path, flag, "--dry-run")
+    assert proc.returncode == 2
+    assert f"{flag} needs a value" in proc.stderr
+
+
+def test_train_groot_refuses_an_empty_value(tmp_path):
+    ds = _dataset(tmp_path)
+    proc = _groot_raw(tmp_path, "--dataset", str(ds), "--output", str(tmp_path / "o"),
+                      "--steps", "", "--dry-run")
+    assert proc.returncode == 2
+    assert "--steps needs a value" in proc.stderr
+
+
+def test_train_groot_values_still_parse(tmp_path):
+    ds = _dataset(tmp_path)
+    proc = _groot_raw(tmp_path, "--dataset", str(ds), "--output", str(tmp_path / "out" / "run"),
+                      "--repo-id", "me/toy", "--batch-size", "8", "--steps", "500",
+                      "--job-name", "j", "--save-freq", "100", "--num-workers", "2",
+                      "--skip-preflight", "--dry-run")
+    assert proc.returncode == 0, proc.stderr
+    for expected in ("--dataset.repo_id=me/toy", "--batch_size=8", "--steps=500",
+                     "--job_name=j", "--save_freq=100", "--num_workers=2"):
+        assert expected in proc.stdout
+
+
 def _server(tmp_path, env):
     """train_groot_server.sh in its documented layout: a crisp_gym clone beside it."""
     work = tmp_path / "work"
