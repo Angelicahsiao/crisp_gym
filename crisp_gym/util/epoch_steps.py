@@ -112,6 +112,20 @@ reads ``cfg.steps``).
 
 Without ``--epochs`` nothing is rescaled, but the equivalent epoch count is
 still logged, so two runs can never again be compared without seeing it.
+
+Running this file directly
+--------------------------
+``python3 crisp_gym/util/epoch_steps.py --epochs N <lerobot-train args>`` is
+plain lerobot-train plus this schedule — no data transform and no provenance
+stamp, so the policy sees exactly what ``python -m lerobot.scripts.lerobot_train``
+would give it. It exists for launchers that otherwise call lerobot directly,
+e.g. the default (non-SE3) mode of scripts/train_groot.sh. Like the training
+launchers, it needs only lerobot: nothing from crisp_gym is imported.
+
+The three training launchers do NOT import this module with a hard ``import
+crisp_gym``: they try the package, then load this file by path from next to
+themselves or from the repo layout, so they keep running where crisp_gym is not
+installed. Keep this module standard-library only for that reason.
 """
 
 from __future__ import annotations
@@ -628,3 +642,70 @@ def resolve_epoch_steps(cfg: Any, dataset: Any, epochs: float | None) -> EpochPl
     for line in plan.describe().splitlines():
         logger.info(line)
     return plan
+
+
+def main() -> None:
+    """Run lerobot-train unchanged except for the --epochs schedule.
+
+    The dataset factory is patched only to read ``len(dataset)`` and rewrite
+    the schedule in `cfg`; the dataset is returned untouched. The factory name
+    differs by lerobot version (>=0.5: make_train_eval_datasets; 0.4.x:
+    make_dataset); both are handled, as in the training launchers.
+    """
+    import os
+    import sys
+
+    # Running this file puts crisp_gym/util/ first on sys.path. Drop it so the
+    # sibling modules there (prompt.py, rot6d.py, ...) cannot shadow a module
+    # lerobot or its dependencies import. This file needs only the stdlib.
+    here = os.path.dirname(os.path.abspath(__file__))
+    if sys.path and os.path.abspath(sys.path[0] or os.curdir) == here:
+        sys.path.pop(0)
+
+    import lerobot.scripts.lerobot_train as lerobot_train
+
+    epochs, remaining = pop_epochs_flag(sys.argv[1:])
+    sys.argv = [sys.argv[0]] + remaining
+    logging.basicConfig(level=logging.INFO)
+
+    if hasattr(lerobot_train, "make_train_eval_datasets"):  # lerobot >= 0.5
+        original_pair = lerobot_train.make_train_eval_datasets
+
+        def make_train_eval_scheduled(cfg):
+            dataset, eval_dataset = original_pair(cfg)
+            resolve_epoch_steps(cfg, dataset, epochs)
+            return dataset, eval_dataset
+
+        lerobot_train.make_train_eval_datasets = make_train_eval_scheduled
+        logger.info("Patched make_train_eval_datasets (epoch schedule only, no transform).")
+    elif hasattr(lerobot_train, "make_dataset"):  # lerobot 0.4.x
+        original_single = lerobot_train.make_dataset
+
+        def make_dataset_scheduled(cfg):
+            dataset = original_single(cfg)
+            resolve_epoch_steps(cfg, dataset, epochs)
+            return dataset
+
+        lerobot_train.make_dataset = make_dataset_scheduled
+        logger.info("Patched make_dataset (epoch schedule only, no transform).")
+    elif epochs is not None:
+        # No hook means no len(dataset): the run would silently fall back to
+        # the --steps schedule while LOOKING epoch-scheduled.
+        raise RuntimeError(
+            "--epochs was requested but lerobot_train exposes neither "
+            "'make_train_eval_datasets' (>=0.5) nor 'make_dataset' (0.4.x), so the "
+            "dataset length cannot be read and the epoch target cannot be applied. "
+            "Drop --epochs and pass --steps, or update the factory name in "
+            "crisp_gym/util/epoch_steps.py:main."
+        )
+    else:
+        logger.warning(
+            "lerobot_train exposes neither make_train_eval_datasets nor "
+            "make_dataset — training proceeds without the epoch report."
+        )
+
+    lerobot_train.main()
+
+
+if __name__ == "__main__":
+    main()

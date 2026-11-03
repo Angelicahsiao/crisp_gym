@@ -524,6 +524,74 @@ def stamp_pose_repr(cfg, dataset, epoch_plan=None) -> None:
         logger.warning(f"Could not stamp pose_repr.json: {e}")
 
 
+# ── --epochs support (identical in all three training launchers) ─────────────
+# These launchers must stay runnable where only lerobot is installed: a GPU PC
+# with one script copied over, or a repo clone that was never pip-installed
+# (scripts/train_groot_server.sh's layout). So the epoch scheduler is not a hard
+# `import crisp_gym`: the package is tried first, then epoch_steps.py is loaded
+# by file path from next to this script, then from the repo layout
+# (crisp_gym/util/). epoch_steps.py uses only the standard library. Duplicated
+# on purpose, since a shared helper would need exactly the import it avoids;
+# tests/test_launcher_epochs.py checks the three copies stay identical.
+
+
+def _load_epoch_steps():
+    """Return the epoch_steps module, or None when it cannot be found."""
+    try:
+        from crisp_gym.util import epoch_steps
+
+        return epoch_steps
+    except ImportError:
+        pass
+
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    here = Path(__file__).resolve().parent
+    for candidate in (here / "epoch_steps.py", here.parent / "util" / "epoch_steps.py"):
+        if candidate.is_file():
+            spec = importlib.util.spec_from_file_location("crisp_gym_epoch_steps", candidate)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            spec.loader.exec_module(module)
+            return module
+    return None
+
+
+def _setup_epochs(argv):
+    """Strip --epochs from argv.
+
+    Returns:
+        (schedule, epochs, remaining_argv): `schedule` is resolve_epoch_steps,
+        or None when epoch_steps.py cannot be found; `epochs` is None when the
+        flag is absent.
+
+    Raises:
+        RuntimeError: --epochs was given but epoch_steps.py cannot be found.
+            Falling back to the --steps schedule would look normal and be wrong.
+    """
+    epoch_steps = _load_epoch_steps()
+    if epoch_steps is None:
+        if any(a == "--epochs" or a.startswith("--epochs=") for a in argv):
+            raise RuntimeError(
+                "--epochs needs epoch_steps.py, which was found neither as the "
+                "crisp_gym.util.epoch_steps package nor next to this script. "
+                "Copy crisp_gym/util/epoch_steps.py into the same folder as this "
+                "launcher, or drop --epochs and pass --steps."
+            )
+        logger.warning(
+            "epoch_steps.py not found: --epochs is unavailable and this run's "
+            "epoch count will not be logged. Training proceeds on --steps."
+        )
+        return None, None, list(argv)
+    epochs, remaining = epoch_steps.pop_epochs_flag(argv)
+    return epoch_steps.resolve_epoch_steps, epochs, remaining
+
+
+# ── end --epochs support ─────────────────────────────────────────────────────
+
+
 # ── Training launcher ─────────────────────────────────────────────────────────
 
 def main():
@@ -561,10 +629,8 @@ def main():
 
     import lerobot.scripts.lerobot_train as lerobot_train
 
-    from crisp_gym.util.epoch_steps import pop_epochs_flag, resolve_epoch_steps
-
     append_wrt, remaining = _pop_wrt_start_flag(sys.argv[1:])
-    epochs, remaining = pop_epochs_flag(remaining)
+    schedule_epochs, epochs, remaining = _setup_epochs(remaining)
     sys.argv = [sys.argv[0]] + remaining
     logging.basicConfig(level=logging.INFO)
     logger.info(
@@ -578,7 +644,7 @@ def main():
         recompute_relative_stats(wrapped)
         # AFTER wrapping: the wrapper is what the dataloader sees, so its len()
         # is the epoch denominator. BEFORE lerobot_train.main() reads cfg.steps.
-        plan = resolve_epoch_steps(cfg, wrapped, epochs)
+        plan = schedule_epochs(cfg, wrapped, epochs) if schedule_epochs else None
         stamp_pose_repr(cfg, wrapped, epoch_plan=plan)
         return wrapped
 
