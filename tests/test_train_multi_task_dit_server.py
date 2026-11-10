@@ -105,7 +105,7 @@ def test_default_is_relative_16d_with_the_pinned_settings(layout):
         "--policy.device": "cuda",
         "--policy.push_to_hub": "false",
         "--policy.horizon": "16",
-        "--policy.n_action_steps": "8",
+        "--policy.n_action_steps": "12",                   # ~0.8 s at 15 fps (lerobot's guide)
         "--policy.objective": "diffusion",
         "--policy.image_resize_shape": "[236,236]",
         "--policy.image_crop_shape": "[224,224]",
@@ -113,7 +113,7 @@ def test_default_is_relative_16d_with_the_pinned_settings(layout):
         "--policy.num_inference_steps": "10",
         "--dataset.image_transforms.enable": "true",
         "--dataset.root": str(layout["ds"]),
-        "--batch_size": "64",
+        "--batch_size": "320",                             # lerobot's suggested config
         "--steps": "100000",
         "--save_freq": "20000",
         "--num_workers": "8",
@@ -207,15 +207,16 @@ def test_augment_all_and_off(layout):
 
 
 def test_warmup_resize_and_sizes_are_forwarded(layout):
+    # Every value differs from its default, so each assertion proves forwarding.
     argv = _train_argv(_run(layout, {
-        "WARMUP_STEPS": "500", "IMAGE_RESIZE": "256", "HORIZON": "24", "N_ACTION_STEPS": "12",
+        "WARMUP_STEPS": "500", "IMAGE_RESIZE": "256", "HORIZON": "24", "N_ACTION_STEPS": "10",
         "BATCH_SIZE": "32", "NUM_WORKERS": "4",
     })[1])
     assert _flag(argv, "--policy.scheduler_warmup_steps") == "500"
     assert _flag(argv, "--policy.image_resize_shape") == "[256,256]"
     assert _flag(argv, "--policy.image_crop_shape") == "[224,224]"    # CLIP's input size
     assert _flag(argv, "--policy.horizon") == "24"
-    assert _flag(argv, "--policy.n_action_steps") == "12"
+    assert _flag(argv, "--policy.n_action_steps") == "10"
     assert _flag(argv, "--batch_size") == "32" and _flag(argv, "--num_workers") == "4"
 
 

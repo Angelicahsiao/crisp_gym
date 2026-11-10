@@ -47,8 +47,10 @@ cd "$WORKDIR"
 #       first so the whole view reaches CLIP (squashed to square), then a random
 #       224x224 crop (~95%, UMI's ratio) in training, centre crop at inference.
 #       The crop must be 224: CLIP ViT-B/16 takes 224x224 input.
-#   horizon 16 / n_action_steps 8
-#       The defaults (32 / 24) execute 24 steps open-loop: 1.6 s at 15 fps.
+#   horizon 16 / n_action_steps 12
+#       lerobot's multi_task_dit guide: a horizon of ~1 s and ~0.8 s executed
+#       per chunk, "based on your control frequency". At 15 fps that is 16 / 12.
+#       The defaults (32 / 24) are for 30 Hz: 24 steps open-loop is 1.6 s here.
 #   DDIM + 10 inference steps (or 10 flow-matching integration steps)
 #       The defaults run 100 per chunk. crisp_gym's deploy-time
 #       --num-inference-steps / --scheduler do NOT reach this policy, so the
@@ -101,7 +103,11 @@ OUT="${OUT:-$WORKDIR/output/train/mtdit${_mode_tag}_${DATASET_NAME}_$(date +%Y%m
 
 STEPS="${STEPS:-100000}"
 EPOCHS="${EPOCHS:-}"                # empty = schedule by STEPS
-BATCH_SIZE="${BATCH_SIZE:-64}"
+# lerobot's guide: 192-320 "for the best training dynamics", and its suggested
+# config (whose learning rate this policy's default matches) uses 320. If it
+# does not fit in GPU memory, 192 is the bottom of that range; with EPOCHS set
+# the step count follows the batch size automatically.
+BATCH_SIZE="${BATCH_SIZE:-320}"
 SAVE_FREQ="${SAVE_FREQ:-20000}"
 NUM_WORKERS="${NUM_WORKERS:-8}"
 WARMUP_STEPS="${WARMUP_STEPS:-}"    # empty = lerobot's multi_task_dit default (0)
@@ -109,7 +115,7 @@ WARMUP_STEPS="${WARMUP_STEPS:-}"    # empty = lerobot's multi_task_dit default (
 OBJECTIVE="${OBJECTIVE:-diffusion}" # diffusion | flow_matching
 INFERENCE_STEPS="${INFERENCE_STEPS:-10}"
 HORIZON="${HORIZON:-16}"
-N_ACTION_STEPS="${N_ACTION_STEPS:-8}"
+N_ACTION_STEPS="${N_ACTION_STEPS:-12}"   # ~0.8 s at 15 fps
 IMAGE_RESIZE="${IMAGE_RESIZE:-236}" # square resize before the 224x224 CLIP crop
 # noaffine: lerobot's colour/sharpness jitter without the random rotate/shift
 # all:      lerobot's full default set, rotate/shift included
