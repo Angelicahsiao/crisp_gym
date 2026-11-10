@@ -11,6 +11,7 @@ These tests pin the checks that refuse such a file.
 Run:  python -m pytest tests/test_reencode_dataset_videos.py
 """
 
+import json
 import sys
 import types
 from dataclasses import dataclass, field
@@ -413,3 +414,142 @@ if __name__ == "__main__":
     import pytest
 
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ── --resize ─────────────────────────────────────────────────────────────────
+# The resize changes the frame size ON PURPOSE, so the size check must compare
+# against the target instead; everything else (frame count, duration, offsets)
+# must hold exactly as for a plain re-encode.
+
+
+def test_resize_target_size_is_accepted():
+    before = _probe(width=1280, height=800)
+    after = _probe(width=512, height=320)
+    assert reencode.verify_timeline(before, after, expected_size=(512, 320)) == []
+
+
+def test_resize_to_the_wrong_size_is_rejected():
+    before = _probe(width=1280, height=800)
+    after = _probe(width=512, height=318)
+    problems = reencode.verify_timeline(before, after, expected_size=(512, 320))
+    assert len(problems) == 1 and "expected the resize target 512x320" in problems[0]
+
+
+def test_resize_still_rejects_a_dropped_frame():
+    before = _probe(frames=500, width=1280, height=800)
+    after = _probe(frames=499, width=512, height=320)
+    problems = reencode.verify_timeline(before, after, expected_size=(512, 320))
+    assert any("frame count 500 -> 499" in p for p in problems)
+
+
+def test_without_a_target_any_size_change_is_still_rejected():
+    # The pre-existing guarantee for plain re-encodes must not loosen.
+    before = _probe(width=1280, height=800)
+    after = _probe(width=512, height=320)
+    assert any("size" in p for p in reencode.verify_timeline(before, after))
+
+
+def test_resized_shape_follows_the_names():
+    hwc = {"shape": [800, 1280, 3], "names": ["height", "width", "channels"]}
+    chw = {"shape": [3, 800, 1280], "names": ["channels", "height", "width"]}
+    assert reencode.resized_shape(hwc, 320, 512) == [320, 512, 3]
+    assert reencode.resized_shape(chw, 320, 512) == [3, 320, 512]
+
+
+def test_resized_shape_falls_back_on_the_channel_axis_without_names():
+    assert reencode.resized_shape({"shape": [800, 1280, 3]}, 320, 512) == [320, 512, 3]
+    assert reencode.resized_shape({"shape": [3, 800, 1280]}, 320, 512) == [3, 320, 512]
+
+
+def test_resized_shape_refuses_to_guess():
+    import pytest
+
+    with pytest.raises(ValueError, match="height and"):
+        reencode.resized_shape({"shape": [800, 1280]}, 320, 512)
+
+
+def _video_dataset(root: Path, height=800, width=1280) -> Path:
+    key = "observation.images.cam"
+    (root / "meta").mkdir(parents=True)
+    (root / "meta" / "info.json").write_text(json.dumps({
+        "fps": 15,
+        "features": {key: {
+            "dtype": "video",
+            "shape": [height, width, 3],
+            "names": ["height", "width", "channels"],
+            "info": {"video.codec": "av1", "video.pix_fmt": "yuv420p",
+                     "video.height": height, "video.width": width, "video.fps": 15},
+        }},
+    }))
+    video = root / "videos" / key / "chunk-000" / "file-000.mp4"
+    video.parent.mkdir(parents=True)
+    video.write_bytes(b"")
+    return root
+
+
+def _run_main(argv, monkeypatch, width=1280, height=800):
+    """main() with probe() stubbed (no real video), capturing its log."""
+    import io
+    import logging as _logging
+
+    monkeypatch.setattr(reencode, "probe", lambda path: _probe(width=width, height=height, path=path))
+    stream = io.StringIO()
+    handler = _logging.StreamHandler(stream)
+    reencode.logger.addHandler(handler)
+    reencode.logger.setLevel(_logging.INFO)
+    try:
+        code = reencode.main(argv)
+    finally:
+        reencode.logger.removeHandler(handler)
+    return code, stream.getvalue()
+
+
+
+def test_resize_dry_run_keeps_the_source_codec_and_plans_the_shape(tmp_path, monkeypatch):
+    root = _video_dataset(tmp_path / "ds")
+    code, log = _run_main(["--root", str(root), "--resize", "320", "512", "--dry-run"], monkeypatch)
+    assert code == 0
+    assert "keeping the source's codec=av1" in log
+    assert "Resizing to 512x320 (WxH)" in log
+    assert "[320, 512, 3]" in log                  # the planned info.json shape
+    assert "STRETCHED" not in log                  # 800x1280 -> 320x512 keeps 0.625
+
+
+def test_resize_warns_when_the_aspect_ratio_changes(tmp_path, monkeypatch):
+    root = _video_dataset(tmp_path / "ds")
+    code, log = _run_main(["--root", str(root), "--resize", "320", "320", "--dry-run"], monkeypatch)
+    assert code == 0                               # allowed, but loudly
+    assert "STRETCHED" in log
+
+
+def test_resize_warns_when_it_upscales(tmp_path, monkeypatch):
+    root = _video_dataset(tmp_path / "ds")
+    code, log = _run_main(["--root", str(root), "--resize", "1600", "2560", "--dry-run"], monkeypatch)
+    assert code == 0
+    assert "UPSCALES" in log
+
+
+def test_resize_refuses_a_shape_it_cannot_update(tmp_path, monkeypatch):
+    root = _video_dataset(tmp_path / "ds")
+    info = json.loads((root / "meta" / "info.json").read_text())
+    info["features"]["observation.images.cam"]["shape"] = [800, 1280]
+    info["features"]["observation.images.cam"].pop("names")
+    (root / "meta" / "info.json").write_text(json.dumps(info))
+    code, log = _run_main(["--root", str(root), "--resize", "320", "512", "--dry-run"], monkeypatch)
+    assert code == 1                               # before any encoding
+    assert "height and" in log
+
+
+def test_resize_argument_errors_exit_2(tmp_path, monkeypatch):
+    import pytest
+
+    root = _video_dataset(tmp_path / "ds")
+    for argv in (
+        ["--root", str(root), "--resize", "321", "512"],               # odd height
+        ["--root", str(root), "--resize", "320", "511"],               # odd width
+        ["--root", str(root), "--resize", "0", "512"],                 # not positive
+        ["--root", str(root), "--resize", "320", "512", "--in-place"], # destructive
+    ):
+        with pytest.raises(SystemExit) as exc:
+            _run_main(argv, monkeypatch)
+        assert exc.value.code == 2, argv

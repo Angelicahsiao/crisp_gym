@@ -29,6 +29,19 @@ and every episode's stored offsets still landing on the same frame index.
 
 By default it writes a NEW dataset directory and leaves the original alone.
 
+RESIZING (--resize HEIGHT WIDTH). Training decodes every sampled frame at the
+STORED resolution, on CPU, before the policy shrinks it on the GPU. On an
+800x1280 dataset with few CPUs that decode dominates the run: measured on an
+8-core H200 node, a multi_task_dit run waited ~27 s per step for data against
+~1 s of GPU work. A policy that resizes to ~236x236 anyway loses nothing from a
+copy stored at e.g. 320x512, which is ~6x fewer pixels to decode and augment.
+--resize writes that copy: every frame is scaled (AREA interpolation by
+default, the right filter for downscaling), the codec defaults to the source's
+own, and the same frame-count / offset / sampled-frame checks run against the
+new size. info.json's shape and video.height/width are updated to match.
+Keep the aspect ratio (800x1280 and 320x512 are both 0.625) or frames are
+stretched; a mismatch is warned about, not refused.
+
 Usage:
     # 1. See what you have and whether it would merge
     python -m crisp_gym.scripts.reencode_dataset_videos --inspect \
@@ -50,6 +63,14 @@ Usage:
     python -c "from lerobot.datasets.aggregate import aggregate_datasets; \
         aggregate_datasets(['data_buffer/old_av1_as_h264','data_buffer/new_h264'], \
                            'data_buffer/merged')"
+
+    # 5. Store a smaller copy for faster training (HEIGHT then WIDTH, the same
+    #    order as crisp_gym's camera `resolution: [H, W]`). Codec stays the
+    #    source's unless --vcodec / --match say otherwise.
+    python -m crisp_gym.scripts.reencode_dataset_videos \
+        --root datasets/umi_electricbox/lerobot \
+        --resize 320 512 \
+        --output-root datasets/umi_electricbox_320x512/lerobot
 """
 
 from __future__ import annotations
@@ -78,6 +99,15 @@ NVENC_BF0_MAX_GOP = 4
 # Stream-derived keys that must match for lerobot to merge two datasets. These
 # are exactly the ones concatenate_video_files' compatibility_check compares.
 COMPAT_KEYS = ("video.codec", "video.pix_fmt", "video.width", "video.height", "video.fps")
+
+# Scaling filters offered by --interpolation (libswscale names, as PyAV takes
+# them). AREA averages the source pixels each output pixel covers, which is the
+# right choice for downscaling; the others are for upscaling or speed.
+RESIZE_INTERPOLATIONS = ("AREA", "BICUBIC", "BILINEAR", "LANCZOS")
+
+# A target aspect ratio further than this (relative) from the source's means
+# the frames are visibly stretched.
+ASPECT_TOLERANCE = 0.01
 
 
 @dataclass
@@ -285,12 +315,102 @@ def episode_offsets(root: Path, key: str) -> list[tuple[int, int, int, float, fl
     return rows
 
 
-def verify_timeline(before: VideoProbe, after: VideoProbe) -> list[str]:
-    """Return the reasons a re-encoded file is NOT a drop-in replacement."""
+def transcode_resized(
+    input_video_path: Path,
+    output_video_path: Path,
+    video_encoder: RGBEncoderConfig,
+    width: int,
+    height: int,
+    interpolation: str = "AREA",
+) -> None:
+    """Re-encode a video at a new frame size, keeping every frame and its timing.
+
+    Mirrors lerobot's ``reencode_video`` (same muxer options, same temp-file
+    move, same per-frame reformat and flush), which has no resize parameter: it
+    always encodes at the source size. The only differences are the output
+    size and the scaling filter. Frames keep their source pts, so the frame
+    count and the episode offsets into the shared file are unchanged.
+    """
+    import tempfile
+
+    output_video_path = Path(output_video_path)
+    output_video_path.parent.mkdir(parents=True, exist_ok=True)
+    video_options = video_encoder.get_codec_options(as_strings=True)
+
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_named_file:
+        tmp_output_video_path = tmp_named_file.name
+    try:
+        with av.open(str(input_video_path), mode="r") as src:
+            in_stream = src.streams.video[0]
+            fps = in_stream.base_rate
+            with av.open(tmp_output_video_path, mode="w", options={"movflags": "faststart"}) as dst:
+                out_stream = dst.add_stream(video_encoder.vcodec, fps, options=video_options)
+                out_stream.pix_fmt = video_encoder.pix_fmt
+                out_stream.width = int(width)
+                out_stream.height = int(height)
+                for frame in src.decode(in_stream):
+                    frame = frame.reformat(
+                        width=int(width),
+                        height=int(height),
+                        format=video_encoder.pix_fmt,
+                        interpolation=interpolation,
+                    )
+                    packet = out_stream.encode(frame)
+                    if packet:
+                        dst.mux(packet)
+                packet = out_stream.encode()
+                if packet:
+                    dst.mux(packet)
+        shutil.move(tmp_output_video_path, output_video_path)
+    except Exception:
+        Path(tmp_output_video_path).unlink(missing_ok=True)
+        raise
+    if not output_video_path.exists():
+        raise OSError(f"Video resize did not work. File not found: {output_video_path}.")
+
+
+def resized_shape(feature: dict, height: int, width: int) -> list[int]:
+    """A video feature's ``shape`` with its height and width replaced.
+
+    Uses the feature's ``names`` to find the axes (lerobot writes
+    ``["height", "width", "channels"]``); without usable names, falls back to
+    recognising (H, W, C) or (C, H, W) by the channel count. Raises rather than
+    guessing, since a wrong shape in info.json mis-builds the policy's inputs.
+    """
+    shape = list(feature.get("shape") or [])
+    names = feature.get("names")
+    if isinstance(names, list) and len(names) == len(shape) and {"height", "width"} <= set(names):
+        shape[names.index("height")] = int(height)
+        shape[names.index("width")] = int(width)
+        return shape
+    if len(shape) == 3 and shape[2] in (1, 3, 4):
+        return [int(height), int(width), shape[2]]
+    if len(shape) == 3 and shape[0] in (1, 3, 4):
+        return [shape[0], int(height), int(width)]
+    raise ValueError(
+        f"Cannot tell which axes of shape {shape} (names {names}) are height and "
+        "width, so the resized shape cannot be written to info.json."
+    )
+
+
+def verify_timeline(
+    before: VideoProbe, after: VideoProbe, expected_size: tuple[int, int] | None = None
+) -> list[str]:
+    """Return the reasons a re-encoded file is NOT a drop-in replacement.
+
+    ``expected_size`` is the intended (width, height) when resizing; without
+    it the size must be unchanged.
+    """
     problems: list[str] = []
     if before.frames != after.frames:
         problems.append(f"frame count {before.frames} -> {after.frames}")
-    if (before.width, before.height) != (after.width, after.height):
+    if expected_size is not None:
+        if (after.width, after.height) != tuple(expected_size):
+            problems.append(
+                f"size {after.width}x{after.height}, expected the resize target "
+                f"{expected_size[0]}x{expected_size[1]}"
+            )
+    elif (before.width, before.height) != (after.width, after.height):
         problems.append(
             f"size {before.width}x{before.height} -> {after.width}x{after.height}"
         )
@@ -337,22 +457,37 @@ def verify_episode_offsets(
     return problems
 
 
-def sample_frame_diff(old: Path, new: Path, count: int, total: int) -> float:
+def sample_frame_diff(
+    old: Path,
+    new: Path,
+    count: int,
+    total: int,
+    size: tuple[int, int] | None = None,
+    interpolation: str = "AREA",
+) -> float:
     """Mean absolute pixel difference over `count` frames spread across the file.
 
     Frame counting alone cannot see a timeline SHIFT — the same number of
     frames in a different order still counts right. This decodes matching frame
     indices from both files and compares them. Expect a small non-zero value
     (both codecs are lossy); a large one means the frames no longer line up.
+
+    ``size`` is the (width, height) of a RESIZED copy: the old frames are scaled
+    to it with the same filter first, so the diff still measures only encoding
+    error and timeline alignment, not the resize itself.
     """
     import numpy as np
 
-    def frames_at(path: Path, wanted: set[int]) -> dict[int, "np.ndarray"]:
+    def frames_at(path: Path, wanted: set[int], scale_to=None) -> dict[int, "np.ndarray"]:
         out: dict[int, np.ndarray] = {}
         with av.open(str(path), mode="r") as container:
             stream = container.streams.video[0]
             for index, frame in enumerate(container.decode(stream)):
                 if index in wanted:
+                    if scale_to is not None:
+                        frame = frame.reformat(
+                            width=scale_to[0], height=scale_to[1], interpolation=interpolation
+                        )
                     out[index] = frame.to_ndarray(format="rgb24").astype(np.int16)
                 if len(out) == len(wanted):
                     break
@@ -365,7 +500,7 @@ def sample_frame_diff(old: Path, new: Path, count: int, total: int) -> float:
     if len(wanted) > count:
         wanted = set(sorted(wanted)[:count])
 
-    old_frames = frames_at(old, wanted)
+    old_frames = frames_at(old, wanted, scale_to=size)
     new_frames = frames_at(new, wanted)
     shared = sorted(set(old_frames) & set(new_frames))
     if not shared:
@@ -613,6 +748,21 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Overwrite the source dataset's videos. Destructive — there is no undo.",
     )
+    parser.add_argument(
+        "--resize",
+        type=int,
+        nargs=2,
+        metavar=("HEIGHT", "WIDTH"),
+        help="Store every video at this size (HEIGHT then WIDTH, like crisp_gym's "
+        "camera `resolution: [H, W]`). Both must be even. Codec defaults to the "
+        "source's own. Not combinable with --in-place.",
+    )
+    parser.add_argument(
+        "--interpolation",
+        choices=RESIZE_INTERPOLATIONS,
+        default="AREA",
+        help="Scaling filter for --resize (default AREA, the right one for downscaling).",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Plan only; write nothing.")
     parser.add_argument(
         "--verify-frames",
@@ -652,6 +802,24 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("converting takes exactly one --repo-id/--root (use --inspect to compare several)")
     src_root, src_label = roots[0], labels[0]
 
+    # ── resize target ─────────────────────────────────────────────────────
+    target_size: tuple[int, int] | None = None  # (width, height), PyAV's order
+    if args.resize:
+        height, width = args.resize
+        if height <= 0 or width <= 0:
+            parser.error(f"--resize needs positive sizes, got {height} {width}")
+        if height % 2 or width % 2:
+            parser.error(
+                f"--resize {height} {width}: both must be even (4:2:0 video stores "
+                "colour at half resolution, so encoders reject odd sizes)"
+            )
+        if args.in_place:
+            parser.error(
+                "--resize with --in-place would discard the full-resolution videos for "
+                "good; write a new dataset with --output-root instead"
+            )
+        target_size = (width, height)
+
     # ── target encoder ────────────────────────────────────────────────────
     vcodec, pix_fmt = args.vcodec, args.pix_fmt
     if args.match:
@@ -664,6 +832,16 @@ def main(argv: list[str] | None = None) -> int:
         vcodec = vcodec or reference.get("video.codec")
         pix_fmt = pix_fmt or reference.get("video.pix_fmt")
         logger.info("Target from --match %s: codec=%s pix_fmt=%s", match_root, vcodec, pix_fmt)
+    if not vcodec and target_size is not None:
+        # A resize-only run keeps the source's codec and pixel format, so the
+        # smaller copy still merges with datasets recorded the same way.
+        src_info = load_info(src_root)
+        src_keys = video_keys(src_info)
+        if src_keys:
+            declared = src_info["features"][src_keys[0]].get("info") or {}
+            vcodec = declared.get("video.codec")
+            pix_fmt = pix_fmt or declared.get("video.pix_fmt")
+            logger.info("--resize without --vcodec: keeping the source's codec=%s pix_fmt=%s", vcodec, pix_fmt)
     if not vcodec:
         parser.error("give --vcodec or --match")
 
@@ -706,13 +884,44 @@ def main(argv: list[str] | None = None) -> int:
             plan.append((key, path))
         first = probe(files[0])
         sizes.add((first.width, first.height))
+        if target_size is not None:
+            src_aspect = first.width / first.height
+            dst_aspect = target_size[0] / target_size[1]
+            if abs(dst_aspect - src_aspect) / src_aspect > ASPECT_TOLERANCE:
+                logger.warning(
+                    "%s: %dx%d -> %dx%d changes the aspect ratio (%.3f -> %.3f): every "
+                    "frame will be STRETCHED. For %dx%d keep W/H = %.3f.",
+                    key, first.width, first.height, target_size[0], target_size[1],
+                    src_aspect, dst_aspect, first.width, first.height, src_aspect,
+                )
+            if target_size[0] > first.width or target_size[1] > first.height:
+                logger.warning(
+                    "%s: %dx%d -> %dx%d UPSCALES — larger files and slower decoding, "
+                    "with no detail gained.",
+                    key, first.width, first.height, target_size[0], target_size[1],
+                )
     logger.info("%d file(s) across %d video key(s); sizes %s", len(plan), len(keys), sorted(sizes))
+
+    # Compute every resized shape before writing anything: a shape that cannot
+    # be updated should stop the run here, not after an hour of encoding.
+    new_shapes: dict[str, list[int]] = {}
+    if target_size is not None:
+        for key in keys:
+            try:
+                new_shapes[key] = resized_shape(info["features"][key], target_size[1], target_size[0])
+            except ValueError as exc:
+                logger.error("%s: %s", key, exc)
+                return 1
+        logger.info(
+            "Resizing to %dx%d (WxH) with %s interpolation; info.json shapes -> %s",
+            target_size[0], target_size[1], args.interpolation, new_shapes,
+        )
 
     if args.dry_run:
         logger.info("--dry-run: would re-encode %d file(s) to %s. Nothing written.", len(plan), encoder.vcodec)
         return 0
 
-    preflight(encoder, sizes)
+    preflight(encoder, {target_size} if target_size is not None else sizes)
 
     # ── output tree ───────────────────────────────────────────────────────
     if args.in_place:
@@ -723,12 +932,16 @@ def main(argv: list[str] | None = None) -> int:
             dst_root = Path(args.output_root)
         elif args.output_repo_id:
             dst_root = HF_LEROBOT_HOME / args.output_repo_id
-        elif args.repo_id and not Path(args.repo_id[0]).is_absolute():
-            dst_root = HF_LEROBOT_HOME / f"{args.repo_id[0]}_{encoder.vcodec}"
         else:
-            # Source was given as a bare --root, so there is no repo id to
-            # derive a name from; sit the output beside it.
-            dst_root = src_root.parent / f"{src_root.name}_{encoder.vcodec}"
+            suffix = encoder.vcodec
+            if target_size is not None:
+                suffix += f"_{target_size[1]}x{target_size[0]}"  # HEIGHTxWIDTH, like --resize
+            if args.repo_id and not Path(args.repo_id[0]).is_absolute():
+                dst_root = HF_LEROBOT_HOME / f"{args.repo_id[0]}_{suffix}"
+            else:
+                # Source was given as a bare --root, so there is no repo id to
+                # derive a name from; sit the output beside it.
+                dst_root = src_root.parent / f"{src_root.name}_{suffix}"
         logger.info("Copying %s -> %s (videos rebuilt, not copied)", src_root, dst_root)
         copy_without_videos(src_root, dst_root)
 
@@ -762,11 +975,16 @@ def main(argv: list[str] | None = None) -> int:
             staged = src_path.with_suffix(".reencoded.mp4")
             reencode_video(src_path, staged, video_encoder=encoder, overwrite=True)
             after = probe(staged)
+        elif target_size is not None:
+            transcode_resized(
+                src_path, dst_path, encoder, target_size[0], target_size[1], args.interpolation
+            )
+            after = probe(dst_path)
         else:
             reencode_video(src_path, dst_path, video_encoder=encoder, overwrite=True)
             after = probe(dst_path)
 
-        problems = verify_timeline(before, after)
+        problems = verify_timeline(before, after, expected_size=target_size)
         chunk_index = int(relative.parts[-2].split("-")[-1])
         file_index = int(relative.stem.split("-")[-1])
         problems += verify_episode_offsets(
@@ -775,7 +993,10 @@ def main(argv: list[str] | None = None) -> int:
 
         if not problems and args.verify_frames > 0:
             probe_path = staged if args.in_place else dst_path
-            diff = sample_frame_diff(src_path, probe_path, args.verify_frames, before.frames)
+            diff = sample_frame_diff(
+                src_path, probe_path, args.verify_frames, before.frames,
+                size=target_size, interpolation=args.interpolation,
+            )
             logger.info("      sampled frame diff: %.2f / 255 mean abs", diff)
             if diff > 25.0:
                 problems.append(
@@ -814,18 +1035,29 @@ def main(argv: list[str] | None = None) -> int:
         if "is_depth_map" in existing:
             probed["is_depth_map"] = existing["is_depth_map"]
         dst_info["features"][key]["info"] = {**existing, **probed}
+        if key in new_shapes:
+            # The feature shape is what lerobot builds the policy's image
+            # inputs from; video.height/width above come from the new file.
+            logger.info(
+                "info.json %s: shape %s -> %s",
+                key, dst_info["features"][key].get("shape"), new_shapes[key],
+            )
+            dst_info["features"][key]["shape"] = new_shapes[key]
 
         # crisp_gym recorders before the codec became configurable hardcoded
         # video.codec / video.pix_fmt into the separate `video_info` block.
         # Re-encoding turns those from redundant into actively WRONG, and
         # lerobot compares that block verbatim — so refresh whatever is there.
-        # Absent keys are not added: current recorders do not write them, and
-        # adding them would break merging with a dataset recorded today.
+        # The same holds for height/width after a resize. Absent keys are not
+        # added: current recorders do not write them, and adding them would
+        # break merging with a dataset recorded today.
         video_info = dst_info["features"][key].get("video_info")
         if isinstance(video_info, dict):
             for block_key, probed_key in (
                 ("video.codec", "video.codec"),
                 ("video.pix_fmt", "video.pix_fmt"),
+                ("video.height", "video.height"),
+                ("video.width", "video.width"),
             ):
                 if block_key in video_info and probed_key in probed:
                     if video_info[block_key] != probed[probed_key]:
@@ -846,12 +1078,21 @@ def main(argv: list[str] | None = None) -> int:
     (dst_root / "meta" / "info.json").write_text(json.dumps(dst_info, indent=4, ensure_ascii=False))
 
     logger.info("Done. %d file(s) re-encoded and verified. Dataset: %s", len(plan), dst_root)
-    logger.info(
-        "Confirm the merge is now accepted with:\n"
-        "  python -m crisp_gym.scripts.reencode_dataset_videos --inspect "
-        "--root %s --root <the other dataset>",
-        dst_root,
-    )
+    if target_size is not None:
+        logger.info(
+            "Videos are now %dx%d (HxW). A model trained on this copy should be fed "
+            "%dx%d at deploy too: set the camera's `resolution: [%d, %d]` in the "
+            "deploy env config so the images match what it trained on.",
+            target_size[1], target_size[0], target_size[1], target_size[0],
+            target_size[1], target_size[0],
+        )
+    else:
+        logger.info(
+            "Confirm the merge is now accepted with:\n"
+            "  python -m crisp_gym.scripts.reencode_dataset_videos --inspect "
+            "--root %s --root <the other dataset>",
+            dst_root,
+        )
     return 0
 
 
