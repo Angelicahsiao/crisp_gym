@@ -1335,3 +1335,54 @@ Falling more than a whole period behind rebases instead of firing a catch-up
 burst, and the episode summary reports how often that happened. **Check every
 episode's summary reads ~15.00 FPS** — anything lower means the time base is
 off by that ratio.
+
+## 14. Audit the command-minus-measured residual (contact / tactile work)
+
+Under Cartesian impedance control a contact force lives in the gap between the
+COMMANDED and the MEASURED pose (`force ≈ stiffness × gap`), not in the measured
+trajectory that `next_tcp_pose` records. `audit_command_residual.py` measures
+that gap on data you already have, before any model is built. Read-only; needs
+numpy + pandas + pyarrow (+ pyyaml for `--control-config`); no ROS, no lerobot.
+
+Record with `umi_robot_full_record.yaml` on a CARTESIAN-driven env (streamed
+teleop → CIC): it stores the command (`extra.target_cartesian`,
+`extra.gripper_target`), the joints and the external joint torques. On FACTR/JIC
+data the Cartesian command is a constant and the script refuses.
+
+```bash
+python crisp_gym/scripts/audit_command_residual.py /path/to/dataset \
+    --control-config /path/to/crisp_controllers_robot_demos/config/fr3/controllers.yaml \
+    --out audit.json --dump-npz audit_frames.npz
+```
+
+It reports:
+
+| Step | Question | Needs |
+|---|---|---|
+| A | How big is the residual in contact vs free motion (mm, deg)? | command + pose |
+| B | How much of the free-motion residual is tracking lag (`residual ≈ τ·velocity`)? | command + pose |
+| C | What stiffness/damping does the controller actually deliver? (`F_ext = −K r + D v`) | `extra.joints` + `extra.ext_torque`, Franka FR3 |
+| D | Can tactile predict the residual on HELD-OUT episodes (linear, single frame)? | tactile columns |
+| E | The same residual for the gripper channel | `extra.gripper_target` |
+
+Things to know when reading it:
+
+- **Nominal gains.** `dric_dual_rscam_franka_umi.yaml` sets
+  `cartesian_control_param_config: null`, so the CIC keeps the gains of the
+  robot bring-up (`controllers.yaml`, `cartesian_impedance_controller`), NOT
+  those in `config/control/default_cartesian_impedance.yaml`. Pass the file the
+  controller was really launched with, or `--k-pos/--k-rot`. Step C tells you
+  what the arm delivered either way.
+- **Tactile columns** default to `left_tactile` / `right_tactile`; a bare name
+  matches a unique dotted suffix (`extra.left_tactile`). Any shape works — the
+  values are flattened. `--tactile-shape 8 10` only checks the stored size.
+  The zero is the mean of the first `--baseline-frames` frames of each episode,
+  so an episode that starts in contact hides that contact.
+- **Contact flag** comes from tactile when present, else from the TCP force.
+  The "torque only" percentage is contact the arm felt and the skin did not see.
+- **Step D is a lower bound**: one 15 Hz frame, linear. A velocity-only row and
+  (with torques) a wrench row are printed next to it as the floor and the
+  reference.
+- **Step C** uses built-in Franka FR3/Panda kinematics with the Jacobian taken
+  at the recorded TCP position, so no tool model is needed. It is skipped, with
+  a note, if the recorded TCP is not rigid w.r.t. the computed flange.

@@ -172,6 +172,9 @@ Repos involved (same owner, branch conventions apply to all):
 | `tests/test_swap_action_offline.py` | Offline swap core: `swap_arm` (arm←target, gripper kept, no input mutation) + feature guard. pandas/migrate stubbed, numpy-only. |
 | `crisp_gym/util/loop_timing.py` | Phase timing for the record/deploy loop (`LoopTimingRecorder` producer side, `WriterTimingRecorder` consumer side). Attributes a dropped control rate to `data` (producer) vs `put` (writer back-pressure) vs `sleep`. Stdlib only — no ROS/numpy/lerobot, so the writer subprocess can import it. MEASUREMENT ONLY: no control flow depends on it. USAGE.md §12. |
 | `tests/test_loop_timing.py` | Pins the attribution in all three regimes against a REAL `mp.JoinableQueue` with a slow consumer, plus `make_record_fn`'s `.timing` publication. Stdlib + numpy; stubs `crisp_py.utils.geometry`. |
+| `crisp_gym/scripts/audit_command_residual.py` | READ-ONLY audit of the command-minus-measured residual `T_tcp^-1 @ T_cmd` (TCP frame, world-invariant) on Cartesian-driven data: size in contact vs free, tracking lag, SYSTEM IDENTIFICATION of the delivered stiffness/damping from `extra.ext_torque` (built-in FR3 DH kinematics, Jacobian at the recorded TCP so no tool model; skipped when recorded TCP and DH flange are not rigid), a held-out-EPISODE linear probe of tactile → residual, and the gripper residual. Tactile columns resolve by suffix (`left_tactile`/`right_tactile`) and may have any shape. Refuses a frozen command (FACTR/JIC). GPU-PC, crisp-import-free. USAGE.md §14, HANDOFF §7. |
+| `tests/test_audit_command_residual.py` | The audit against a simulated impedance episode with CHOSEN gains: residual recovery + world-frame invariance, Jacobian vs finite differences, DH table vs Franka's zero and home poses, recovered K/D, lag time constant, held-out-group scoring (an episode-id feature must not look predictive), frozen-command and kinematics-mismatch refusals, parquet end-to-end (nested 8x10 tactile). Numpy-only except the last (pandas + pyarrow, skipped without). |
+| `tests/test_gripper_target_source.py` | `gripper.target_width_normalized` record source: same units as the measured gripper (so the two subtract), falls back to the measured value before the first command, REFUSES a handheld env, and `umi_robot_full_record.yaml` carries it as an extra that never enters `observation.state`. Numpy-only. |
 
 LeRobot version target: **0.6.1** — what the owner trains on, what
 `scripts/setup_lerobot.sh` clones by default, and what `pixi.toml`'s
@@ -838,3 +841,57 @@ The guard works: `get_parameters` maps `PARAMETER_NOT_SET` → `None` via
 `parameter_value_to_python`, so `if None in current_parameters` correctly
 catches undeclared names and raises before anything is applied. That is what
 surfaced the `right_fr3_*` mismatch above rather than failing silently.
+
+---
+
+## 7. Contact forces, the command residual and tactile (direction as of 2026-11)
+
+The owner is adding tactile skins (`left_tactile` / `right_tactile`, currently
+8x10 each, shape must stay configurable, published at up to 200 Hz) to BOTH the
+robot gripper and the handheld device, and wants ACP-style compliant behaviour
+(`adaptive_compliance_policy`, UMI-FT). Facts established so far — verify
+before contradicting them:
+
+- **Why `next_tcp_pose` is a weak action in contact.** Under the CIC the force
+  is `K (x_cmd − x)`. In contact the measured pose barely moves, so replaying it
+  commands ~zero force. The command (`extra.target_cartesian`) is ACP's "virtual
+  target"; `T_tcp^-1 @ T_cmd` is the residual, `≈ F/K` in steady contact plus a
+  tracking-lag term in motion.
+- **Where the CIC gains come from — NOT where it looks.** Every dric Franka env
+  sets `cartesian_control_param_config: null`; the gains are the bring-up's
+  (`crisp_controllers_demos/.../config/fr3/controllers.yaml`,
+  `cartesian_impedance_controller`: k_pos 400, k_rot 30 as of this writing).
+  `config/control/default_cartesian_impedance.yaml` (600/30) is loaded only by
+  `factr_franka_robotiq.yaml`. Gains are deliberately NOT stored in the dataset
+  (owner decision); read them from the config the controller was launched with
+  and trust `audit_command_residual.py` step C over either file.
+- **The residual only means something together with the stiffness it was
+  recorded at.** Recordings so far use ONE gain, so no model can learn the
+  dependence on stiffness from them; use `K × residual` as the gain-independent
+  quantity, and record a short session at a second gain to test that scaling.
+- **Gripper.** The same weakness exists (measured width stalls at the object),
+  hence `extra.gripper_target`. It yields squeeze / no squeeze, NOT a graded
+  force: the Robotiq applies its fixed `max_effort` once blocked.
+- **Do not run a tactile → residual LABELLING model as an online feedback law.**
+  `x_cmd = x_ref + F_measured / K` sustains whatever force is already there
+  (unity positive feedback): it regulates nothing and drifts. An online fast
+  layer must track a force/tactile TARGET produced by the policy, or be trained
+  as a policy head.
+- **Timing stack a fast/slow design has to fit into (verified in code).**
+  policy chunk (`n_action_steps` steps, open loop) → env tick at 15 Hz
+  (`robot.set_target`) → crisp_py re-publishes the latest target at
+  `publish_frequency` (50 Hz default), ZERO-ORDER HOLD, no interpolation → CIC
+  at 1 kHz. The CIC is the only layer that reacts between ticks, and it reacts
+  mechanically, not to tactile. `RemotePolicy.make_data_fn` calls
+  `client.infer` SYNCHRONOUSLY inside the tick — REMOTE_INFERENCE.md §3
+  describes a background prefetch that only the LOCAL worker has
+  (`async_inference` in `relative_lerobot_policy`). No policy server exists in
+  any branch; the only v1 server is `FakeServer` in `tests/test_remote_protocol.py`.
+- **High-rate tactile lives in a CSV next to the 15 Hz dataset**, written by the
+  owner's own recorder (not in this repo). LeRobot timestamps are
+  `frame_index / fps`, not capture times, so joining the two needs either a
+  shared clock column or matching the 15 Hz tactile samples against the CSV.
+- Planned order: audit existing data → robot-only ablation of measured-pose vs
+  command action (true commands exist, no residual model needed) → residual
+  model on robot data → relabel handheld data into a NEW column (never
+  overwrite `action`, §1.2).
