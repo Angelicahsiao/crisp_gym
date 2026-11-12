@@ -222,6 +222,50 @@ def _src_gripper(env, reference_width: float | None = None,
     return np.array([np.clip(width_m / reference_width, 0.0, 1.0)], dtype=np.float32)
 
 
+@register_source("gripper.target_width_normalized")
+def _src_gripper_target(env, reference_width: float | None = None,
+                        device_max_width: float | None = None, **_) -> np.ndarray:
+    """COMMANDED gripper opening, in the units of gripper.width_normalized.
+
+    The gripper-channel mirror of robot.target_pose. Take the SAME
+    reference_width / device_max_width as the measured gripper entry, so that
+    (this - gripper.width_normalized) is the gripper's command-minus-measured
+    residual: ~0 while the fingers move freely, negative while the command asks
+    for a smaller opening than an object allows — i.e. while squeezing. The
+    measured width alone cannot show that: it stalls at the object's width.
+
+    What the residual does NOT give is a graded force. A position-commanded
+    gripper with a fixed effort limit (Robotiq: GripperConfig.max_effort)
+    squeezes with that limit once blocked, however far past the object the
+    command goes.
+
+    Robot envs only. A handheld device has no gripper command, and returning
+    the measured width there would be a column that looks like a command and is
+    not one, so it raises instead. Before the first command of a session
+    Gripper._target is unset; the measured value is returned then, the same way
+    robot.target_pose is seeded from the measured pose.
+    """
+    if hasattr(env, "_gripper_normalized") or getattr(env, "gripper", None) is None:
+        raise ValueError(
+            "gripper.target_width_normalized needs a commanded gripper "
+            "(env.gripper). A handheld env has no gripper command — drop this "
+            "column from the record config."
+        )
+    try:
+        raw = float(env.gripper.target)
+    except TypeError:  # Gripper._target is None until the first set_target()
+        raw = float(env.gripper.value)
+    if reference_width is None:
+        return np.array([raw], dtype=np.float32)
+    if device_max_width is None:
+        raise ValueError(
+            "gripper.target_width_normalized needs device_max_width (meters at "
+            "gripper value 1.0) — use the same value as the measured gripper entry."
+        )
+    width_m = raw * device_max_width
+    return np.array([np.clip(width_m / reference_width, 0.0, 1.0)], dtype=np.float32)
+
+
 @register_source("camera.image")
 def _src_camera(env, camera: str = "", **_):
     cams = getattr(env, "cameras", [])
@@ -237,6 +281,14 @@ def _src_camera(env, camera: str = "", **_):
 
 
 # ── Config dataclasses ────────────────────────────────────────────────────────
+
+
+# Sources whose value is one scalar, so `shape` may be omitted in the YAML.
+_GRIPPER_SCALAR_SOURCES = (
+    "gripper.width_normalized",
+    "gripper.raw_value",
+    "gripper.target_width_normalized",
+)
 
 
 @dataclass
@@ -255,7 +307,7 @@ class ObsFieldConfig:
             return tuple(self.shape)
         if self.source in ("robot.tcp_pose", "robot.target_pose"):
             return (POSE_DIMS[self.params.get("representation", "rotation_6d")],)
-        if self.source in ("gripper.width_normalized", "gripper.raw_value"):
+        if self.source in _GRIPPER_SCALAR_SOURCES:
             return (1,)
         raise ValueError(f"shape required for source '{self.source}' (key {self.key})")
 
@@ -265,7 +317,9 @@ class ObsFieldConfig:
             if self.source == "robot.target_pose":
                 return [f"target_{n}" for n in names]
             return names
-        if self.source in ("gripper.width_normalized", "gripper.raw_value"):
+        if self.source == "gripper.target_width_normalized":
+            return ["gripper_target"]
+        if self.source in _GRIPPER_SCALAR_SOURCES:
             return ["gripper"]
         n = int(np.prod(self.resolved_shape()))
         stem = self.key.split(".")[-1]

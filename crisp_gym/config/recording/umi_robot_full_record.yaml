@@ -95,6 +95,19 @@ observations:
   - key: extra.gripper_raw                      # uncalibrated device value
     source: gripper.raw_value
     include_in_state: false
+  # COMMANDED gripper opening, same units as observation.state.gripper above
+  # (keep reference_width / device_max_width identical to that entry).
+  # extra.gripper_target - observation.state.gripper is the gripper's
+  # command-minus-measured residual: ~0 while the fingers move freely, negative
+  # while the command asks for less opening than an object allows (squeezing).
+  # The measured width alone stalls at the object and cannot show that.
+  # It is NOT a graded force: the Robotiq squeezes with its fixed max_effort
+  # once blocked, however far past the object the command goes.
+  - key: extra.gripper_target
+    source: gripper.target_width_normalized
+    reference_width: 0.09
+    device_max_width: 0.085        # Robotiq 2F-85 stroke
+    include_in_state: false
 
 action:
   definition: next_tcp_pose

@@ -42,6 +42,7 @@ rate_hz: 15.0
 #                       robot.target_pose         COMMANDED TCP pose
 #                       robot.target_joint        COMMANDED joint configuration
 #                       gripper.width_normalized  gripper opening in [0,1]
+#                       gripper.target_width_normalized  COMMANDED gripper opening
 #                       camera.image              one camera frame
 #                     (the full registry also has robot.joint_velocities,
 #                     robot.joint_efforts, robot.sensor, gripper.raw_value —
@@ -68,6 +69,11 @@ rate_hz: 15.0
 #     control path — set_target() for the pose, set_target_joint() for the
 #     joints — so under the OTHER control mode the column is a constant, not a
 #     command. Record the one matching how the arm is driven.
+#   gripper.target_width_normalized:
+#     Same reference_width / device_max_width as gripper.width_normalized, so
+#     the two subtract into the gripper's command-minus-measured residual
+#     (negative = squeezing). Robot envs only — a handheld device has no gripper
+#     command and the source raises there. Store it as an extra.* column.
 #   gripper.width_normalized:
 #     reference_width:  SHARED physical width (meters) that maps to 1.0 across
 #                       ALL devices recording for the same policy. null/omitted
