@@ -317,6 +317,72 @@ def test_current_pose_prefers_cartesian_and_takes_the_latest_obs_step():
     assert ol.current_pose9({"observation.state": np.zeros(4)}, 1) is None
 
 
+# ── episode selection ────────────────────────────────────────────────────────
+# lerobot >= 0.4 (v3.0 datasets) has no meta.episode_data_index. The old lookup
+# failed silently and evaluated the whole dataset from row 0, whatever
+# --episodes said. Episodes are now located from the episode_index column.
+
+def test_episode_rows_come_from_the_episode_column():
+    column = np.repeat([0, 1, 2], [4, 3, 5])
+    assert ol.episode_row_range(column, 0) == (0, 4)
+    assert ol.episode_row_range(column, 1) == (4, 7)
+    assert ol.episode_row_range(column, 2) == (7, 12)
+
+
+def test_episode_rows_are_positions_in_a_filtered_dataset():
+    """Loaded with episodes=[3, 7]: episode 7 sits at rows 2..4, not at its global index."""
+    column = np.array([3, 3, 7, 7, 7])
+    assert ol.episode_row_range(column, 7) == (2, 5)
+
+
+def test_a_missing_episode_is_an_error_that_names_what_exists():
+    with pytest.raises(ValueError, match=r"episode 5 is not in this dataset \(it has episodes 0\.\.2\)"):
+        ol.episode_row_range(np.repeat([0, 1, 2], 3), 5)
+    with pytest.raises(ValueError, match=r"it has 2 episodes: 3, 7"):
+        ol.episode_row_range(np.array([3, 3, 7]), 0)
+
+
+def test_an_episode_split_into_two_blocks_is_an_error():
+    with pytest.raises(ValueError, match="not one contiguous block"):
+        ol.episode_row_range(np.array([0, 0, 1, 0]), 0)
+
+
+class _ArrowColumn:
+    def __init__(self, values): self.values = np.asarray(values)
+    def to_numpy(self): return self.values
+
+
+class _HF:
+    """Stands in for datasets.Dataset: an Arrow table plus an optional row selection."""
+    def __init__(self, table_column, selected=None):
+        self.data = types.SimpleNamespace(column=lambda name: _ArrowColumn(table_column))
+        self._selected = table_column if selected is None else selected
+    def with_format(self, fmt):
+        assert fmt is None
+        return {"episode_index": list(self._selected)}
+
+
+class _DS:
+    def __init__(self, hf, n): self.hf_dataset, self._n = hf, n
+    def __len__(self): return self._n
+
+
+def test_episode_column_is_read_from_the_arrow_table():
+    column = ol.dataset_episode_column(_DS(_HF([0, 0, 1, 1, 1]), 5))
+    assert column.tolist() == [0, 0, 1, 1, 1]
+
+
+def test_episode_column_honours_a_row_selection():
+    """The table has 5 rows but the dataset selects 3 of them: use the selection."""
+    column = ol.dataset_episode_column(_DS(_HF([0, 0, 1, 1, 1], selected=[1, 1, 1]), 3))
+    assert column.tolist() == [1, 1, 1]
+
+
+def test_a_dataset_without_an_hf_dataset_cannot_be_searched():
+    with pytest.raises(ValueError, match="no hf_dataset"):
+        ol.dataset_episode_column(object())
+
+
 # ── main() end to end, with numpy stand-ins for torch and lerobot ───────────
 # Runs the real main(): dataset window -> alignment -> frames -> prediction ->
 # per-step report -> verdict. A fake n_obs_steps=2 policy predicts the demo
@@ -392,10 +458,19 @@ def populate_queues(q, b):
     return q
 _mod("lerobot.policies.utils").populate_queues = populate_queues
 
+# Two episodes of N rows each, located ONLY through the episode_index column
+# (lerobot >= 0.4 datasets have no meta.episode_data_index).
+EP_COL = np.repeat([0, 1], N)
+FETCHED = []
+
+class _Column:
+    def to_numpy(self): return EP_COL
+
 class Dataset:
-    meta = SimpleNamespace(episode_data_index={"from": [0], "to": [N]})
-    def __len__(self): return N
+    hf_dataset = SimpleNamespace(data=SimpleNamespace(column=lambda name: _Column()))
+    def __len__(self): return 2 * N
     def __getitem__(self, t):
+        if t not in FETCHED: FETCHED.append(t)
         n_obs = 2 if mode == "nobs2" else 1
         obs = [pose(STEP * max(t - n_obs + 1 + i, 0)) for i in range(n_obs)]
         state = np.stack(obs) if n_obs > 1 else obs[0]
@@ -414,9 +489,13 @@ lrp.pose9d_to_mat = pose9d_to_mat
 sys.modules["lerobot_relative_pose"] = lrp
 
 ol = SourceFileLoader("openloop_e2e", script).load_module()
+episodes = sys.argv[3:] or ["0"]
 sys.argv = ["x", "--path", "ckpt", "--repo-id", "ds", "--action-repr", "absolute",
-            "--episodes", "0", "--stride", "5", "--max-frames", "6"]
-ol.main()
+            "--episodes", *episodes, "--stride", "5", "--max-frames", "6"]
+try:
+    ol.main()
+finally:
+    print("ROWS", json.dumps(FETCHED))
 print("AUG_AFTER", json.dumps(cfg.dataset.image_transforms.enable))
 '''
 
@@ -437,3 +516,47 @@ def test_main_end_to_end_perfect_policy_reads_zero_error(tmp_path, mode):
     assert "predicted motion = 1.00x the demo's" in out
     assert "<- re-observe" in out                               # row for the 8th executed step
     assert "task string fed to the policy: 'open the electrical box'" in out
+    assert "episode 0: dataset rows 0..59 (60 frames)" in out
+    assert _rows(out) == [0, 5, 10, 15, 20, 25]                 # episode 0 only, --max-frames 6
+
+
+def _run_driver(tmp_path, mode, *episodes):
+    import subprocess
+    driver = tmp_path / "driver.py"
+    driver.write_text(DRIVER)
+    proc = subprocess.run([sys.executable, str(driver), str(SCRIPT), mode, *episodes],
+                          capture_output=True, text=True, timeout=120)
+    return proc, proc.stdout + proc.stderr
+
+
+def _rows(out):
+    import json
+    line = [l for l in out.splitlines() if l.startswith("ROWS ")][-1]
+    return json.loads(line[len("ROWS "):])
+
+
+def test_main_evaluates_the_requested_episode_not_the_first(tmp_path):
+    """--episodes 1 must read episode 1's rows (60..119), not rows from 0."""
+    proc, out = _run_driver(tmp_path, "nobs2", "1")
+    assert proc.returncode == 0, out[-3000:]
+    assert "episode 1: dataset rows 60..119 (60 frames)" in out
+    assert _rows(out) == [60, 65, 70, 75, 80, 85]
+    assert "frames evaluated per episode: 1: 6" in out
+    assert "verdict: GOOD" in out
+
+
+def test_main_says_when_max_frames_cuts_an_episode_off(tmp_path):
+    proc, out = _run_driver(tmp_path, "nobs2", "0", "1")
+    assert proc.returncode == 0, out[-3000:]
+    assert "frames evaluated per episode: 0: 6, 1: 0" in out
+    assert "was reached before episode(s) [1]" in out
+    assert _rows(out) == [0, 5, 10, 15, 20, 25]
+
+
+def test_main_stops_on_an_episode_that_is_not_in_the_dataset(tmp_path):
+    """No fallback to other frames: a missing episode is an error, before any inference."""
+    proc, out = _run_driver(tmp_path, "nobs2", "0", "7")
+    assert proc.returncode != 0
+    assert "cannot select --episodes: episode 7 is not in this dataset (it has episodes 0..1)" in out
+    assert _rows(out) == []                                     # nothing was evaluated
+    assert "verdict" not in out

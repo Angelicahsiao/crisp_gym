@@ -166,6 +166,68 @@ def current_step_offset(action_delta_indices) -> int | None:
     return indices.index(0) if 0 in indices else None
 
 
+def _describe_episodes(column) -> str:
+    episodes = np.unique(column)
+    if episodes.size == 0:
+        return "no episodes"
+    first, last = int(episodes[0]), int(episodes[-1])
+    if episodes.size == last - first + 1:
+        return f"episodes {first}..{last}"
+    shown = ", ".join(str(int(e)) for e in episodes[:20])
+    return f"{episodes.size} episodes: {shown}{', ...' if episodes.size > 20 else ''}"
+
+
+def episode_row_range(episode_column, episode: int) -> tuple[int, int]:
+    """Rows ``[lo, hi)`` of ``episode``, from the dataset's per-row episode index.
+
+    ``episode_column[i]`` is the episode of ``dataset[i]``. Row POSITIONS are
+    used, not the metadata's global frame indices: the two differ for an
+    episode-filtered dataset. Raises ValueError when the episode is not in the
+    dataset (naming the ones that are) or its rows are not one block. It never
+    substitutes another range: evaluating different frames than the ones asked
+    for is worse than stopping.
+    """
+    column = np.asarray(episode_column).reshape(-1)
+    rows = np.flatnonzero(column == int(episode))
+    if rows.size == 0:
+        raise ValueError(
+            f"episode {episode} is not in this dataset (it has {_describe_episodes(column)})"
+        )
+    lo, hi = int(rows[0]), int(rows[-1]) + 1
+    if hi - lo != rows.size:
+        raise ValueError(
+            f"episode {episode} is not one contiguous block of rows "
+            f"({rows.size} rows spread over {lo}..{hi - 1})"
+        )
+    return lo, hi
+
+
+def dataset_episode_column(ds) -> np.ndarray:
+    """Episode index of every row of ``ds``, in row order, without decoding frames.
+
+    Every LeRobot dataset has an ``episode_index`` column, so this works on
+    v3.0 datasets (lerobot >= 0.4), where ``meta.episode_data_index`` no longer
+    exists. The Arrow column is read directly when it lines up with the
+    dataset's rows (as lerobot's own reader does); otherwise the HF dataset is
+    asked for the column, which honours a row selection.
+    """
+    hf = getattr(ds, "hf_dataset", None)
+    if hf is None:
+        raise ValueError("the dataset exposes no hf_dataset, so its episodes cannot be located")
+    try:
+        column = np.asarray(hf.data.column("episode_index").to_numpy())
+    except Exception:
+        column = None
+    if column is None or len(column) != len(ds):
+        column = np.asarray(list(hf.with_format(None)["episode_index"]))
+    if len(column) != len(ds):
+        raise ValueError(
+            f"episode_index has {len(column)} rows but the dataset has {len(ds)}; "
+            "cannot locate episodes"
+        )
+    return column.reshape(-1)
+
+
 def disable_eval_augmentation(train_config) -> bool:
     """Switch off the training run's image augmentation; True if it was on.
 
@@ -430,15 +492,24 @@ def main():
                 act = post(act)
         return act.squeeze(0).to("cpu").numpy()
 
-    idx_from = getattr(getattr(ds, "meta", None), "episode_data_index", None)
+    # Rows of each requested episode, resolved for ALL of them before any
+    # inference. An episode that cannot be located stops the run: silently
+    # evaluating other frames (the old fallback was the whole dataset from row
+    # 0) reports numbers for episodes nobody asked about.
+    try:
+        episode_column = dataset_episode_column(ds)
+        episode_ranges = [(ep, *episode_row_range(episode_column, ep)) for ep in args.episodes]
+    except ValueError as e:
+        raise SystemExit(f"[openloop] cannot select --episodes: {e}") from e
+    for ep, lo, hi in episode_ranges:
+        logger.info(f"[openloop] episode {ep}: dataset rows {lo}..{hi - 1} ({hi - lo} frames)")
+
     rows: dict[str, list[list[float]]] = {}
     baseline_ok = True
     n_done = 0
-    for ep in args.episodes:
-        try:
-            lo = int(idx_from["from"][ep]); hi = int(idx_from["to"][ep])
-        except Exception:
-            lo, hi = 0, len(ds)
+    frames_per_episode: dict[int, int] = {}
+    for ep, lo, hi in episode_ranges:
+        frames_per_episode.setdefault(ep, 0)
         for idx in range(lo, hi, args.stride):
             if n_done >= args.max_frames:
                 break
@@ -470,10 +541,22 @@ def main():
             for name, values in metrics.items():
                 rows.setdefault(name, []).append(values)
             n_done += 1
+            frames_per_episode[ep] += 1
 
     if not rows:
         logger.error("[openloop] no frames evaluated — check --repo-id/--root/--episodes")
         return
+
+    logger.info(
+        "\n[openloop] frames evaluated per episode: "
+        + ", ".join(f"{ep}: {n}" for ep, n in frames_per_episode.items())
+    )
+    skipped = [ep for ep, n in frames_per_episode.items() if n == 0]
+    if skipped and n_done >= args.max_frames:
+        logger.warning(
+            f"[openloop] --max-frames {args.max_frames} was reached before episode(s) "
+            f"{skipped}: they are NOT in the numbers below. Raise --max-frames or --stride."
+        )
 
     def _col(name, k):
         return np.array([r[k] for r in rows[name] if len(r) > k])
