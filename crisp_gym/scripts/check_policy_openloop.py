@@ -42,6 +42,17 @@ the same division by 255. (Before that was added, every image-conditioned
 policy evaluated on lerobot >= 0.5 was fed frames 255 times too bright and
 scored err/move ~ 1 whatever it had learned. Results from then are void.)
 
+--diagnose explains a result instead of only reporting it:
+  1) prepares each frame twice, as a training batch (collate -> lerobot's
+     uint8 conversion -> preprocessor) and the way this script feeds the
+     policy, and prints the largest difference. Anything but ~0 means this
+     script is not showing the model what training showed it.
+  2) the model's training loss on those frames, with its own observations and
+     with images / state taken from another frame: does the loss depend on
+     each input at all?
+  3) several chunks per frame with fixed seeds: sampling noise vs systematic
+     error, and how far the output moves when an input is swapped.
+
 Policies: diffusion, and language-conditioned ones (multi_task_dit, GR00T).
 Each frame carries the dataset's own task string into the preprocessor, as in
 training — those policies tokenize it, and multi_task_dit fails with a shape
@@ -53,7 +64,7 @@ Usage (GPU PC, training env, script next to lerobot_relative_pose.py):
     python3 check_policy_openloop.py \
         --path .../checkpoints/100000/pretrained_model \
         --repo-id /abs/path/to/dataset \
-        --episodes 0 1 2 --stride 5 --max-frames 200
+        --episodes 0 1 2 --stride 5 --max-frames 200 [--diagnose]
 """
 
 from __future__ import annotations
@@ -310,6 +321,55 @@ def chunk_metrics(pred, rec, to_mat, current_mat=None) -> dict[str, list[float]]
     return out
 
 
+def sampling_diagnostics(samples, rec, swapped_image=None, swapped_state=None) -> dict[str, list[float]]:
+    """Per-step position statistics (metres) of K sampled chunks of ONE frame.
+
+    ``samples`` is ``[K, H, D]``: K chunks sampled for the same observation with
+    different noise. ``rec`` is the recorded chunk, aligned with them.
+    ``swapped_image`` / ``swapped_state`` are chunks sampled with the SAME noise
+    as ``samples[0]`` but with that input taken from another frame, so their
+    distance to ``samples[0]`` is the effect of the input alone.
+
+      single_err : mean over samples of |sample - recording|
+      mean_err   : |mean of the samples - recording|  (what is left without noise)
+      spread     : mean over samples of |sample - mean of the samples|  (the noise)
+      image_swap / state_swap : |swapped - samples[0]|  (how much that input matters)
+    """
+    samples = np.asarray(samples, dtype=float)
+    rec = np.asarray(rec, dtype=float)
+    steps = min(samples.shape[1], len(rec))
+    pos = samples[:, :steps, :3]
+    target = rec[:steps, :3]
+    centre = pos.mean(axis=0)
+    out = {
+        "single_err": np.linalg.norm(pos - target[None], axis=-1).mean(axis=0).tolist(),
+        "mean_err": np.linalg.norm(centre - target, axis=-1).tolist(),
+        "spread": np.linalg.norm(pos - centre[None], axis=-1).mean(axis=0).tolist(),
+    }
+    for name, swapped in (("image_swap", swapped_image), ("state_swap", swapped_state)):
+        if swapped is not None:
+            other = np.asarray(swapped, dtype=float)[:steps, :3]
+            n = min(len(other), steps)
+            out[name] = np.linalg.norm(other[:n] - pos[0, :n], axis=-1).tolist()
+    return out
+
+
+def spread_evenly(values, count: int) -> list:
+    """Up to ``count`` of ``values``, evenly spaced over the whole list, in order."""
+    values = list(values)
+    if count <= 0 or not values:
+        return []
+    if count >= len(values):
+        return values
+    picks = np.linspace(0, len(values) - 1, count).round().astype(int)
+    return [values[i] for i in dict.fromkeys(picks.tolist())]
+
+
+# --diagnose: frames per training-style batch, and noise draws averaged per loss.
+DIAGNOSE_BATCH = 8
+DIAGNOSE_LOSS_REPEATS = 4
+
+
 # err/move bands for the verdict. Rules of thumb, not calibrated thresholds:
 # the per-step table is the result; the verdict only names its region.
 ERR_OVER_MOTION_GOOD = 0.3
@@ -380,6 +440,19 @@ def main():
         "on-disk poses directly — use it for train_absolute_next_pose.py "
         "checkpoints.",
     )
+    p.add_argument(
+        "--diagnose", action="store_true",
+        help="After the report, find out WHY the numbers are what they are: (1) "
+        "whether this script feeds the model exactly what a training batch does, "
+        "(2) the model's training loss on these frames, with its own observations "
+        "and with images / state taken from another frame, (3) several samples "
+        "per frame: sampling noise vs systematic error, and how much the output "
+        "changes when an input is swapped.",
+    )
+    p.add_argument("--diagnose-frames", type=int, default=32,
+                   help="frames used by --diagnose, spread over the evaluated ones")
+    p.add_argument("--diagnose-samples", type=int, default=4,
+                   help="chunks sampled per frame by --diagnose")
     args = p.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -480,11 +553,14 @@ def main():
     task_logged = False
 
     def _predict(idx: int) -> np.ndarray:
+        return _predict_item(wrapped[idx])
+
+    def _predict_item(item: dict, seed: int | None = None) -> np.ndarray:
+        """One chunk for this item's observations. ``seed`` fixes the sampling noise."""
         nonlocal task_logged
         policy.reset()
         if pre is not None:
             pre.reset()
-        item = wrapped[idx]
         if not task_logged:
             task = task_for_frame(item)
             if task is not None:
@@ -519,6 +595,8 @@ def main():
             )
             if queues is not None:
                 policy._queues = populate_queues(policy._queues, last)
+        if seed is not None:
+            torch.manual_seed(seed)
         with torch.inference_mode():
             act = policy.predict_action_chunk(last)
             if post is not None:
@@ -541,6 +619,7 @@ def main():
     baseline_ok = True
     n_done = 0
     frames_per_episode: dict[int, int] = {}
+    evaluated_rows: list[int] = []
     for ep, lo, hi in episode_ranges:
         frames_per_episode.setdefault(ep, 0)
         for idx in range(lo, hi, args.stride):
@@ -575,6 +654,7 @@ def main():
                 rows.setdefault(name, []).append(values)
             n_done += 1
             frames_per_episode[ep] += 1
+            evaluated_rows.append(idx)
 
     if not rows:
         logger.error("[openloop] no frames evaluated — check --repo-id/--root/--episodes")
@@ -652,6 +732,167 @@ def main():
         "  Compare with an earlier checkpoint and with episodes NOT used in training\n"
         "  before reading this as overfitting."
     )
+
+    if not args.diagnose:
+        return
+
+    # ── --diagnose ───────────────────────────────────────────────────────────
+    # Everything below reuses ONE fetch of each frame, so the two input paths
+    # and all sampling variants see the same item (the wrapper draws fresh
+    # start-pose noise on every fetch).
+    OBS_STATE = "observation.state"
+    picks = spread_evenly(evaluated_rows, args.diagnose_frames)
+    items = [wrapped[i] for i in picks]
+    logger.info(
+        f"\n[diagnose] {len(items)} frames, spread evenly over the {len(evaluated_rows)} evaluated ones"
+    )
+
+    # 1) + 2) need the checkpoint's preprocessor and a training-style batch.
+    if pre is None:
+        logger.warning("[diagnose] no preprocessor for this lerobot version: parts 1 and 2 skipped")
+    else:
+        from torch.utils.data import default_collate
+
+        n_batches = max(1, -(-len(items) // DIAGNOSE_BATCH))
+        # items[j::n] mixes far-apart frames in each batch, so rolling a batch by
+        # half pairs every frame with observations from a different moment.
+        batches = [items[j::n_batches] for j in range(n_batches)]
+        max_diff: dict[str, float] = {}
+        # Every input the policy declares (state, cameras, environment state, ...).
+        compared_keys = list(dict.fromkeys(
+            [OBS_STATE, *image_features, *(getattr(policy.config, "input_features", None) or [])]
+        ))
+        variants = [("the frame's own observations", [])]
+        if image_features:
+            variants.append(("images from another frame", list(image_features)))
+        variants.append(("state from another frame", [OBS_STATE]))
+        if image_features:
+            variants.append(("images and state from another frame", [*image_features, OBS_STATE]))
+        losses: dict[str, list[float]] = {name: [] for name, _ in variants}
+        loss_error = None
+        for chunk in batches:
+            pre.reset()
+            raw = default_collate(chunk)
+            for cam in camera_keys:  # lerobot_train.py, verbatim: uint8 frames -> float in [0, 1]
+                if cam in raw and is_uint8(raw[cam]):
+                    raw[cam] = raw[cam].to(dtype=torch.float32) / 255.0
+            proc = pre(raw)
+            # 1) the same frames, the way _predict_item feeds them
+            for i, item in enumerate(chunk):
+                for t in range(n_obs):
+                    pre.reset()
+                    frame = build_batch_frame(
+                        item, t, n_obs,
+                        skip_key=lrp.POSE_ACTION_KEY, to_batch_tensor=_to_tensor, pre=pre,
+                        action_key=ACTION, image_keys=image_features, obs_images_key=OBS_IMAGES,
+                        camera_keys=camera_keys,
+                    )
+                    for key in compared_keys:
+                        if key not in frame or key not in proc:
+                            continue
+                        mine = frame[key].reshape(-1)
+                        theirs = proc[key][i]
+                        theirs = theirs.reshape(n_obs, -1)[t] if n_obs > 1 else theirs.reshape(-1)
+                        diff = float((mine.float() - theirs.float()).abs().max())
+                        max_diff[key] = max(max_diff.get(key, 0.0), diff)
+            # 2) the training loss, with the right and with the wrong observations
+            if loss_error is None:
+                try:
+                    with torch.no_grad():
+                        for name, swap_keys in variants:
+                            if swap_keys and len(chunk) < 2:
+                                continue
+                            batch = dict(proc)
+                            for key in swap_keys:
+                                if key in batch:
+                                    batch[key] = batch[key].roll(max(1, len(chunk) // 2), 0)
+                            for _ in range(DIAGNOSE_LOSS_REPEATS):
+                                out = policy.forward(dict(batch))
+                                loss = out[0] if isinstance(out, (tuple, list)) else out
+                                losses[name].append(float(loss))
+                except Exception as e:  # a policy whose forward needs more than a batch
+                    loss_error = e
+
+        logger.info("\n[diagnose] 1) Does this script feed the model what a training batch does?")
+        logger.info("    Each frame is prepared twice from the same dataset item: as a training")
+        logger.info("    batch (collate -> preprocessor) and the way this script feeds the policy")
+        logger.info("    (one observation step at a time). Largest difference per input:")
+        for key, diff in max_diff.items():
+            logger.info(f"      {key:<36} {diff:.3e}")
+        worst = max(max_diff.values()) if max_diff else float("nan")
+        if not max_diff:
+            logger.warning("    -> nothing could be compared (no shared observation keys)")
+        elif worst <= 1e-5:
+            logger.info("    -> identical: the model receives the same tensors as in training.")
+        else:
+            logger.warning(
+                "    -> DIFFERENT: this script's input path does not match training. "
+                "Its numbers above are not trustworthy until that is fixed."
+            )
+
+        logger.info(
+            f"\n[diagnose] 2) Training loss on these frames (policy.forward, eval mode, "
+            f"mean of {DIAGNOSE_LOSS_REPEATS} noise draws per batch)"
+        )
+        if loss_error is not None:
+            logger.warning(f"    could not compute it for this policy: {loss_error}")
+        else:
+            base = float(np.mean(losses[variants[0][0]])) if losses[variants[0][0]] else float("nan")
+            for name, _ in variants:
+                if not losses[name]:
+                    continue
+                value = float(np.mean(losses[name]))
+                note = "   <- compare with the loss in the training log" if name == variants[0][0] else (
+                    f"   ({value / base:.1f}x)" if base > 0 else "")
+                logger.info(f"      {name:<38} {value:.5f}{note}")
+            logger.info("    Near 1.0x: the loss does not depend on that input, so the model is not")
+            logger.info("    using it. Clearly above 1.0x: the model relies on it.")
+
+    # 3) several samples per frame, and the same sample with one input swapped
+    k_samples = max(1, args.diagnose_samples)
+    stats: dict[str, list[list[float]]] = {}
+    state_keys = [k for k in items[0] if k.startswith(OBS_STATE)] if items else []
+    for i, item in enumerate(items):
+        other = items[(i + max(1, len(items) // 2)) % len(items)]
+        rec = item[lrp.POSE_ACTION_KEY]
+        rec = (rec.numpy() if hasattr(rec, "numpy") else np.asarray(rec))[offset:]
+        samples = np.stack([_predict_item(item, seed=s) for s in range(k_samples)])
+        swapped_image = swapped_state = None
+        if other is not item:
+            if image_features:
+                swapped_image = _predict_item({**item, **{k: other[k] for k in image_features}}, seed=0)
+            swapped_state = _predict_item({**item, **{k: other[k] for k in state_keys}}, seed=0)
+        one = sampling_diagnostics(samples, rec, swapped_image, swapped_state)
+        current_mat = None
+        if is_absolute:
+            pose = current_pose9(item, n_obs)
+            current_mat = lrp.pose9d_to_mat(pose) if pose is not None else None
+        one["demo_motion"] = chunk_metrics(samples[0], rec, lrp.pose9d_to_mat, current_mat)["rec_motion"]
+        for name, values in one.items():
+            stats.setdefault(name, []).append(values)
+
+    def _mm(name, step):
+        values = [r[step] for r in stats.get(name, []) if len(r) > step]
+        return f"{np.mean(values) * 1000:>9.1f}" if values else f"{'-':>9}"
+
+    last = exec_steps - 1
+    logger.info(
+        f"\n[diagnose] 3) Sampled chunks: {k_samples} samples per frame with fixed seeds. Position, mm"
+    )
+    logger.info(f"      {'':<44} {'step 0':>9} {'step ' + str(last):>9}")
+    for label, name in (
+        ("demo motion from the current pose", "demo_motion"),
+        ("error of one sample", "single_err"),
+        (f"error of the mean of {k_samples} samples", "mean_err"),
+        ("spread between samples (sampling noise)", "spread"),
+        ("change when images come from another frame", "image_swap"),
+        ("change when state comes from another frame", "state_swap"),
+    ):
+        logger.info(f"      {label:<44} {_mm(name, 0)} {_mm(name, last)}")
+    logger.info("    Mean error well below one sample's, with a spread about as large: sampling")
+    logger.info("    noise, not a wrong prediction. Mean error about the same: the prediction is")
+    logger.info("    wrong on average. A 'change' no larger than the spread: that input barely")
+    logger.info("    moves the output.")
 
 
 if __name__ == "__main__":

@@ -446,6 +446,11 @@ from importlib.machinery import SourceFileLoader
 import numpy as np
 
 script, mode = sys.argv[1], sys.argv[2]
+# driver args: <episodes...> then any script options; --bad-pre is for the driver itself
+REST = [a for a in sys.argv[3:] if a != "--bad-pre"]
+BAD_PRE = "--bad-pre" in sys.argv
+FIRST_OPTION = next((i for i, a in enumerate(REST) if a.startswith("--")), len(REST))
+EPISODES, EXTRA = REST[:FIRST_OPTION] or ["0"], REST[FIRST_OPTION:]
 STEP, N, H, EXEC = 0.005, 60, 16, 8
 
 def pose(x, grip=1.0):
@@ -458,6 +463,14 @@ class T:  # the few torch.Tensor methods the script uses
     def to(self, *_): return self
     def float(self): return T(self.a.astype(np.float32))
     def numpy(self): return self.a
+    # used by --diagnose only
+    def reshape(self, *shape): return T(self.a.reshape(*shape))
+    def roll(self, shift, dim): return T(np.roll(self.a, shift, axis=dim))
+    def abs(self): return T(np.abs(self.a))
+    def max(self): return T(self.a.max())
+    def __getitem__(self, i): return T(self.a[i])
+    def __sub__(self, other): return T(self.a - other.a)
+    def __float__(self): return float(self.a)
 
 class _NoGrad:
     def __enter__(self): return self
@@ -469,7 +482,27 @@ torch.cuda = SimpleNamespace(is_available=lambda: False)
 torch.as_tensor = lambda a: T(a)
 torch.stack = lambda xs, dim=0: T(np.stack([x.a for x in xs], axis=dim))
 torch.inference_mode = lambda: _NoGrad()
+torch.no_grad = lambda: _NoGrad()
+torch.manual_seed = lambda seed: None
 sys.modules["torch"] = torch
+
+def default_collate(items):  # what torch.utils.data.default_collate does for these items
+    return {k: ([it[k] for it in items] if isinstance(items[0][k], str)
+                else T(np.stack([np.asarray(it[k]) for it in items]))) for k in items[0]}
+sys.modules["torch.utils"] = types.ModuleType("torch.utils")
+data_mod = types.ModuleType("torch.utils.data"); data_mod.default_collate = default_collate
+sys.modules["torch.utils.data"] = data_mod
+
+class Pre:
+    """Identity preprocessor. In "badpre" mode it shifts the state of a BATCH only,
+    which is the kind of batch-vs-single-frame difference --diagnose must catch."""
+    def reset(self): pass
+    def __call__(self, d):
+        d = dict(d)
+        state = d.get("observation.state")
+        if BAD_PRE and state is not None and state.a.ndim == (3 if mode == "nobs2" else 2) and state.a.shape[0] > 1:
+            d["observation.state"] = T(state.a + 0.25)
+        return d
 
 def _mod(name):
     m = types.ModuleType(name); sys.modules[name] = m; return m
@@ -497,10 +530,16 @@ class Policy:
         t = int(round(float(batch["observation.state"].a[0, 0]) / STEP))
         # Perfect: action(j) = next pose = x(j+1); predict action(t..t+EXEC-1).
         return T(np.stack([pose(STEP * (t + k + 1)) for k in range(EXEC)])[None])
+    def forward(self, batch):
+        """A 'training loss': zero exactly when the action belongs to the observation."""
+        state = batch["observation.state"].a
+        x_now = state[:, -1, 0] if state.ndim == 3 else state[:, 0]
+        x_next = batch["action"].a[:, delta.index(0), 0]
+        return T(np.mean((x_now + STEP - x_next) ** 2)), None
 
 factory = _mod("lerobot.policies.factory")
 factory.get_policy_class = lambda name: Policy
-factory.make_pre_post_processors = lambda **k: (None, None)
+factory.make_pre_post_processors = lambda **k: (Pre(), None)
 def populate_queues(q, b):
     for k in q:
         if k in b: q[k].append(b[k])
@@ -538,9 +577,8 @@ lrp.pose9d_to_mat = pose9d_to_mat
 sys.modules["lerobot_relative_pose"] = lrp
 
 ol = SourceFileLoader("openloop_e2e", script).load_module()
-episodes = sys.argv[3:] or ["0"]
 sys.argv = ["x", "--path", "ckpt", "--repo-id", "ds", "--action-repr", "absolute",
-            "--episodes", *episodes, "--stride", "5", "--max-frames", "6"]
+            "--episodes", *EPISODES, "--stride", "5", "--max-frames", "6", *EXTRA]
 try:
     ol.main()
 finally:
@@ -609,3 +647,93 @@ def test_main_stops_on_an_episode_that_is_not_in_the_dataset(tmp_path):
     assert "cannot select --episodes: episode 7 is not in this dataset (it has episodes 0..1)" in out
     assert _rows(out) == []                                     # nothing was evaluated
     assert "verdict" not in out
+
+
+# ── --diagnose ───────────────────────────────────────────────────────────────
+
+def test_sampling_diagnostics_separates_noise_from_a_wrong_mean():
+    rec = np.zeros((4, 10)); rec[:, 0] = [0.01, 0.02, 0.03, 0.04]
+    # Two samples scattered +-5 mm around the recording: noisy but right on average.
+    noisy = np.stack([rec.copy(), rec.copy()]); noisy[0, :, 1] += 0.005; noisy[1, :, 1] -= 0.005
+    d = ol.sampling_diagnostics(noisy, rec)
+    assert d["single_err"] == pytest.approx([0.005] * 4)
+    assert d["spread"] == pytest.approx([0.005] * 4)
+    assert d["mean_err"] == pytest.approx([0.0] * 4, abs=1e-12)
+    # Two identical samples that stand still: no noise, wrong on average.
+    still = np.zeros((2, 4, 10))
+    d = ol.sampling_diagnostics(still, rec)
+    assert d["spread"] == pytest.approx([0.0] * 4, abs=1e-12)
+    assert d["mean_err"] == pytest.approx([0.01, 0.02, 0.03, 0.04])
+    assert d["single_err"] == d["mean_err"]
+
+
+def test_sampling_diagnostics_measures_what_a_swapped_input_changes():
+    rec = np.zeros((3, 10))
+    samples = np.zeros((2, 3, 10))
+    ignored = samples[0].copy()                       # model ignores the swapped input
+    used = samples[0].copy(); used[:, 2] += 0.02      # model follows it: 20 mm away
+    d = ol.sampling_diagnostics(samples, rec, swapped_image=ignored, swapped_state=used)
+    assert d["image_swap"] == pytest.approx([0.0] * 3, abs=1e-12)
+    assert d["state_swap"] == pytest.approx([0.02] * 3)
+    assert "image_swap" not in ol.sampling_diagnostics(samples, rec)
+
+
+def test_sampling_diagnostics_uses_the_steps_both_chunks_have():
+    d = ol.sampling_diagnostics(np.zeros((2, 8, 10)), np.zeros((5, 10)), swapped_state=np.zeros((8, 10)))
+    assert all(len(v) == 5 for v in d.values())
+
+
+def test_spread_evenly_covers_the_whole_list():
+    assert ol.spread_evenly(range(100), 5) == [0, 25, 50, 74, 99]
+    assert ol.spread_evenly([3, 4], 10) == [3, 4]
+    assert ol.spread_evenly([], 4) == [] and ol.spread_evenly([1, 2], 0) == []
+
+
+def _section(out, number):
+    start = out.index(f"[diagnose] {number})")
+    nxt = out.find("[diagnose] ", start + 5)
+    return out[start: nxt if nxt > 0 else len(out)]
+
+
+@pytest.mark.parametrize("mode", ["nobs2", "nobs1"])
+def test_diagnose_on_a_perfect_policy(tmp_path, mode):
+    """Inputs identical, loss zero for the right observations and not for the wrong
+    ones, no sampling noise, and the output follows the state when it is swapped."""
+    proc, out = _run_driver(tmp_path, mode, "0", "--diagnose", "--diagnose-frames", "4",
+                            "--diagnose-samples", "3")
+    assert proc.returncode == 0, out[-4000:]
+    assert "[diagnose] 4 frames, spread evenly over the 6 evaluated ones" in out
+
+    one = _section(out, 1)
+    assert "observation.state" in one and "0.000e+00" in one
+    assert "identical: the model receives the same tensors as in training" in one
+
+    two = _section(out, 2)
+    own = [l for l in two.splitlines() if "the frame's own observations" in l][0]
+    swapped = [l for l in two.splitlines() if "state from another frame" in l][0]
+    assert float(own.split()[4]) == 0.0
+    assert float(swapped.split()[4]) > 0.0
+    assert "images from another frame" not in two      # this policy has no cameras
+
+    three = _section(out, 3)
+    def row(label):
+        line = [l for l in three.splitlines() if label in l][0]
+        return [float(x) for x in line.split()[-2:]]
+    assert row("demo motion from the current pose") == [5.0, 40.0]      # 1 and 8 steps of 5 mm
+    assert row("error of one sample") == [0.0, 0.0]
+    assert row("spread between samples") == [0.0, 0.0]
+    assert row("change when state comes from another frame")[0] > 0.0
+    assert [l for l in three.splitlines() if "change when images" in l][0].split()[-2:] == ["-", "-"]
+
+
+def test_diagnose_catches_a_batch_path_that_differs_from_the_frame_path(tmp_path):
+    proc, out = _run_driver(tmp_path, "nobs2", "0", "--diagnose", "--diagnose-frames", "4", "--bad-pre")
+    assert proc.returncode == 0, out[-4000:]
+    one = _section(out, 1)
+    assert "2.500e-01" in one
+    assert "DIFFERENT: this script's input path does not match training" in one
+
+
+def test_without_the_flag_nothing_is_diagnosed(tmp_path):
+    proc, out = _run_driver(tmp_path, "nobs2", "0")
+    assert proc.returncode == 0 and "[diagnose]" not in out
