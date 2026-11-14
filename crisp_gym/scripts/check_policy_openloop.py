@@ -35,6 +35,13 @@ by the position of delta 0 in the policy's action_delta_indices.
 Training image augmentation is switched off for evaluation, so every frame is
 judged on the images as recorded.
 
+Camera frames: lerobot >= 0.5 builds its datasets with return_uint8=True and
+converts the frames to float in [0, 1] inside its TRAINING LOOP, not in the
+dataset or the preprocessor. This script feeds the policy itself, so it does
+the same division by 255. (Before that was added, every image-conditioned
+policy evaluated on lerobot >= 0.5 was fed frames 255 times too bright and
+scored err/move ~ 1 whatever it had learned. Results from then are void.)
+
 Policies: diffusion, and language-conditioned ones (multi_task_dit, GR00T).
 Each frame carries the dataset's own task string into the preprocessor, as in
 training — those policies tokenize it, and multi_task_dit fails with a shape
@@ -122,6 +129,7 @@ def build_batch_frame(
     image_keys=(),
     obs_images_key: str = "observation.images",
     stack_images=None,
+    camera_keys=(),
 ) -> dict:
     """One timestep (the t-th of the obs window) as a batched policy input.
 
@@ -130,6 +138,12 @@ def build_batch_frame(
     drops any ``action`` the preprocessor injects, and stacks the cameras only
     when ``stack_images`` is given. Tensor conversion is injected so this stays
     testable without torch.
+
+    ``camera_keys`` frames that arrive as uint8 are divided by 255. lerobot >=
+    0.5 builds its datasets with ``return_uint8=True`` and its training loop
+    does exactly this before the preprocessor (lerobot_train.py); without it
+    the policy is fed images 255 times brighter than anything it was trained
+    on, and every image-conditioned policy looks as if it ignored its input.
     """
     frame = {}
     for k, v in item.items():
@@ -137,6 +151,8 @@ def build_batch_frame(
             continue
         vt = v[t] if (hasattr(v, "ndim") and v.ndim >= 1 and v.shape[0] == n_obs) else v
         frame[k] = to_batch_tensor(vt)
+        if k in camera_keys and is_uint8(vt):
+            frame[k] = frame[k] / 255.0
     task = task_for_frame(item)
     if task is not None:
         frame["task"] = task
@@ -147,6 +163,11 @@ def build_batch_frame(
         frame = dict(frame)
         frame[obs_images_key] = stack_images([frame[k] for k in image_keys])
     return frame
+
+
+def is_uint8(value) -> bool:
+    """True for a uint8 tensor/array (torch reports 'torch.uint8', numpy 'uint8')."""
+    return str(getattr(value, "dtype", "")).endswith("uint8")
 
 
 def current_step_offset(action_delta_indices) -> int | None:
@@ -427,6 +448,11 @@ def main():
 
     image_features = list(getattr(policy.config, "image_features", []) or [])
     n_obs = int(getattr(policy.config, "n_obs_steps", 1))
+    # Cameras as the dataset names them (what lerobot's training loop iterates
+    # over when it rescales uint8 frames), plus the ones the policy consumes.
+    camera_keys = list(dict.fromkeys(
+        [*(getattr(getattr(ds, "meta", None), "camera_keys", None) or []), *image_features]
+    ))
 
     # Align the recorded window with the prediction (see the module docstring).
     delta_indices = getattr(policy.config, "action_delta_indices", None)
@@ -469,6 +495,12 @@ def main():
                     "conditioned policy (multi_task_dit, GR00T) will fail or be "
                     "evaluated without its instruction"
                 )
+            scaled = [k for k in camera_keys if k in item and is_uint8(item[k])]
+            if scaled:
+                logger.info(
+                    f"[openloop] camera frames arrive as uint8 ({', '.join(scaled)}): "
+                    "divided by 255, as lerobot's training loop does"
+                )
             task_logged = True
         queues = policy_obs_queues(policy)  # after reset(): that is where they are built
         stack = _stack_cameras if stacks_images(policy, image_features, OBS_IMAGES) else None
@@ -483,6 +515,7 @@ def main():
                 image_keys=image_features,
                 obs_images_key=OBS_IMAGES,
                 stack_images=stack,
+                camera_keys=camera_keys,
             )
             if queues is not None:
                 policy._queues = populate_queues(policy._queues, last)

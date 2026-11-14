@@ -184,6 +184,55 @@ def test_cameras_are_stacked_only_when_asked():
     assert OBS_IMAGES not in plain                     # GR00T reads per-camera keys
 
 
+# lerobot >= 0.5 builds datasets with return_uint8=True and its TRAINING LOOP
+# divides camera frames by 255 before the preprocessor. This script feeds the
+# policy itself, so it must do the same: without it every image-conditioned
+# policy saw frames 255x too bright and looked as if it ignored its input.
+
+def _uint8_item():
+    item = _item()
+    item[CAM] = np.full((2, 3, 8, 8), 255, dtype=np.uint8)       # two obs steps, all white
+    item[CAM][0] = 51                                             # older step: 0.2
+    return item
+
+
+def test_uint8_camera_frames_are_scaled_to_unit_range():
+    frames = [ol.build_batch_frame(_uint8_item(), t, 2, skip_key="action", to_batch_tensor=_to_batch,
+                                   camera_keys=[CAM]) for t in (0, 1)]
+    assert frames[0][CAM].max() == pytest.approx(0.2) and frames[0][CAM].min() == pytest.approx(0.2)
+    assert frames[1][CAM].max() == pytest.approx(1.0)
+
+
+def test_the_stacked_tensor_carries_the_scaled_frames():
+    frame = ol.build_batch_frame(
+        _uint8_item(), 1, 2, skip_key="action", to_batch_tensor=_to_batch,
+        image_keys=[CAM], obs_images_key=OBS_IMAGES,
+        stack_images=lambda imgs: np.stack(imgs, axis=-4), camera_keys=[CAM],
+    )
+    assert frame[OBS_IMAGES].max() == pytest.approx(1.0)
+
+
+def test_float_frames_and_other_uint8_values_are_left_alone():
+    item = _item()                                                # float camera frames (lerobot 0.4)
+    before = np.asarray(item[CAM][1], dtype=float)
+    frame = ol.build_batch_frame(item, 1, 2, skip_key="action", to_batch_tensor=_to_batch, camera_keys=[CAM])
+    assert np.array_equal(np.asarray(frame[CAM])[0], before)
+    item = _uint8_item()
+    item["observation.flags"] = np.array([[7], [9]], dtype=np.uint8)   # uint8, but not a camera
+    frame = ol.build_batch_frame(item, 1, 2, skip_key="action", to_batch_tensor=_to_batch, camera_keys=[CAM])
+    assert float(np.asarray(frame["observation.flags"]).ravel()[0]) == 9.0
+    # ... and a camera the caller did not name is not touched either
+    frame = ol.build_batch_frame(_uint8_item(), 1, 2, skip_key="action", to_batch_tensor=_to_batch)
+    assert frame[CAM].max() == pytest.approx(255.0)
+
+
+def test_is_uint8_reads_numpy_and_torch_style_dtypes():
+    assert ol.is_uint8(np.zeros(2, np.uint8))
+    assert not ol.is_uint8(np.zeros(2, np.float32)) and not ol.is_uint8("x") and not ol.is_uint8(None)
+    assert ol.is_uint8(types.SimpleNamespace(dtype="torch.uint8"))        # how torch prints it
+    assert not ol.is_uint8(types.SimpleNamespace(dtype="torch.float32"))
+
+
 def test_a_dataset_without_task_strings_still_builds_frames():
     item = _item()
     del item["task"]
