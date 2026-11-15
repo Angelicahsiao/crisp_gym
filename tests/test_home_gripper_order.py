@@ -61,9 +61,7 @@ class _FakeEnv:
 
     def __init__(self, home_gripper=HomeGripper.OPEN, gripper_mode=GripperMode.ABSOLUTE_CONTINUOUS):
         self.calls: list[str] = []
-        self.config = types.SimpleNamespace(
-            home_gripper=home_gripper, gripper_mode=gripper_mode
-        )
+        self.config = types.SimpleNamespace(home_gripper=home_gripper, gripper_mode=gripper_mode)
         self.robot = types.SimpleNamespace(home=self._record("robot.home"))
         self.gripper = types.SimpleNamespace(
             open=self._record("gripper.open"), close=self._record("gripper.close")
@@ -97,9 +95,7 @@ def test_gripper_is_commanded_after_the_arm_not_before():
     arm = env.calls.index("robot.home")
     gripper = [i for i, c in enumerate(env.calls) if c.startswith("gripper.")]
     assert gripper, f"expected a gripper call, got {env.calls}"
-    assert min(gripper) > arm, (
-        f"gripper commanded before the arm finished homing: {env.calls}"
-    )
+    assert min(gripper) > arm, f"gripper commanded before the arm finished homing: {env.calls}"
 
 
 def test_blocking_home_opens_by_default():
@@ -203,8 +199,7 @@ def test_on_end_hooks_no_longer_open_after_a_non_blocking_home(script):
         for c in calls
         if _dotted(c.func) == "env.robot.home"
         and any(
-            kw.arg == "blocking" and getattr(kw.value, "value", None) is False
-            for kw in c.keywords
+            kw.arg == "blocking" and getattr(kw.value, "value", None) is False for kw in c.keywords
         )
     ]
     assert not non_blocking_env_homes, (

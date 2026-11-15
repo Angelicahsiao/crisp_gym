@@ -140,18 +140,14 @@ def make_record_fn(
 
     def _action_value() -> np.ndarray:
         if act_cfg.definition == "next_tcp_pose":
-            pose = SOURCE_REGISTRY["robot.tcp_pose"](
-                env, representation=act_cfg.representation
-            )
+            pose = SOURCE_REGISTRY["robot.tcp_pose"](env, representation=act_cfg.representation)
             parts = [pose]
         elif act_cfg.definition == "next_joint_positions":
             parts = [SOURCE_REGISTRY["robot.joint_positions"](env)]
         else:
             raise RuntimeError("command actions are handled inline")
         if act_cfg.include_gripper:
-            parts.append(
-                SOURCE_REGISTRY["gripper.width_normalized"](env, **act_cfg.gripper_params)
-            )
+            parts.append(SOURCE_REGISTRY["gripper.width_normalized"](env, **act_cfg.gripper_params))
         return np.concatenate(parts).astype(np.float32)
 
     # Per-phase durations of the LAST call, published as `_fn.timing` so the
@@ -180,8 +176,7 @@ def make_record_fn(
         if act_cfg.definition == "command":
             if cmd is None:
                 raise ValueError(
-                    "action.definition 'command' requires a drive_fn "
-                    "returning the command vector."
+                    "action.definition 'command' requires a drive_fn returning the command vector."
                 )
             return obs, np.asarray(cmd, dtype=np.float32)
 

@@ -60,15 +60,24 @@ class RemoteWorkerConnection:
             metadata, i.e. it is not `scripts/policy_server.py`.
     """
 
-    def __init__(self, uri: str, *, connect_timeout: float = 10.0,
-                 infer_timeout: float = 5.0, reconnect_attempts: int = 3):
+    def __init__(
+        self,
+        uri: str,
+        *,
+        connect_timeout: float = 10.0,
+        infer_timeout: float = 5.0,
+        reconnect_attempts: int = 3,
+    ):
         """Connect, shake hands and start the thread that owns the socket."""
         self.uri = uri
         # contract=None: this side declares none. The caller verifies the
         # worker's metadata against the robot, as it does for a local worker.
         self.client = WebsocketPolicyClient(
-            uri, connect_timeout=connect_timeout, infer_timeout=infer_timeout,
-            contract=None, reconnect_attempts=reconnect_attempts,
+            uri,
+            connect_timeout=connect_timeout,
+            infer_timeout=infer_timeout,
+            contract=None,
+            reconnect_attempts=reconnect_attempts,
         )
         self.client.connect()
         meta = (self.client.server_meta or {}).get("meta")
@@ -178,7 +187,8 @@ class RemoteWorkerConnection:
                 logger.warning(
                     "reconnected to %s during an episode: the server was reset, so a "
                     "wrt-start checkpoint now measures rotation from THIS observation, "
-                    "not from the episode start. Restart the episode.", self.uri,
+                    "not from the episode start. Restart the episode.",
+                    self.uri,
                 )
             self.last_timing = self.client.last_timing
             # A copy: arrays off the wire are read-only, a pipe's are not.

@@ -19,6 +19,7 @@ except ImportError:
 
 try:
     from lerobot.policies.factory import make_pre_post_processors
+
     USE_LEROBOT_PROCESSORS = True
 except ImportError:
     USE_LEROBOT_PROCESSORS = False
@@ -258,9 +259,7 @@ def inference_worker(  # noqa: D417
                 # the first frame.
                 image_features = policy.config.image_features
                 if image_features and all(key in batch for key in image_features):
-                    batch[OBS_IMAGES] = torch.stack(
-                        [batch[key] for key in image_features], dim=-4
-                    )
+                    batch[OBS_IMAGES] = torch.stack([batch[key] for key in image_features], dim=-4)
                 # Policies with no observation queue (GR00T: n_obs_steps == 1,
                 # reset() builds only _action_queue) read the batch directly in
                 # predict_action_chunk, so there is nothing to populate.

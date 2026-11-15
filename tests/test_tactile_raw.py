@@ -19,7 +19,7 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parents[1]
 MS = 1_000_000
-T0 = 1_794_190_351_560_399_616          # a real Unix-epoch ns stamp: above 2**53
+T0 = 1_794_190_351_560_399_616  # a real Unix-epoch ns stamp: above 2**53
 
 
 def _load():
@@ -84,7 +84,7 @@ def test_match_frames_is_exact_in_int64():
 
 def test_interval_stats_report_gaps():
     mod = _load()
-    dt = np.r_[np.full(90, 5.0), np.full(10, 30.0)]        # 450 ms regular + 300 ms in gaps
+    dt = np.r_[np.full(90, 5.0), np.full(10, 30.0)]  # 450 ms regular + 300 ms in gaps
     s = mod.interval_stats(dt)
     assert s["dt_ms_median"] == 5.0 and s["dt_ms_max"] == 30.0
     assert abs(s["gap_time_fraction"] - 300 / 750) < 1e-9
@@ -101,9 +101,9 @@ def test_load_csv_sorts_rows_and_taxel_columns():
         print("skip: pandas not installed")
         return
     mod = _load()
-    stamps = T0 + np.array([10, 0, 5]) * MS                # rows out of order
+    stamps = T0 + np.array([10, 0, 5]) * MS  # rows out of order
     df = pd.DataFrame({"episode_index": 0, "source_stamp_ns": stamps, "frame_id": "left"})
-    for j in (10, 2, 0, 1, 3, 4, 5, 6, 7, 8, 9, 11):       # taxel_10 before taxel_2
+    for j in (10, 2, 0, 1, 3, 4, 5, 6, 7, 8, 9, 11):  # taxel_10 before taxel_2
         df[f"taxel_{j}"] = np.array([10, 0, 5]) * 100 + j
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "episode_000000_left.csv"
@@ -111,7 +111,7 @@ def test_load_csv_sorts_rows_and_taxel_columns():
         got_stamps, taxels = mod.load_csv(path)
     assert got_stamps.dtype == np.int64 and got_stamps.tolist() == sorted(stamps.tolist())
     assert taxels.shape == (3, 12) and taxels.dtype == np.float32
-    assert taxels[0].tolist() == list(range(12))            # t=0 row, columns in taxel order
+    assert taxels[0].tolist() == list(range(12))  # t=0 row, columns in taxel order
     assert taxels[2].tolist() == [1000 + j for j in range(12)]
 
 

@@ -411,9 +411,7 @@ def verify_timeline(
                 f"{expected_size[0]}x{expected_size[1]}"
             )
     elif (before.width, before.height) != (after.width, after.height):
-        problems.append(
-            f"size {before.width}x{before.height} -> {after.width}x{after.height}"
-        )
+        problems.append(f"size {before.width}x{before.height} -> {after.width}x{after.height}")
     if abs(before.fps - after.fps) > 1e-6:
         problems.append(f"fps {before.fps} -> {after.fps}")
     period = 1.0 / before.fps if before.fps else 0.0
@@ -505,9 +503,7 @@ def sample_frame_diff(
     shared = sorted(set(old_frames) & set(new_frames))
     if not shared:
         return float("inf")
-    return float(
-        np.mean([np.abs(old_frames[i] - new_frames[i]).mean() for i in shared])
-    )
+    return float(np.mean([np.abs(old_frames[i] - new_frames[i]).mean() for i in shared]))
 
 
 # The six keys lerobot's features_equal_for_merge exempts, and ONLY inside a
@@ -540,9 +536,7 @@ def comparable_feature(spec: dict) -> dict:
 
 def feature_signatures(info: dict) -> dict[str, dict]:
     """``{feature key: comparable feature dict}`` for every feature."""
-    return {
-        key: comparable_feature(spec) for key, spec in (info.get("features") or {}).items()
-    }
+    return {key: comparable_feature(spec) for key, spec in (info.get("features") or {}).items()}
 
 
 def _describe_difference(a: dict, b: dict) -> str:
@@ -552,11 +546,10 @@ def _describe_difference(a: dict, b: dict) -> str:
         if a.get(key) == b.get(key):
             continue
         if key == "info" and isinstance(a.get(key), dict) and isinstance(b.get(key), dict):
-            inner = sorted(
-                k for k in set(a[key]) | set(b[key]) if a[key].get(k) != b[key].get(k)
+            inner = sorted(k for k in set(a[key]) | set(b[key]) if a[key].get(k) != b[key].get(k))
+            parts.append(
+                f"info{inner}: {[a[key].get(k) for k in inner]} vs {[b[key].get(k) for k in inner]}"
             )
-            parts.append(f"info{inner}: {[a[key].get(k) for k in inner]} vs "
-                         f"{[b[key].get(k) for k in inner]}")
         else:
             parts.append(f"{key}: {a.get(key)!r} vs {b.get(key)!r}")
     return "; ".join(parts)
@@ -701,8 +694,10 @@ def report_mergeability(summaries: list[tuple[str, dict]]) -> None:
             "not — see crisp_gym/scripts/postprocess_align_datasets.py."
         )
     else:
-        logger.info("fps, robot_type, features and video all match — "
-                    "aggregate_datasets should accept these.")
+        logger.info(
+            "fps, robot_type, features and video all match — "
+            "aggregate_datasets should accept these."
+        )
 
 
 def copy_without_videos(src: Path, dst: Path) -> None:
@@ -731,18 +726,39 @@ def main(argv: list[str] | None = None) -> int:
         "(repeatable for --inspect).",
     )
     parser.add_argument(
-        "--root", action="append", default=[], help="Explicit dataset root, positionally paired with --repo-id."
+        "--root",
+        action="append",
+        default=[],
+        help="Explicit dataset root, positionally paired with --repo-id.",
     )
-    parser.add_argument("--inspect", action="store_true", help="Report codecs and exit. Changes nothing.")
-    parser.add_argument("--match", help="Take the target codec AND pix_fmt from this dataset (repo id or path).")
-    parser.add_argument("--vcodec", help="Target codec, e.g. h264_nvenc, h264, libsvtav1, av1, auto.")
+    parser.add_argument(
+        "--inspect", action="store_true", help="Report codecs and exit. Changes nothing."
+    )
+    parser.add_argument(
+        "--match", help="Take the target codec AND pix_fmt from this dataset (repo id or path)."
+    )
+    parser.add_argument(
+        "--vcodec", help="Target codec, e.g. h264_nvenc, h264, libsvtav1, av1, auto."
+    )
     parser.add_argument("--pix-fmt", help="Target pixel format (default: the encoder's own).")
-    parser.add_argument("--crf", type=int, help="Quality. CODEC-SPECIFIC: CRF for libsvtav1, constant QP for NVENC.")
-    parser.add_argument("--gop", type=int, help="GOP size (lerobot default 2 = near all-intra, fast seeking).")
-    parser.add_argument("--preset", help="Codec-specific preset. Do not set alongside --vcodec auto.")
-    parser.add_argument("--extra-options", type=json.loads, help='Raw codec options as JSON, e.g. \'{"bf": 0}\'.')
-    parser.add_argument("--output-repo-id", help="Write the converted dataset here (default: <repo-id>_<codec>).")
-    parser.add_argument("--output-root", help="Explicit output directory, overrides --output-repo-id.")
+    parser.add_argument(
+        "--crf", type=int, help="Quality. CODEC-SPECIFIC: CRF for libsvtav1, constant QP for NVENC."
+    )
+    parser.add_argument(
+        "--gop", type=int, help="GOP size (lerobot default 2 = near all-intra, fast seeking)."
+    )
+    parser.add_argument(
+        "--preset", help="Codec-specific preset. Do not set alongside --vcodec auto."
+    )
+    parser.add_argument(
+        "--extra-options", type=json.loads, help="Raw codec options as JSON, e.g. '{\"bf\": 0}'."
+    )
+    parser.add_argument(
+        "--output-repo-id", help="Write the converted dataset here (default: <repo-id>_<codec>)."
+    )
+    parser.add_argument(
+        "--output-root", help="Explicit output directory, overrides --output-repo-id."
+    )
     parser.add_argument(
         "--in-place",
         action="store_true",
@@ -794,12 +810,16 @@ def main(argv: list[str] | None = None) -> int:
     labels = [r or str(p) for r, p in zip(args.repo_id or [None] * len(roots), roots, strict=False)]
 
     if args.inspect:
-        summaries = [(label, describe(root, label)) for label, root in zip(labels, roots, strict=False)]
+        summaries = [
+            (label, describe(root, label)) for label, root in zip(labels, roots, strict=False)
+        ]
         report_mergeability(summaries)
         return 0
 
     if len(roots) != 1:
-        parser.error("converting takes exactly one --repo-id/--root (use --inspect to compare several)")
+        parser.error(
+            "converting takes exactly one --repo-id/--root (use --inspect to compare several)"
+        )
     src_root, src_label = roots[0], labels[0]
 
     # ── resize target ─────────────────────────────────────────────────────
@@ -823,7 +843,9 @@ def main(argv: list[str] | None = None) -> int:
     # ── target encoder ────────────────────────────────────────────────────
     vcodec, pix_fmt = args.vcodec, args.pix_fmt
     if args.match:
-        match_root = resolve_root(args.match, Path(args.match) if Path(args.match).exists() else None)
+        match_root = resolve_root(
+            args.match, Path(args.match) if Path(args.match).exists() else None
+        )
         match_info = load_info(match_root)
         match_keys = video_keys(match_info)
         if not match_keys:
@@ -841,7 +863,11 @@ def main(argv: list[str] | None = None) -> int:
             declared = src_info["features"][src_keys[0]].get("info") or {}
             vcodec = declared.get("video.codec")
             pix_fmt = pix_fmt or declared.get("video.pix_fmt")
-            logger.info("--resize without --vcodec: keeping the source's codec=%s pix_fmt=%s", vcodec, pix_fmt)
+            logger.info(
+                "--resize without --vcodec: keeping the source's codec=%s pix_fmt=%s",
+                vcodec,
+                pix_fmt,
+            )
     if not vcodec:
         parser.error("give --vcodec or --match")
 
@@ -891,14 +917,26 @@ def main(argv: list[str] | None = None) -> int:
                 logger.warning(
                     "%s: %dx%d -> %dx%d changes the aspect ratio (%.3f -> %.3f): every "
                     "frame will be STRETCHED. For %dx%d keep W/H = %.3f.",
-                    key, first.width, first.height, target_size[0], target_size[1],
-                    src_aspect, dst_aspect, first.width, first.height, src_aspect,
+                    key,
+                    first.width,
+                    first.height,
+                    target_size[0],
+                    target_size[1],
+                    src_aspect,
+                    dst_aspect,
+                    first.width,
+                    first.height,
+                    src_aspect,
                 )
             if target_size[0] > first.width or target_size[1] > first.height:
                 logger.warning(
                     "%s: %dx%d -> %dx%d UPSCALES — larger files and slower decoding, "
                     "with no detail gained.",
-                    key, first.width, first.height, target_size[0], target_size[1],
+                    key,
+                    first.width,
+                    first.height,
+                    target_size[0],
+                    target_size[1],
                 )
     logger.info("%d file(s) across %d video key(s); sizes %s", len(plan), len(keys), sorted(sizes))
 
@@ -908,17 +946,26 @@ def main(argv: list[str] | None = None) -> int:
     if target_size is not None:
         for key in keys:
             try:
-                new_shapes[key] = resized_shape(info["features"][key], target_size[1], target_size[0])
+                new_shapes[key] = resized_shape(
+                    info["features"][key], target_size[1], target_size[0]
+                )
             except ValueError as exc:
                 logger.error("%s: %s", key, exc)
                 return 1
         logger.info(
             "Resizing to %dx%d (WxH) with %s interpolation; info.json shapes -> %s",
-            target_size[0], target_size[1], args.interpolation, new_shapes,
+            target_size[0],
+            target_size[1],
+            args.interpolation,
+            new_shapes,
         )
 
     if args.dry_run:
-        logger.info("--dry-run: would re-encode %d file(s) to %s. Nothing written.", len(plan), encoder.vcodec)
+        logger.info(
+            "--dry-run: would re-encode %d file(s) to %s. Nothing written.",
+            len(plan),
+            encoder.vcodec,
+        )
         return 0
 
     preflight(encoder, {target_size} if target_size is not None else sizes)
@@ -994,8 +1041,12 @@ def main(argv: list[str] | None = None) -> int:
         if not problems and args.verify_frames > 0:
             probe_path = staged if args.in_place else dst_path
             diff = sample_frame_diff(
-                src_path, probe_path, args.verify_frames, before.frames,
-                size=target_size, interpolation=args.interpolation,
+                src_path,
+                probe_path,
+                args.verify_frames,
+                before.frames,
+                size=target_size,
+                interpolation=args.interpolation,
             )
             logger.info("      sampled frame diff: %.2f / 255 mean abs", diff)
             if diff > 25.0:
@@ -1040,7 +1091,9 @@ def main(argv: list[str] | None = None) -> int:
             # inputs from; video.height/width above come from the new file.
             logger.info(
                 "info.json %s: shape %s -> %s",
-                key, dst_info["features"][key].get("shape"), new_shapes[key],
+                key,
+                dst_info["features"][key].get("shape"),
+                new_shapes[key],
             )
             dst_info["features"][key]["shape"] = new_shapes[key]
 
@@ -1083,8 +1136,12 @@ def main(argv: list[str] | None = None) -> int:
             "Videos are now %dx%d (HxW). A model trained on this copy should be fed "
             "%dx%d at deploy too: set the camera's `resolution: [%d, %d]` in the "
             "deploy env config so the images match what it trained on.",
-            target_size[1], target_size[0], target_size[1], target_size[0],
-            target_size[1], target_size[0],
+            target_size[1],
+            target_size[0],
+            target_size[1],
+            target_size[0],
+            target_size[1],
+            target_size[0],
         )
     else:
         logger.info(

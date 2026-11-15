@@ -87,16 +87,13 @@ DEFAULT_REFERENCE_WIDTH = 0.09
 
 # ── pure-numpy helpers (unit-tested without torch/ROS) ────────────────────────
 
-def gripper_device_to_ref(
-    value: float, reference_width: float, device_max_width: float
-) -> float:
+
+def gripper_device_to_ref(value: float, reference_width: float, device_max_width: float) -> float:
     """Device-normalized [0,1] -> reference-normalized (recording semantics)."""
     return float(np.clip(value * device_max_width / reference_width, 0.0, 1.0))
 
 
-def gripper_ref_to_device(
-    value: float, reference_width: float, device_max_width: float
-) -> float:
+def gripper_ref_to_device(value: float, reference_width: float, device_max_width: float) -> float:
     """Reference-normalized model output -> device-normalized [0,1] command."""
     return float(np.clip(value, 0.0, 1.0) * reference_width / device_max_width)
 
@@ -332,9 +329,7 @@ def build_obs_frame(
         # size (the policy resizes internally), so the declaration is metadata,
         # not what flows at runtime. Mirror a real frame when there is one and
         # fall back to the declaration only when the robot produces no image.
-        real = next(
-            (v for k, v in frame.items() if k.startswith("observation.images")), None
-        )
+        real = next((v for k, v in frame.items() if k.startswith("observation.images")), None)
         for key, shape in pad_targets.items():
             if key in frame:
                 continue
@@ -360,8 +355,15 @@ def build_obs_frame(
 
 # ── where the model runs: the `server` setting ────────────────────────────────
 
-_SERVER_KEYS = ("uri", "host", "port", "scheme", "connect_timeout_s",
-                "infer_timeout_s", "reconnect_attempts")
+_SERVER_KEYS = (
+    "uri",
+    "host",
+    "port",
+    "scheme",
+    "connect_timeout_s",
+    "infer_timeout_s",
+    "reconnect_attempts",
+)
 
 
 def parse_server_setting(server: str | dict | None) -> dict | None:
@@ -386,9 +388,7 @@ def parse_server_setting(server: str | dict | None) -> dict | None:
         )
     unknown = sorted(set(server) - set(_SERVER_KEYS))
     if unknown:
-        raise ValueError(
-            f"unknown key(s) in server: {unknown}. Known: {list(_SERVER_KEYS)}"
-        )
+        raise ValueError(f"unknown key(s) in server: {unknown}. Known: {list(_SERVER_KEYS)}")
     uri = server.get("uri")
     if not uri:
         host = server.get("host")
@@ -405,9 +405,15 @@ def parse_server_setting(server: str | dict | None) -> dict | None:
     }
 
 
-def connect_remote_worker(remote: dict, *, pretrained_path: str, state_input: str,
-                          overrides: dict | None, num_inference_steps: int | None,
-                          scheduler: str | None) -> "RemoteWorkerConnection":
+def connect_remote_worker(
+    remote: dict,
+    *,
+    pretrained_path: str,
+    state_input: str,
+    overrides: dict | None,
+    num_inference_steps: int | None,
+    scheduler: str | None,
+) -> "RemoteWorkerConnection":
     """Connect to a policy server and return its WorkerConnection.
 
     The server holds the checkpoint, so the settings that shape the MODEL are
@@ -440,12 +446,18 @@ def connect_remote_worker(remote: dict, *, pretrained_path: str, state_input: st
     logger.info(
         "Model runs on the policy server %s, serving %s. The local path %r is "
         "not used (infer timeout %.1f s).",
-        remote["uri"], conn.model_id, pretrained_path, remote["infer_timeout"],
+        remote["uri"],
+        conn.model_id,
+        pretrained_path,
+        remote["infer_timeout"],
     )
     not_applied = {
         name: value
-        for name, value in (("num_inference_steps", num_inference_steps),
-                            ("scheduler", scheduler), ("overrides", overrides))
+        for name, value in (
+            ("num_inference_steps", num_inference_steps),
+            ("scheduler", scheduler),
+            ("overrides", overrides),
+        )
         if value
     }
     if not_applied:
@@ -459,6 +471,7 @@ def connect_remote_worker(remote: dict, *, pretrained_path: str, state_input: st
 
 
 # ── the policy ────────────────────────────────────────────────────────────────
+
 
 @register_policy("relative_lerobot_policy")
 class RelativeLerobotPolicy(Policy):
@@ -563,8 +576,7 @@ class RelativeLerobotPolicy(Policy):
             )
         if action_repr not in ("auto", "relative", "absolute"):
             raise ValueError(
-                "action_repr must be 'auto', 'relative' or 'absolute', got "
-                f"{action_repr!r}"
+                f"action_repr must be 'auto', 'relative' or 'absolute', got {action_repr!r}"
             )
         if state_input not in ("auto", "absolute", "relative", "relative_wrt_start"):
             raise ValueError(
@@ -677,9 +689,7 @@ class RelativeLerobotPolicy(Policy):
 
         self.n_obs_steps = int(meta["n_obs_steps"])
         chunk_len = int(meta["n_action_steps"])
-        self.n_action_steps = (
-            min(int(n_action_steps), chunk_len) if n_action_steps else chunk_len
-        )
+        self.n_action_steps = min(int(n_action_steps), chunk_len) if n_action_steps else chunk_len
         logger.info(
             f"Relative policy ready: n_obs_steps={self.n_obs_steps}, chunk="
             f"{chunk_len}, executing {self.n_action_steps}/chunk, "
@@ -707,10 +717,10 @@ class RelativeLerobotPolicy(Policy):
         # the measured inference latency and tick rate.
         self._async = bool(async_inference)
         self._prefetch_lead = prefetch_lead
-        self._pending = False                 # an infer request is in flight
-        self._pending_base: np.ndarray | None = None   # obs-time base for it
+        self._pending = False  # an infer request is in flight
+        self._pending_base: np.ndarray | None = None  # obs-time base for it
         self._pending_t0: float | None = None
-        self._next_chunk: np.ndarray | None = None     # prefetched, not yet swapped
+        self._next_chunk: np.ndarray | None = None  # prefetched, not yet swapped
         # Steps that will elapse between a prefetch's obs and the swap that uses
         # it. The prefetched chunk[j] predicts the pose j+1 steps after ITS obs,
         # so on swap the arm has already advanced `offset` of those — start the
@@ -730,16 +740,23 @@ class RelativeLerobotPolicy(Policy):
         # means the n_obs_steps window spans more real time than in training
         # (OOD obs -> drift). _last_infer_ms is the latency of the most recent
         # chunk inference (usually the bottleneck).
-        self._tick_times: deque = deque(maxlen=30)   # wall-clock of recent ticks
+        self._tick_times: deque = deque(maxlen=30)  # wall-clock of recent ticks
         self._last_infer_ms: float = 0.0
-        self._rate_log_every = 15                     # log the rate every N ticks
+        self._rate_log_every = 15  # log the rate every N ticks
         self._tick_count = 0
 
     # ── where the model runs ──────────────────────────────────────────────────
 
-    def _start_worker(self, *, server, pretrained_path: str, state_input: str,  # noqa: ANN001
-                      overrides: dict | None, num_inference_steps: int | None,
-                      scheduler: str | None) -> tuple:
+    def _start_worker(
+        self,
+        *,
+        server,
+        pretrained_path: str,
+        state_input: str,  # noqa: ANN001
+        overrides: dict | None,
+        num_inference_steps: int | None,
+        scheduler: str | None,
+    ) -> tuple:
         """Start the inference worker, or reach one that is already running.
 
         THE one place that decides where the model runs. Everything else in
@@ -871,8 +888,10 @@ class RelativeLerobotPolicy(Policy):
                     "is DEGENERATE here (barely moves / oscillates). Raise "
                     "n_action_steps above ~%d, or cut denoising steps "
                     "(--num-inference-steps 20 --scheduler ddim).",
-                    self._last_infer_ms, self.n_action_steps * replay_ms,
-                    self.n_action_steps, replay_ms,
+                    self._last_infer_ms,
+                    self.n_action_steps * replay_ms,
+                    self.n_action_steps,
+                    replay_ms,
                     int(-(-self._last_infer_ms // replay_ms)) + 2,
                 )
                 self._warned_async_too_slow = True
@@ -903,9 +922,7 @@ class RelativeLerobotPolicy(Policy):
             # in the body frame. Use only if the checkpoint was trained with
             # action_pose_repr: rel rather than relative.
             T_cmd = np.eye(4)
-            T_cmd[:3, :3] = (
-                rot6d_to_mat(np.asarray(action[3:9])) @ self._chunk_base[:3, :3]
-            )
+            T_cmd[:3, :3] = rot6d_to_mat(np.asarray(action[3:9])) @ self._chunk_base[:3, :3]
             T_cmd[:3, 3] = np.asarray(action[:3]) + self._chunk_base[:3, 3]
         else:  # coupled (UMI 'relative'): T_cmd = T_base @ T_rel
             T_cmd = compose_relative_pose(action[:9], self._chunk_base)
@@ -935,9 +952,7 @@ class RelativeLerobotPolicy(Policy):
         a_grip = float(action[-1])
         if self.invert_gripper:
             a_grip = 1.0 - a_grip
-        gripper = gripper_ref_to_device(
-            a_grip, self.reference_width, self.device_max_width
-        )
+        gripper = gripper_ref_to_device(a_grip, self.reference_width, self.device_max_width)
 
         if self._log_actions and self._action_log_left > 0:
             self._action_log_left -= 1
@@ -948,9 +963,9 @@ class RelativeLerobotPolicy(Policy):
             # (a) MODEL OUTPUT — relative action, EE/body frame (identity
             #     current frame -> pure translation reads as EE-axis motion),
             #     INCLUDING the raw gripper value the policy predicts.
-            model_euler = Rotation.from_matrix(
-                rot6d_to_mat(np.asarray(action[3:9]))
-            ).as_euler("xyz")
+            model_euler = Rotation.from_matrix(rot6d_to_mat(np.asarray(action[3:9]))).as_euler(
+                "xyz"
+            )
             # In absolute mode the model output IS the pose (not an EE-frame
             # delta), so label it accordingly; the numbers are the raw output.
             model_label = "abs   " if self.action_repr == "absolute" else "rel(EE)"
@@ -965,31 +980,41 @@ class RelativeLerobotPolicy(Policy):
             cmd_euler = rot.as_euler("xyz")
             logger.info(
                 "[base ] T_base_tcp_current pos=%s rot_euler=%s"
-                % (np.round(Tb[:3, 3], 4).tolist(),
-                   np.round(base_euler, 4).tolist())
+                % (np.round(Tb[:3, 3], 4).tolist(), np.round(base_euler, 4).tolist())
             )
             logger.info(
                 "[action] MODEL %s  pos=%s rot_euler=%s grip=%.4f  (dim=%d)"
-                % (model_label,
-                   np.round(action[:3], 4).tolist(),
-                   np.round(model_euler, 4).tolist(),
-                   float(action[-1]), len(action))
+                % (
+                    model_label,
+                    np.round(action[:3], 4).tolist(),
+                    np.round(model_euler, 4).tolist(),
+                    float(action[-1]),
+                    len(action),
+                )
             )
             logger.info(
                 "[action] CIC   abs(base) pos=%s rot_euler=%s  "
                 "(mode=%s, Δpos_base=%s, |Δ|=%.1fmm)"
-                % (np.round(pos, 4).tolist(),
-                   np.round(cmd_euler, 4).tolist(),
-                   mode_label,
-                   np.round(pos - Tb[:3, 3], 4).tolist(),
-                   float(np.linalg.norm(pos - Tb[:3, 3]) * 1000))
+                % (
+                    np.round(pos, 4).tolist(),
+                    np.round(cmd_euler, 4).tolist(),
+                    mode_label,
+                    np.round(pos - Tb[:3, 3], 4).tolist(),
+                    float(np.linalg.norm(pos - Tb[:3, 3]) * 1000),
+                )
             )
             logger.info(
                 "[gripper] model=%.4f -> invert(%s)=%.4f -> device=%.4f "
                 "-> ROS2 topic cmd=%.4f  (gripper norm range min=%.3f max=%.3f)"
-                % (float(action[-1]), self.invert_gripper,
-                   (1.0 - float(action[-1])) if self.invert_gripper else float(action[-1]),
-                   float(gripper), topic_cmd, g_min, g_max)
+                % (
+                    float(action[-1]),
+                    self.invert_gripper,
+                    (1.0 - float(action[-1])) if self.invert_gripper else float(action[-1]),
+                    float(gripper),
+                    topic_cmd,
+                    g_min,
+                    g_max,
+                )
             )
 
         return np.concatenate([pos, rot_arr, [gripper]]).astype(np.float32)
@@ -1008,8 +1033,11 @@ class RelativeLerobotPolicy(Policy):
             return
         try:
             frame = build_obs_frame(
-                obs_raw, self.reference_width, self.device_max_width,
-                image_keys=self.meta.get("image_keys"), target_to_euler=False,
+                obs_raw,
+                self.reference_width,
+                self.device_max_width,
+                image_keys=self.meta.get("image_keys"),
+                target_to_euler=False,
             )
         except Exception:
             return
@@ -1139,11 +1167,13 @@ class RelativeLerobotPolicy(Policy):
                 logger.info(
                     "[obs-state] cartesian abs pos=%s rot_euler=%s gripper=%.4f  "
                     "(observation.state dim=%d, sub-keys=%s)"
-                    % (np.round(cart[:3], 4).tolist(),
-                       np.round(obs_euler, 4).tolist(),
-                       g_obs,
-                       int(state_vec.shape[0]),
-                       sub_keys)
+                    % (
+                        np.round(cart[:3], 4).tolist(),
+                        np.round(obs_euler, 4).tolist(),
+                        g_obs,
+                        int(state_vec.shape[0]),
+                        sub_keys,
+                    )
                 )
 
             if not self._async:
@@ -1165,9 +1195,7 @@ class RelativeLerobotPolicy(Policy):
                     # Re-arm per-chunk logging so every new chunk logs its first
                     # _log_actions_n steps (not only the very first chunk).
                     self._action_log_left = self._log_actions_n
-                    logger.debug(
-                        f"Chunk {self._chunk.shape} in {self._last_infer_ms:.1f} ms"
-                    )
+                    logger.debug(f"Chunk {self._chunk.shape} in {self._last_infer_ms:.1f} ms")
             else:
                 # ── ASYNC: overlap inference with chunk execution.
                 # (a) Bootstrap: the very first chunk must block.
@@ -1182,7 +1210,7 @@ class RelativeLerobotPolicy(Policy):
                     self._action_log_left = self._log_actions_n
                 # (b) Collect a prefetched result if it has arrived (non-blocking).
                 if self._pending and self.parent_conn.poll(0):
-                    self._next_chunk = self._recv_chunk()   # may be None on error
+                    self._next_chunk = self._recv_chunk()  # may be None on error
                     self._pending = False
                 # (c) Prefetch the next chunk once we are `lead` steps from the
                 #     end — its base is the pose NOW (obs-time for that window).
@@ -1251,9 +1279,14 @@ class RelativeLerobotPolicy(Policy):
                 logger.info(
                     "[rate] effective control ~%.2f FPS (mean over last %d ticks) "
                     "| last inference %.0f ms | executing %d/%d of each chunk%s"
-                    % (fps, len(self._tick_times), self._last_infer_ms,
-                       self.n_action_steps, len(self._chunk) if self._chunk is not None else 0,
-                       "  <-- inference tick" if inferred else "")
+                    % (
+                        fps,
+                        len(self._tick_times),
+                        self._last_infer_ms,
+                        self.n_action_steps,
+                        len(self._chunk) if self._chunk is not None else 0,
+                        "  <-- inference tick" if inferred else "",
+                    )
                 )
 
             return obs_raw, env_action
@@ -1299,6 +1332,7 @@ class RelativeLerobotPolicy(Policy):
 
 # ── worker (subprocess: torch + lerobot live only here) ───────────────────────
 
+
 def _apply_diffusion_speed(policy, num_inference_steps, scheduler, wlog):  # noqa: ANN001
     """Apply inference-speed settings on a loaded DIFFUSION policy.
 
@@ -1311,8 +1345,10 @@ def _apply_diffusion_speed(policy, num_inference_steps, scheduler, wlog):  # noq
     diff = getattr(policy, "diffusion", None)
     if diff is None:
         if num_inference_steps is not None or scheduler is not None:
-            wlog.warning("[RelInference] num_inference_steps/scheduler ignored "
-                         "(policy is not a diffusion policy).")
+            wlog.warning(
+                "[RelInference] num_inference_steps/scheduler ignored "
+                "(policy is not a diffusion policy)."
+            )
         return
     if scheduler is not None and hasattr(diff, "noise_scheduler"):
         want = str(scheduler).upper()
@@ -1320,20 +1356,24 @@ def _apply_diffusion_speed(policy, num_inference_steps, scheduler, wlog):  # noq
         try:
             if want == "DDIM":
                 from diffusers import DDIMScheduler
+
                 diff.noise_scheduler = DDIMScheduler.from_config(cur.config)
             elif want == "DDPM":
                 from diffusers import DDPMScheduler
+
                 diff.noise_scheduler = DDPMScheduler.from_config(cur.config)
             else:
                 raise ValueError(f"unknown scheduler {scheduler!r} (use ddim/ddpm)")
-            wlog.info(f"[RelInference] noise scheduler -> {want} "
-                      "(same trained betas; DDPM-train/DDIM-infer is valid)")
+            wlog.info(
+                f"[RelInference] noise scheduler -> {want} "
+                "(same trained betas; DDPM-train/DDIM-infer is valid)"
+            )
         except Exception as e:
             wlog.warning(f"[RelInference] scheduler swap failed: {e}")
     if num_inference_steps is not None:
         n = int(num_inference_steps)
         if hasattr(diff, "num_inference_steps"):
-            diff.num_inference_steps = n           # the value actually used
+            diff.num_inference_steps = n  # the value actually used
         try:
             policy.config.num_inference_steps = n  # keep config in sync
         except Exception:
@@ -1341,9 +1381,14 @@ def _apply_diffusion_speed(policy, num_inference_steps, scheduler, wlog):  # noq
         wlog.info(f"[RelInference] num_inference_steps -> {n}")
 
 
-def inference_worker(conn, pretrained_path: str, overrides: dict,
-                     state_input: str = "auto",
-                     num_inference_steps=None, scheduler=None):  # noqa: ANN001
+def inference_worker(
+    conn,
+    pretrained_path: str,
+    overrides: dict,
+    state_input: str = "auto",
+    num_inference_steps=None,
+    scheduler=None,
+):  # noqa: ANN001
     """Load the checkpoint; per request, run the obs window through the policy
     queues and return one raw-unit action chunk (numpy (n, dim)).
 
@@ -1382,8 +1427,7 @@ def inference_worker(conn, pretrained_path: str, overrides: dict,
         policy_cls = get_policy_class(train_config.policy.type)
         policy = policy_cls.from_pretrained(pretrained_path)
         for k, v in (overrides or {}).items():
-            wlog.warning(f"[RelInference] Override {k}: "
-                         f"{getattr(policy.config, k, None)} -> {v}")
+            wlog.warning(f"[RelInference] Override {k}: {getattr(policy.config, k, None)} -> {v}")
             setattr(policy.config, k, v)
         # inference-speed knobs applied on the loaded diffusion model (cached
         # scheduler / step count — a config setattr alone would not take effect)
@@ -1407,8 +1451,9 @@ def inference_worker(conn, pretrained_path: str, overrides: dict,
             )
             wlog.info("[RelInference] Using lerobot pre/post processors.")
         except ImportError:
-            wlog.info("[RelInference] No processor support; assuming the "
-                      "policy normalizes internally.")
+            wlog.info(
+                "[RelInference] No processor support; assuming the policy normalizes internally."
+            )
 
         # ── what did this checkpoint train on? (pose_repr.json provenance) ──
         # Three generations:
@@ -1528,9 +1573,7 @@ def inference_worker(conn, pretrained_path: str, overrides: dict,
             # before (and stack for themselves in select_action anyway).
             if image_features and all(key in batch for key in image_features):
                 batch = dict(batch)
-                batch[OBS_IMAGES] = torch.stack(
-                    [batch[key] for key in image_features], dim=-4
-                )
+                batch[OBS_IMAGES] = torch.stack([batch[key] for key in image_features], dim=-4)
             return batch
 
         while True:

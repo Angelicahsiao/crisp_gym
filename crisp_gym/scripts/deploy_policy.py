@@ -318,9 +318,7 @@ def main():
             resume=args.resume,
             timing_csv_dir=args.timing_csv_dir,
             **(
-                {}
-                if args.reduce_gc_pauses is None
-                else {"reduce_gc_pauses": args.reduce_gc_pauses}
+                {} if args.reduce_gc_pauses is None else {"reduce_gc_pauses": args.reduce_gc_pauses}
             ),
         )
         recording_manager.wait_until_ready()
@@ -361,9 +359,7 @@ def main():
         ]
         recording_manager.policy_count = len(policies)
         if len(policies) > 1:
-            logger.info(
-                "Loaded %d policies; press <p> between episodes to cycle:", len(policies)
-            )
+            logger.info("Loaded %d policies; press <p> between episodes to cycle:", len(policies))
             for i, (cfg, path) in enumerate(zip(args.policy_configs, args.paths)):
                 logger.info("  [%d] %s  <- %s", i, cfg, path)
 

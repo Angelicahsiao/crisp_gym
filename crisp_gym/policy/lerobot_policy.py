@@ -35,6 +35,7 @@ from crisp_gym.util.setup_logger import setup_logging
 
 try:
     from lerobot.policies.factory import make_pre_post_processors
+
     USE_LEROBOT_PROCESSORS = True
     logging.info("Found lerobot pre/post processor support.")
 except ImportError:
@@ -181,9 +182,7 @@ def _detect_umilike(
 
     umilike = _umilike_names_and_dim(env)
     if umilike is None:
-        logger.info(
-            "[Inference] cartesian/gripper features unavailable in env; using full state."
-        )
+        logger.info("[Inference] cartesian/gripper features unavailable in env; using full state.")
         return False
     umilike_names, umilike_dim = umilike
 

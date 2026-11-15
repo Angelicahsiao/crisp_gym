@@ -58,10 +58,12 @@ class _FakeDS:
     """Minimal LeRobotDataset stand-in: 2 episodes, an action horizon of H."""
 
     def __init__(self, n=8, h=4, tc_constant=False):
-        self.meta = _Meta({
-            "action": {"shape": [10], "names": list("abcdefghij")},
-            "extra.target_cartesian": {"shape": [9]},
-        })
+        self.meta = _Meta(
+            {
+                "action": {"shape": [10], "names": list("abcdefghij")},
+                "extra.target_cartesian": {"shape": [9]},
+            }
+        )
         self.delta_indices = {"action": list(range(h))}
         self.delta_timestamps = {"action": [i / 15 for i in range(h)]}
         self.n, self.h = n, h
@@ -71,10 +73,12 @@ class _FakeDS:
         else:
             tc = np.linspace(0, 1, n)[:, None] * np.ones((1, 9))
         self._tc = tc
-        self.hf_dataset = _HF({
-            "extra.target_cartesian": tc.tolist(),
-            "episode_index": ep.tolist(),
-        })
+        self.hf_dataset = _HF(
+            {
+                "extra.target_cartesian": tc.tolist(),
+                "episode_index": ep.tolist(),
+            }
+        )
 
     def __len__(self):
         return self.n
@@ -82,9 +86,9 @@ class _FakeDS:
     def __getitem__(self, idx):
         h = self.h
         act = np.zeros((h, 10), dtype=np.float32)
-        act[:, :9] = -1.0        # sentinel: proves the arm was replaced
-        act[:, 9] = 0.3          # gripper: must survive
-        tc = self._tc[idx:idx + h]
+        act[:, :9] = -1.0  # sentinel: proves the arm was replaced
+        act[:, 9] = 0.3  # gripper: must survive
+        tc = self._tc[idx : idx + h]
         if tc.shape[0] < h:
             tc = np.vstack([tc, np.repeat(tc[-1:], h - tc.shape[0], 0)])
         item = {"action": act}
@@ -149,7 +153,7 @@ class _LazyDS(_FakeDS):
 
     def __init__(self, n=8, h=4):
         super().__init__(n=n, h=h, tc_constant=False)
-        self.delta_indices = {}          # empty at construction (lazy)
+        self.delta_indices = {}  # empty at construction (lazy)
         self.delta_timestamps = {}
 
     def __getitem__(self, idx):
@@ -159,8 +163,8 @@ class _LazyDS(_FakeDS):
         act[:, :9] = -1.0
         act[:, 9] = 0.3
         item = {"action": act}
-        if "extra.target_cartesian" in self.delta_indices:   # windowed only if present
-            tc = self._tc[idx:idx + h]
+        if "extra.target_cartesian" in self.delta_indices:  # windowed only if present
+            tc = self._tc[idx : idx + h]
             if tc.shape[0] < h:
                 tc = np.vstack([tc, np.repeat(tc[-1:], h - tc.shape[0], 0)])
             item["extra.target_cartesian"] = tc.astype(np.float32)
@@ -172,9 +176,9 @@ class _LazyDS(_FakeDS):
 def test_lazy_delta_indices_requery_aligns_window():
     m = _load()
     ds = _LazyDS()
-    w = m.TargetCartesianActionDataset(ds)   # eager inject finds nothing (empty)
+    w = m.TargetCartesianActionDataset(ds)  # eager inject finds nothing (empty)
     assert "extra.target_cartesian" not in ds.delta_indices
-    a = np.asarray(w[0]["action"])           # first query: mismatch -> inject -> re-query
+    a = np.asarray(w[0]["action"])  # first query: mismatch -> inject -> re-query
     assert a.shape == (4, 10), "target must be windowed to the action horizon after re-query"
     assert np.allclose(a[:, 9], 0.3), "gripper preserved"
     assert np.allclose(a[:, :9], ds._tc[0:4]), "arm == windowed target after re-query"

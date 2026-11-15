@@ -262,8 +262,7 @@ class RecordingManager(ABC):
         while not self.dataset_ready.is_set():
             if self.writer_error.is_set():
                 raise RuntimeError(
-                    "Dataset writer failed during startup — see the writer "
-                    "process traceback above."
+                    "Dataset writer failed during startup — see the writer process traceback above."
                 )
             logger.debug("Waiting for dataset to be ready...")
             time.sleep(1.0)
@@ -586,6 +585,7 @@ class RecordingManager(ABC):
             f"Encoder preflight OK: {encoder.vcodec} opens for "
             f"{sorted((w, h) for h, w in shapes)} with {options}."
         )
+
     def _pause_stdin(self) -> None:
         """Pause stdin consumption before on_end() / evaluate() runs.
 
@@ -732,7 +732,9 @@ class RecordingManager(ABC):
                     )
 
                     logger.debug(f"Constructed frame with keys: {frame.keys()}")
-                    if _ADD_FRAME_HAS_TASK:  # For lerobot versions with explicit `task` parameter (>= v3.0)
+                    if (
+                        _ADD_FRAME_HAS_TASK
+                    ):  # For lerobot versions with explicit `task` parameter (>= v3.0)
                         dataset.add_frame(frame, task=task)
                     else:  # For older lerobot versions without `task` parameter (< v3.0)
                         frame["task"] = task
@@ -810,9 +812,7 @@ class RecordingManager(ABC):
                         )
                 elif mtype == "SHUTDOWN":
                     logger.info("Shutting down writer process.")
-                    writer_timing.log_summary(
-                        f"at shutdown ({frames_in_episode} unsaved frames)"
-                    )
+                    writer_timing.log_summary(f"at shutdown ({frames_in_episode} unsaved frames)")
                     # REQUIRED: finalize() closes the ParquetWriter and writes
                     # the footer. Without it the last data file has no footer
                     # and the dataset is unreadable. DatasetWriter.__del__ is
@@ -822,8 +822,7 @@ class RecordingManager(ABC):
                         finalize_start = time.perf_counter()
                         dataset.finalize()
                         logger.info(
-                            "Dataset finalized in "
-                            f"{time.perf_counter() - finalize_start:.2f} s."
+                            f"Dataset finalized in {time.perf_counter() - finalize_start:.2f} s."
                         )
                     break
             except Exception as e:
@@ -902,9 +901,7 @@ class RecordingManager(ABC):
 
         logger.debug("Finished recording...")
 
-        extra = (
-            f"gc_tuned={self.config.reduce_gc_pauses}; " + self.writer_status()
-        )
+        extra = f"gc_tuned={self.config.reduce_gc_pauses}; " + self.writer_status()
         if pacer.resyncs:
             extra += (
                 f"; pacing resynced {pacer.resyncs}x (fell more than one period "
@@ -1225,6 +1222,7 @@ class ROSRecordingManager(RecordingManager):
 #     def __enter__(self) -> "RecordingManager":  # noqa: D105
 #         self.listener.start()
 #         return super().__enter__()
+
 
 class KeyboardRecordingManager(RecordingManager):
     """Stdin-based recording manager for controlling episode recording."""

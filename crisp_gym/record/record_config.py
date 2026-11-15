@@ -28,9 +28,9 @@ logger = logging.getLogger(__name__)
 # ── Pose representation dims ──────────────────────────────────────────────────
 
 POSE_DIMS = {
-    "euler": 6,        # x y z rx ry rz
-    "angle_axis": 6,   # x y z ax ay az
-    "quaternion": 7,   # x y z qx qy qz qw
+    "euler": 6,  # x y z rx ry rz
+    "angle_axis": 6,  # x y z ax ay az
+    "quaternion": 7,  # x y z qx qy qz qw
     "rotation_6d": 9,  # x y z + first two rows of R (UMI/pytorch3d convention)
 }
 
@@ -77,9 +77,7 @@ def _pose_to_array(pose, representation: str) -> np.ndarray:
     """crisp_py Pose -> array in the requested representation."""
     from crisp_py.utils.geometry import OrientationRepresentation
 
-    return np.asarray(
-        pose.to_array(OrientationRepresentation(representation)), dtype=np.float32
-    )
+    return np.asarray(pose.to_array(OrientationRepresentation(representation)), dtype=np.float32)
 
 
 @register_source("robot.tcp_pose")
@@ -183,8 +181,9 @@ def _src_gripper_raw(env, **_) -> np.ndarray:
 
 
 @register_source("gripper.width_normalized")
-def _src_gripper(env, reference_width: float | None = None,
-                 device_max_width: float | None = None, **_) -> np.ndarray:
+def _src_gripper(
+    env, reference_width: float | None = None, device_max_width: float | None = None, **_
+) -> np.ndarray:
     """Gripper opening normalized to [0,1] against a SHARED reference width.
 
     value_normalized = (device_value * device_max_width) / reference_width
@@ -225,8 +224,9 @@ def _src_gripper(env, reference_width: float | None = None,
 
 
 @register_source("gripper.target_width_normalized")
-def _src_gripper_target(env, reference_width: float | None = None,
-                        device_max_width: float | None = None, **_) -> np.ndarray:
+def _src_gripper_target(
+    env, reference_width: float | None = None, device_max_width: float | None = None, **_
+) -> np.ndarray:
     """COMMANDED gripper opening, in the units of gripper.width_normalized.
 
     The gripper-channel mirror of robot.target_pose. Take the SAME
@@ -297,12 +297,12 @@ _GRIPPER_SCALAR_SOURCES = (
 class ObsFieldConfig:
     """One observation entry: dataset key + source provider + its params."""
 
-    key: str                        # e.g. "observation.state.cartesian"
-    source: str                     # provider name in SOURCE_REGISTRY
+    key: str  # e.g. "observation.state.cartesian"
+    source: str  # provider name in SOURCE_REGISTRY
     params: Dict[str, Any] = field(default_factory=dict)
     # For state features: explicit dim (else derived); for images: (H, W, C).
     shape: List[int] | None = None
-    include_in_state: bool = True   # concatenated into observation.state
+    include_in_state: bool = True  # concatenated into observation.state
 
     def resolved_shape(self) -> tuple:
         if self.shape is not None:
@@ -332,9 +332,9 @@ class ObsFieldConfig:
 class ActionConfig:
     """What the `action` column means."""
 
-    definition: str = "next_tcp_pose"     # one of ACTION_DEFINITIONS
-    lookahead: int = 1                    # for next_*: action[t] = value[t+lookahead]
-    representation: str = "rotation_6d"   # pose representation for next_tcp_pose
+    definition: str = "next_tcp_pose"  # one of ACTION_DEFINITIONS
+    lookahead: int = 1  # for next_*: action[t] = value[t+lookahead]
+    representation: str = "rotation_6d"  # pose representation for next_tcp_pose
     include_gripper: bool = True
     gripper_params: Dict[str, Any] = field(default_factory=dict)  # same as source params
     # for definition == "command": dim of the command vector and a free-text
@@ -344,9 +344,7 @@ class ActionConfig:
 
     def __post_init__(self):
         if self.definition not in ACTION_DEFINITIONS:
-            raise ValueError(
-                f"action.definition '{self.definition}' not in {ACTION_DEFINITIONS}"
-            )
+            raise ValueError(f"action.definition '{self.definition}' not in {ACTION_DEFINITIONS}")
         if self.lookahead < 1 and self.definition.startswith("next_"):
             raise ValueError("lookahead must be >= 1 for next_* action definitions")
 
@@ -403,8 +401,11 @@ class RecordConfig:
             ObsFieldConfig(
                 key=o["key"],
                 source=o["source"],
-                params={k: v for k, v in o.items()
-                        if k not in ("key", "source", "shape", "include_in_state")},
+                params={
+                    k: v
+                    for k, v in o.items()
+                    if k not in ("key", "source", "shape", "include_in_state")
+                },
                 shape=o.get("shape"),
                 include_in_state=o.get("include_in_state", True),
             )
@@ -416,9 +417,7 @@ class RecordConfig:
             action=act,
             rate_hz=float(data.get("rate_hz", 15.0)),
             name=str(data.get("name", Path(path).stem)),
-            robot_type=(
-                str(data["robot_type"]) if data.get("robot_type") is not None else None
-            ),
+            robot_type=(str(data["robot_type"]) if data.get("robot_type") is not None else None),
         )
         cfg.validate()
         return cfg
@@ -451,9 +450,12 @@ class RecordConfig:
                 )
 
     # ── features (LeRobot schema) ──
-    def to_features(self, joint_count: int | None = None,
-                    use_video: bool = True,
-                    command_names: List[str] | None = None) -> Dict[str, Dict]:
+    def to_features(
+        self,
+        joint_count: int | None = None,
+        use_video: bool = True,
+        command_names: List[str] | None = None,
+    ) -> Dict[str, Dict]:
         """Build the LeRobot feature schema for this contract.
 
         Args:
@@ -483,11 +485,17 @@ class RecordConfig:
                     # update_video_info. A hardcoded codec here was simply
                     # WRONG once the recording codec became configurable
                     # (vcodec in the recording config), so it is not declared.
-                    **({"video_info": {
-                        "video.fps": self.rate_hz,
-                        "video.is_depth_map": False,
-                        "has_audio": False,
-                    }} if use_video else {}),
+                    **(
+                        {
+                            "video_info": {
+                                "video.fps": self.rate_hz,
+                                "video.is_depth_map": False,
+                                "has_audio": False,
+                            }
+                        }
+                        if use_video
+                        else {}
+                    ),
                 }
             else:
                 shape = o.resolved_shape()
@@ -497,7 +505,9 @@ class RecordConfig:
                     state_len += int(np.prod(shape))
                     state_names += names
         features["observation.state"] = {
-            "dtype": "float32", "shape": (state_len,), "names": state_names,
+            "dtype": "float32",
+            "shape": (state_len,),
+            "names": state_names,
         }
         if self.action.definition == "command" and command_names is not None:
             declared = self.action.command_dim

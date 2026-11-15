@@ -41,8 +41,13 @@ def _load():
     executed their imports by then and hold direct references, so the restore
     costs nothing.
     """
-    names = ("crisp_gym", "crisp_gym.policy", "crisp_gym.policy.policy",
-             "crisp_gym.policy.remote_protocol", "crisp_gym.policy.remote_policy")
+    names = (
+        "crisp_gym",
+        "crisp_gym.policy",
+        "crisp_gym.policy.policy",
+        "crisp_gym.policy.remote_protocol",
+        "crisp_gym.policy.remote_policy",
+    )
     saved = {k: sys.modules.get(k) for k in names}
 
     pkg = types.ModuleType("crisp_gym")
@@ -52,8 +57,9 @@ def _load():
     polpol.Action = object
     polpol.Observation = dict
     polpol.register_policy = lambda name: (lambda cls: cls)
-    sys.modules.update({"crisp_gym": pkg, "crisp_gym.policy": pol,
-                        "crisp_gym.policy.policy": polpol})
+    sys.modules.update(
+        {"crisp_gym": pkg, "crisp_gym.policy": pol, "crisp_gym.policy.policy": polpol}
+    )
 
     def _mod(name, path):
         spec = importlib.util.spec_from_file_location(name, path)
@@ -80,16 +86,25 @@ proto, rp = _load()
 WebsocketPolicyClient = rp.WebsocketPolicyClient
 
 CONTRACT = {
-    "observation": {"n_obs_steps": 1, "keys": [
-        {"name": "observation.state.cartesian", "shape": [9], "layout": "xyz+rot6d"},
-    ]},
-    "action": {"dim": 10, "layout": "xyz+rot6d+gripper", "pose_repr": "relative",
-               "chunk_size": 16, "gripper": "normalized"},
+    "observation": {
+        "n_obs_steps": 1,
+        "keys": [
+            {"name": "observation.state.cartesian", "shape": [9], "layout": "xyz+rot6d"},
+        ],
+    },
+    "action": {
+        "dim": 10,
+        "layout": "xyz+rot6d+gripper",
+        "pose_repr": "relative",
+        "chunk_size": 16,
+        "gripper": "normalized",
+    },
     "normalization": "server_side",
 }
 
 
 # ── a real server on a real socket ───────────────────────────────────────────
+
 
 class FakeServer:
     """Minimal v1 server. `behaviour` injects the pathological cases."""
@@ -122,16 +137,24 @@ class FakeServer:
     def _handle(self, conn):
         try:
             for payload in conn:
-                frame = proto.validate(proto.unpack(payload),
-                                       expect_from=proto.CLIENT_FRAMES)
+                frame = proto.validate(proto.unpack(payload), expect_from=proto.CLIENT_FRAMES)
                 self.seen.append(frame)
                 t, rid = frame["t"], frame["id"]
                 if t == proto.T_HELLO:
-                    conn.send(proto.pack(proto.hello_ok(
-                        rid, model_id="fake", observation=self.contract["observation"],
-                        action=self.contract["action"], chunk_size=16,
-                        normalization="server_side", image=self.image,
-                        contract=self.contract)))
+                    conn.send(
+                        proto.pack(
+                            proto.hello_ok(
+                                rid,
+                                model_id="fake",
+                                observation=self.contract["observation"],
+                                action=self.contract["action"],
+                                chunk_size=16,
+                                normalization="server_side",
+                                image=self.image,
+                                contract=self.contract,
+                            )
+                        )
+                    )
                 elif t == proto.T_RESET:
                     conn.send(proto.pack(proto.reset_ok(rid)))
                 elif t == proto.T_INFER:
@@ -147,8 +170,11 @@ class FakeServer:
             # Answer request 1 only AFTER the client has given up on it, so
             # the late frame is queued when request 2 goes out.
             time.sleep(0.45)
-            conn.send(proto.pack(proto.actions(
-                rid, np.full((16, 10), 111.0, np.float32), time.monotonic())))
+            conn.send(
+                proto.pack(
+                    proto.actions(rid, np.full((16, 10), 111.0, np.float32), time.monotonic())
+                )
+            )
             return
         if self.behaviour == "stale_obs":
             conn.send(proto.pack(proto.error(rid, proto.E_STALE_OBS, "too old")))
@@ -157,8 +183,9 @@ class FakeServer:
             conn.send(proto.pack(proto.error(rid, proto.E_BAD_FRAME, "nope")))
             return
         value = float(n_infer)
-        conn.send(proto.pack(proto.actions(
-            rid, np.full((16, 10), value, np.float32), time.monotonic())))
+        conn.send(
+            proto.pack(proto.actions(rid, np.full((16, 10), value, np.float32), time.monotonic()))
+        )
 
 
 def _client(server, **kw):
@@ -169,6 +196,7 @@ def _client(server, **kw):
 
 
 # ── the regression v1 exists for ─────────────────────────────────────────────
+
 
 def test_a_late_reply_is_never_mistaken_for_the_next():
     with FakeServer(behaviour="slow_first") as srv:
@@ -207,8 +235,11 @@ def test_infer_carries_the_task_and_the_capture_time():
         c = _client(srv)
         c.connect()
         c.reset()
-        c.infer({"observation.state.cartesian": np.zeros(9, np.float32),
-                 "task": "open the box"}, task="open the box", obs_t=1234.5)
+        c.infer(
+            {"observation.state.cartesian": np.zeros(9, np.float32), "task": "open the box"},
+            task="open the box",
+            obs_t=1234.5,
+        )
         inf = next(f for f in srv.seen if f["t"] == proto.T_INFER)
         assert inf["task"] == "open the box"
         assert inf["obs_t"] == pytest.approx(1234.5)
@@ -217,6 +248,7 @@ def test_infer_carries_the_task_and_the_capture_time():
 
 
 # ── the handshake that never existed ─────────────────────────────────────────
+
 
 def test_a_contract_mismatch_refuses_to_run():
     wrong = {**CONTRACT, "action": {**CONTRACT["action"], "dim": 16}}
@@ -259,6 +291,7 @@ def test_matching_contracts_connect():
 
 # ── the reset barrier ────────────────────────────────────────────────────────
 
+
 def test_reset_is_acknowledged_before_inference():
     with FakeServer() as srv:
         c = _client(srv)
@@ -283,6 +316,7 @@ def test_inferring_without_a_reset_resets_first():
 
 # ── error frames ─────────────────────────────────────────────────────────────
 
+
 def test_a_retryable_error_raises_without_killing_the_socket():
     with FakeServer(behaviour="stale_obs") as srv:
         c = _client(srv)
@@ -301,6 +335,7 @@ def test_a_fatal_error_is_marked_fatal_by_its_code():
 
 # ── codec and validation ─────────────────────────────────────────────────────
 
+
 def test_arrays_survive_with_dtype_and_shape():
     a = np.arange(24, dtype=np.uint8).reshape(2, 3, 4)
     b = (np.random.rand(5, 9) - 0.5).astype(np.float32)
@@ -315,14 +350,17 @@ def test_a_v0_text_frame_says_so_plainly():
         proto.unpack("some bare error string")
 
 
-@pytest.mark.parametrize("frame,match", [
-    ({"t": "actions", "id": 1}, "missing required field 'v'"),
-    ({"v": 1, "id": 1}, "missing required field 't'"),
-    ({"v": 1, "t": "actions"}, "missing required field 'id'"),
-    ({"v": 99, "t": "actions", "id": 1}, "protocol version"),
-    ({"v": 1, "t": "infer", "id": 1}, "cannot arrive from this direction"),
-    ({"v": 1, "t": "actions", "id": -3}, "non-negative"),
-])
+@pytest.mark.parametrize(
+    "frame,match",
+    [
+        ({"t": "actions", "id": 1}, "missing required field 'v'"),
+        ({"v": 1, "id": 1}, "missing required field 't'"),
+        ({"v": 1, "t": "actions"}, "missing required field 'id'"),
+        ({"v": 99, "t": "actions", "id": 1}, "protocol version"),
+        ({"v": 1, "t": "infer", "id": 1}, "cannot arrive from this direction"),
+        ({"v": 1, "t": "actions", "id": -3}, "non-negative"),
+    ],
+)
 def test_validate_rejects(frame, match):
     with pytest.raises(proto.ProtocolError, match=match):
         proto.validate(frame, expect_from=proto.SERVER_FRAMES)
@@ -340,9 +378,7 @@ def test_the_digest_ignores_purely_local_settings():
     layout or a scale differing is a silent mis-command."""
     base = dict(CONTRACT, server={"host": "a", "infer_timeout_s": 5})
     other = dict(CONTRACT, server={"host": "b", "infer_timeout_s": 99})
-    assert proto.digest(proto.contract_fields(base)) == proto.digest(
-        proto.contract_fields(other)
-    )
+    assert proto.digest(proto.contract_fields(base)) == proto.digest(proto.contract_fields(other))
 
 
 def test_an_action_chunk_must_be_two_dimensional():
@@ -353,10 +389,10 @@ def test_an_action_chunk_must_be_two_dimensional():
 
 # ── image negotiation ────────────────────────────────────────────────────────
 
+
 def test_raw_images_pass_through_untouched():
     img = np.random.randint(0, 255, (8, 12, 3), dtype=np.uint8)
-    assert np.array_equal(proto.decode_image(
-        proto.encode_image(img, {"encoding": "raw"})), img)
+    assert np.array_equal(proto.decode_image(proto.encode_image(img, {"encoding": "raw"})), img)
 
 
 def test_an_unknown_encoding_is_refused_not_guessed():
@@ -370,8 +406,9 @@ def test_jpeg_round_trips_through_the_wire():
     blob = proto.encode_image(img, {"encoding": "jpeg", "quality": 95})
     assert isinstance(blob, dict) and blob["__jpeg__"]
     assert len(blob["data"]) < img.nbytes, "jpeg should be smaller than raw"
-    out = proto.decode_image(proto.unpack(proto.pack(
-        {"v": 1, "t": "infer", "id": 1, "img": blob}))["img"])
+    out = proto.decode_image(
+        proto.unpack(proto.pack({"v": 1, "t": "infer", "id": 1, "img": blob}))["img"]
+    )
     assert out.shape == img.shape and out.dtype == np.uint8
 
 
@@ -411,14 +448,26 @@ def test_there_are_contract_files_to_check():
 
 
 def test_keys_as_a_mapping_or_a_list_are_the_same_contract():
-    as_list = dict(CONTRACT, observation={"n_obs_steps": 1, "keys": [
-        {"name": "b", "shape": [1], "layout": None},
-        {"name": "a", "shape": [9], "layout": "xyz+rot6d"},
-    ]})
-    as_map = dict(CONTRACT, observation={"n_obs_steps": 1, "keys": {
-        "a": {"shape": [9], "layout": "xyz+rot6d", "dtype": "float32"},
-        "b": {"shape": [1]},
-    }})
+    as_list = dict(
+        CONTRACT,
+        observation={
+            "n_obs_steps": 1,
+            "keys": [
+                {"name": "b", "shape": [1], "layout": None},
+                {"name": "a", "shape": [9], "layout": "xyz+rot6d"},
+            ],
+        },
+    )
+    as_map = dict(
+        CONTRACT,
+        observation={
+            "n_obs_steps": 1,
+            "keys": {
+                "a": {"shape": [9], "layout": "xyz+rot6d", "dtype": "float32"},
+                "b": {"shape": [1]},
+            },
+        },
+    )
     assert proto.contract_fields(as_list) == proto.contract_fields(as_map)
     with pytest.raises(proto.ProtocolError, match="must be maps"):
         proto.contract_fields(dict(CONTRACT, observation={"keys": ["a", "b"]}))
@@ -426,17 +475,24 @@ def test_keys_as_a_mapping_or_a_list_are_the_same_contract():
 
 # ── observation windows ──────────────────────────────────────────────────────
 
+
 def _frames(n=2):
     rng = np.random.default_rng(0)
-    return [{"observation.state": rng.normal(size=10).astype(np.float32),
-             "observation.images.cam": rng.integers(0, 256, (6, 8, 3), dtype=np.uint8),
-             "task": "open the door"} for _ in range(n)]
+    return [
+        {
+            "observation.state": rng.normal(size=10).astype(np.float32),
+            "observation.images.cam": rng.integers(0, 256, (6, 8, 3), dtype=np.uint8),
+            "task": "open the door",
+        }
+        for _ in range(n)
+    ]
 
 
 def test_a_window_survives_the_wire_frame_by_frame():
     window = _frames()
-    wire = proto.unpack(proto.pack(proto.infer(
-        1, proto.encode_window(window, {"encoding": "raw"}), None, 0.0)))
+    wire = proto.unpack(
+        proto.pack(proto.infer(1, proto.encode_window(window, {"encoding": "raw"}), None, 0.0))
+    )
     got = proto.decode_window(wire["obs"], wire["task"])
     assert len(got) == 2
     for sent, received in zip(window, got, strict=True):
@@ -479,14 +535,29 @@ def test_an_empty_or_malformed_window_is_refused():
 def test_optional_fields_are_absent_unless_given():
     """A v1 peer written before `meta` and `timing` existed sees the frames it
     always saw."""
-    hello_ok = proto.hello_ok(1, model_id="m", observation={}, action={}, chunk_size=8,
-                              normalization="server_side", image={"encoding": "raw"},
-                              contract={})
+    hello_ok = proto.hello_ok(
+        1,
+        model_id="m",
+        observation={},
+        action={},
+        chunk_size=8,
+        normalization="server_side",
+        image={"encoding": "raw"},
+        contract={},
+    )
     assert "meta" not in hello_ok
     assert "timing" not in proto.actions(1, np.zeros((2, 10)), 0.0)
-    with_meta = proto.hello_ok(1, model_id="m", observation={}, action={}, chunk_size=8,
-                               normalization="server_side", image={"encoding": "raw"},
-                               contract={}, meta={"n_obs_steps": 2})
+    with_meta = proto.hello_ok(
+        1,
+        model_id="m",
+        observation={},
+        action={},
+        chunk_size=8,
+        normalization="server_side",
+        image={"encoding": "raw"},
+        contract={},
+        meta={"n_obs_steps": 2},
+    )
     assert with_meta["meta"] == {"n_obs_steps": 2}
     timed = proto.actions(1, np.zeros((2, 10)), 0.0, timing={"infer_ms": np.float64(12.5)})
     assert timed["timing"] == {"infer_ms": 12.5}

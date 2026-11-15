@@ -93,6 +93,7 @@ START_POSE_NOISE_SCALE = 0.05
 # Canonical in-package version: crisp_gym/util/rot6d.py — keep them identical
 # (tests/test_pose_math.py pins the convention numerically).
 
+
 def rot6d_to_mat(d6: np.ndarray) -> np.ndarray:
     """[..., 6] rot6d -> [..., 3, 3] via Gram-Schmidt (UMI's rot6d_to_mat)."""
     a1, a2 = d6[..., :3], d6[..., 3:]
@@ -134,6 +135,7 @@ def make_relative(base_pose9d: np.ndarray, poses9d: np.ndarray) -> np.ndarray:
 
 
 # ── Dataset wrapper ───────────────────────────────────────────────────────────
+
 
 class RelativePoseDataset(torch.utils.data.Dataset):
     """Wraps a LeRobotDataset; converts absolute poses to relative in __getitem__.
@@ -247,9 +249,7 @@ class RelativePoseDataset(torch.utils.data.Dataset):
             if obs_abs.ndim == 1:
                 obs_abs = obs_abs[None]
             rel_to_start = make_relative(noised, obs_abs[..., :9])
-            item[WRT_START_KEY] = torch.from_numpy(
-                rel_to_start[..., 3:9].astype(np.float32)
-            )
+            item[WRT_START_KEY] = torch.from_numpy(rel_to_start[..., 3:9].astype(np.float32))
 
         for key in POSE_OBS_KEYS:
             if key not in item:
@@ -384,6 +384,7 @@ def recompute_relative_stats(wrapped: RelativePoseDataset, num_samples: int = 20
 
 # ── Provenance stamping ───────────────────────────────────────────────────────
 
+
 def _installed_lerobot_version() -> str:
     """Version of the lerobot actually importable in this interpreter.
 
@@ -440,21 +441,23 @@ def stamp_pose_repr(cfg, dataset, epoch_plan=None) -> None:
             for key in features:
                 if not key.startswith(STATE_KEY + ".") or key == WRT_START_KEY:
                     continue
-                comps.append({
-                    "key": key,
-                    "dims": int(np.prod(features[key]["shape"])),
-                    "transform": (
-                        "relative_to_last_obs_frame" if key == BASE_KEY else "none"
-                    ),
-                })
+                comps.append(
+                    {
+                        "key": key,
+                        "dims": int(np.prod(features[key]["shape"])),
+                        "transform": ("relative_to_last_obs_frame" if key == BASE_KEY else "none"),
+                    }
+                )
             if append_wrt:
-                comps.append({
-                    "generated": "rot_wrt_start",
-                    "dims": 6,
-                    "transform": "wrt_episode_start_rotation",
-                    "rotation_only": True,
-                    "noise_train_only": START_POSE_NOISE_SCALE,
-                })
+                comps.append(
+                    {
+                        "generated": "rot_wrt_start",
+                        "dims": 6,
+                        "transform": "wrt_episode_start_rotation",
+                        "rotation_only": True,
+                        "noise_train_only": START_POSE_NOISE_SCALE,
+                    }
+                )
             total = sum(c["dims"] for c in comps)
             state_dim = int(np.prod(features[STATE_KEY]["shape"]))
             if total == state_dim:
@@ -498,10 +501,10 @@ def stamp_pose_repr(cfg, dataset, epoch_plan=None) -> None:
             "gripper": {
                 "semantics": "clip(width_m / reference_width, 0, 1)",
                 "note": "reference_width/device_max_width are stamped in the "
-                        "dataset's meta/record_config.json",
+                "dataset's meta/record_config.json",
             },
             "normalization": "relative stats recomputed pre-training "
-                             "(recompute_relative_stats), saved with checkpoint",
+            "(recompute_relative_stats), saved with checkpoint",
             "fps": getattr(meta, "fps", None),
             "n_obs_steps": getattr(pol, "n_obs_steps", None),
             "horizon": getattr(pol, "horizon", None),
@@ -594,6 +597,7 @@ def _setup_epochs(argv):
 
 # ── Training launcher ─────────────────────────────────────────────────────────
 
+
 def main():
     """Run lerobot-train with the relative-pose dataset wrapper injected.
 
@@ -635,7 +639,8 @@ def main():
     logging.basicConfig(level=logging.INFO)
     logger.info(
         "append_wrt_start_to_state=%s -> %s observation.state.",
-        append_wrt, "16-D UMI-parity" if append_wrt else "10-D relative",
+        append_wrt,
+        "16-D UMI-parity" if append_wrt else "10-D relative",
     )
 
     def _wrap(dataset, cfg):

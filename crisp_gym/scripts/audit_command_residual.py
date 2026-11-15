@@ -120,6 +120,7 @@ AXES = ("x", "y", "z")
 # ── rot6d / SE(3) (local copy BY DESIGN — this file stays crisp-import-free; ──
 # ── the convention is pinned by tests/test_pose_math.py)                     ──
 
+
 def rot6d_to_mat(d6: np.ndarray) -> np.ndarray:
     """[..., 6] rot6d (first two ROWS of R) -> [..., 3, 3] via Gram-Schmidt."""
     d6 = np.asarray(d6, dtype=np.float64)
@@ -255,8 +256,8 @@ def fr3_jacobian_at(q: np.ndarray, point: np.ndarray) -> np.ndarray:
     the point means no tool/gripper model is required.
     """
     frames, _ = fr3_joint_frames(q)
-    z = frames[:, :, :3, 2]            # [N,7,3] joint axes
-    o = frames[:, :, :3, 3]            # [N,7,3] joint origins
+    z = frames[:, :, :3, 2]  # [N,7,3] joint axes
+    o = frames[:, :, :3, 3]  # [N,7,3] joint origins
     lin = np.cross(z, point[:, None, :] - o)
     return np.concatenate((np.swapaxes(lin, 1, 2), np.swapaxes(z, 1, 2)), axis=1)
 
@@ -272,7 +273,7 @@ def tcp_wrench_from_joint_torque(
     noise-amplified; the caller drops them.
     """
     J = fr3_jacobian_at(q, T_tcp[:, :3, 3])
-    JT = np.swapaxes(J, 1, 2)                                   # [N,7,6]
+    JT = np.swapaxes(J, 1, 2)  # [N,7,6]
     w_base = np.einsum("nij,nj->ni", np.linalg.pinv(JT), np.asarray(tau, dtype=np.float64))
     sigma_min = np.linalg.svd(J, compute_uv=False)[:, -1]
     Rt = np.swapaxes(T_tcp[:, :3, :3], -1, -2)
@@ -296,12 +297,18 @@ def tool_offset_check(q: np.ndarray, T_tcp: np.ndarray) -> dict:
 
 # ── small statistics helpers ─────────────────────────────────────────────────
 
+
 def _percentiles(x: np.ndarray) -> dict:
     if len(x) == 0:
         return {"n": 0}
     p50, p90, p99 = np.percentile(x, [50, 90, 99])
-    return {"n": int(len(x)), "p50": float(p50), "p90": float(p90), "p99": float(p99),
-            "max": float(np.max(x))}
+    return {
+        "n": int(len(x)),
+        "p50": float(p50),
+        "p90": float(p90),
+        "p99": float(p99),
+        "max": float(np.max(x)),
+    }
 
 
 def fit_linear(X: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, float]:
@@ -310,13 +317,17 @@ def fit_linear(X: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, float]:
     coef, *_ = np.linalg.lstsq(A, y, rcond=None)
     resid = y - A @ coef
     sst = float(np.sum((y - y.mean()) ** 2))
-    r2 = 1.0 - float(np.sum(resid ** 2)) / sst if sst > 0 else float("nan")
+    r2 = 1.0 - float(np.sum(resid**2)) / sst if sst > 0 else float("nan")
     return coef, r2
 
 
 def ridge_cv(
-    X: np.ndarray, Y: np.ndarray, groups: np.ndarray, eval_mask: np.ndarray,
-    lam: float = 1.0, folds: int = 5,
+    X: np.ndarray,
+    Y: np.ndarray,
+    groups: np.ndarray,
+    eval_mask: np.ndarray,
+    lam: float = 1.0,
+    folds: int = 5,
 ) -> dict | None:
     """Ridge regression scored on HELD-OUT GROUPS (episodes).
 
@@ -358,9 +369,14 @@ def ridge_cv(
 
 # ── the analysis (pure arrays in, plain dict out — unit-tested) ──────────────
 
+
 def lookahead_gap(
-    T_tcp: np.ndarray, T_cmd: np.ndarray, episode: np.ndarray, contact: np.ndarray,
-    fps: float, max_lookahead: int = 8,
+    T_tcp: np.ndarray,
+    T_cmd: np.ndarray,
+    episode: np.ndarray,
+    contact: np.ndarray,
+    fps: float,
+    max_lookahead: int = 8,
 ) -> list[dict]:
     """Gap between command[t] and the measured pose L frames later, per L.
 
@@ -380,16 +396,22 @@ def lookahead_gap(
         pos_mm = np.linalg.norm(pos, axis=1) * 1e3
         rot_deg = np.degrees(np.linalg.norm(rot, axis=1))
         c = np.asarray(contact, bool)[s]
-        rows.append({
-            "lookahead": L, "ms": 1e3 * L / float(fps),
-            "pos_mm": {"free": _percentiles(pos_mm[~c]), "contact": _percentiles(pos_mm[c])},
-            "rot_deg": {"free": _percentiles(rot_deg[~c]), "contact": _percentiles(rot_deg[c])},
-        })
+        rows.append(
+            {
+                "lookahead": L,
+                "ms": 1e3 * L / float(fps),
+                "pos_mm": {"free": _percentiles(pos_mm[~c]), "contact": _percentiles(pos_mm[c])},
+                "rot_deg": {"free": _percentiles(rot_deg[~c]), "contact": _percentiles(rot_deg[c])},
+            }
+        )
     return rows
 
 
 def detect_action_lookahead(
-    action: np.ndarray, pose9: np.ndarray, episode: np.ndarray, max_lookahead: int = 8,
+    action: np.ndarray,
+    pose9: np.ndarray,
+    episode: np.ndarray,
+    max_lookahead: int = 8,
     tol_m: float = 1e-4,
 ) -> int | None:
     """The lookahead L with action[t] == pose[t + L], read from the data.
@@ -479,8 +501,9 @@ def check_command(
         notes.append(f"{len(frozen)} episode(s) have a frozen command and were kept: {frozen[:10]}")
 
 
-def remove_baseline(raw: np.ndarray, episode: np.ndarray, baseline_frames: int,
-                    valid: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def remove_baseline(
+    raw: np.ndarray, episode: np.ndarray, baseline_frames: int, valid: np.ndarray | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Subtract each episode's own zero: the mean of its first frames.
 
     Returns (baseline-removed [N, T], per-episode baselines [E, T], a bool [N]
@@ -494,7 +517,7 @@ def remove_baseline(raw: np.ndarray, episode: np.ndarray, baseline_frames: int,
     for ep in np.unique(episode):
         idx = np.flatnonzero(episode == ep)
         pool = idx if valid is None or not valid[idx].any() else idx[valid[idx]]
-        first = pool[:min(baseline_frames, len(pool))]
+        first = pool[: min(baseline_frames, len(pool))]
         base = raw[first].mean(axis=0)
         out[idx] = raw[idx] - base
         is_base[first] = True
@@ -533,9 +556,13 @@ def row_width_hint(feat: np.ndarray, min_frames: int = 50) -> dict | None:
     confident = scores[best] > 0.3 and (not others or scores[best] - max(others) > 0.05)
     same_row = np.diagonal(corr, offset=1)
     same_row = same_row[np.isfinite(same_row)]
-    return {"width": int(best), "rows": int(taxels // best), "confident": bool(confident),
-            "correlation_by_width": {str(k): round(v, 3) for k, v in scores.items()},
-            "correlation_next_index": float(same_row.mean()) if len(same_row) else float("nan")}
+    return {
+        "width": int(best),
+        "rows": int(taxels // best),
+        "confident": bool(confident),
+        "correlation_by_width": {str(k): round(v, 3) for k, v in scores.items()},
+        "correlation_next_index": float(same_row.mean()) if len(same_row) else float("nan"),
+    }
 
 
 def tactile_report(
@@ -558,16 +585,27 @@ def tactile_report(
     out: dict = {}
     for name, arr in tactile.items():
         raw = np.asarray(arr, dtype=np.float64).reshape(n, -1)
-        ok = np.ones(n, dtype=bool) if not valid or name not in valid else np.asarray(valid[name], bool)
+        ok = (
+            np.ones(n, dtype=bool)
+            if not valid or name not in valid
+            else np.asarray(valid[name], bool)
+        )
         feat, baselines, is_base = remove_baseline(raw, episode, baseline_frames, ok)
         mag = np.linalg.norm(feat, axis=1)
         base_mag = mag[is_base]
-        thr = float(base_mag.mean() + 6.0 * base_mag.std()) if tactile_threshold is None \
+        thr = (
+            float(base_mag.mean() + 6.0 * base_mag.std())
+            if tactile_threshold is None
             else float(tactile_threshold)
+        )
         contact = (mag > thr) & ok
         taxel_noise = feat[is_base].std(axis=0)
-        per_ep = np.array([contact[(episode == ep) & ok].mean() if ((episode == ep) & ok).any()
-                           else 0.0 for ep in eps])
+        per_ep = np.array(
+            [
+                contact[(episode == ep) & ok].mean() if ((episode == ep) & ok).any() else 0.0
+                for ep in eps
+            ]
+        )
         # a taxel counts as active above 6 sigma of its own rest noise, and never
         # below an even share of the contact threshold (quantized sensors read an
         # exact 0 noise at rest)
@@ -577,21 +615,33 @@ def tactile_report(
             "taxels": int(raw.shape[1]),
             "frames": int(n),
             "invalid_frames": int((~ok).sum()),
-            "dead_taxels": np.flatnonzero(np.ptp(raw[ok], axis=0) == 0).tolist() if ok.any() else [],
-            "raw": {"min": float(raw[ok].min()), "median": float(np.median(raw[ok])),
-                    "max": float(raw[ok].max())} if ok.any() else {},
-            "baseline_drift": float(np.median(baselines.std(axis=0))) if len(baselines) > 1 else 0.0,
+            "dead_taxels": np.flatnonzero(np.ptp(raw[ok], axis=0) == 0).tolist()
+            if ok.any()
+            else [],
+            "raw": {
+                "min": float(raw[ok].min()),
+                "median": float(np.median(raw[ok])),
+                "max": float(raw[ok].max()),
+            }
+            if ok.any()
+            else {},
+            "baseline_drift": float(np.median(baselines.std(axis=0)))
+            if len(baselines) > 1
+            else 0.0,
             "taxel_noise": float(np.median(taxel_noise)),
             "noise_floor": float(base_mag.mean()),
             "threshold": thr,
             "contact_fraction": float(contact[ok].mean()) if ok.any() else 0.0,
             "contact_fraction_per_episode": {
-                "min": float(per_ep.min()), "median": float(np.median(per_ep)),
-                "max": float(per_ep.max())},
+                "min": float(per_ep.min()),
+                "median": float(np.median(per_ep)),
+                "max": float(per_ep.max()),
+            },
             "episodes_without_contact": int((per_ep == 0).sum()),
             "contact_magnitude": _percentiles(mag[contact]),
             "peak_taxel_in_contact": _percentiles(np.abs(feat[contact]).max(axis=1))
-            if contact.any() else _percentiles(np.empty(0)),
+            if contact.any()
+            else _percentiles(np.empty(0)),
             "active_taxels_in_contact": _percentiles(active.astype(np.float64)),
         }
         hint = row_width_hint(feat[contact])
@@ -642,8 +692,13 @@ def analyze(
 
     res_pos, res_rot = tcp_frame_residual(T_tcp, T_cmd)
     vel, omega = body_velocity(T_tcp, episode, dt)
-    frames = {"episode": episode, "res_pos": res_pos, "res_rot": res_rot,
-              "vel": vel, "omega": omega}
+    frames = {
+        "episode": episode,
+        "res_pos": res_pos,
+        "res_rot": res_rot,
+        "vel": vel,
+        "omega": omega,
+    }
 
     # ── tactile: per-episode baseline removal, magnitude ────────────────────
     tac_feat = None
@@ -702,8 +757,10 @@ def analyze(
     if tactile and tactile_valid is not None and not np.all(tactile_valid):
         bad = int((~np.asarray(tactile_valid, bool)).sum())
         good = good & np.asarray(tactile_valid, bool)
-        notes.append(f"{bad} frame(s) with tactile sync_valid = false were left out of "
-                     "steps C and D (they still count in A, B and the contact share).")
+        notes.append(
+            f"{bad} frame(s) with tactile sync_valid = false were left out of "
+            "steps C and D (they still count in A, B and the contact share)."
+        )
 
     # ── contact flag ────────────────────────────────────────────────────────
     source = contact_from
@@ -712,7 +769,9 @@ def analyze(
     if source == "tactile":
         if tac_mag is None:
             raise ValueError("--contact-from tactile but no tactile column was found")
-        thr = report["tactile"]["auto_threshold"] if tactile_threshold is None else tactile_threshold
+        thr = (
+            report["tactile"]["auto_threshold"] if tactile_threshold is None else tactile_threshold
+        )
         contact = tac_mag > thr
         report["contact"] = {"source": "tactile", "threshold": float(thr)}
     elif source == "wrench":
@@ -732,7 +791,9 @@ def analyze(
     # finger pads; a load path that bypasses them (gripper body, outer finger)
     # shows up in the joint torques and not in the tactile signal.
     if tac_mag is not None and wrench is not None:
-        thr = report["tactile"]["auto_threshold"] if tactile_threshold is None else tactile_threshold
+        thr = (
+            report["tactile"]["auto_threshold"] if tactile_threshold is None else tactile_threshold
+        )
         by_skin = (tac_mag > thr)[good]
         by_wrench = (np.linalg.norm(wrench[:, :3], axis=1) > force_threshold)[good]
         report["contact"]["skin_vs_wrench"] = {
@@ -746,10 +807,16 @@ def analyze(
     pos_mm = np.linalg.norm(res_pos, axis=1) * 1e3
     rot_deg = np.degrees(np.linalg.norm(res_rot, axis=1))
     report["residual"] = {
-        "pos_mm": {"all": _percentiles(pos_mm), "free": _percentiles(pos_mm[free]),
-                   "contact": _percentiles(pos_mm[contact])},
-        "rot_deg": {"all": _percentiles(rot_deg), "free": _percentiles(rot_deg[free]),
-                    "contact": _percentiles(rot_deg[contact])},
+        "pos_mm": {
+            "all": _percentiles(pos_mm),
+            "free": _percentiles(pos_mm[free]),
+            "contact": _percentiles(pos_mm[contact]),
+        },
+        "rot_deg": {
+            "all": _percentiles(rot_deg),
+            "free": _percentiles(rot_deg[free]),
+            "contact": _percentiles(rot_deg[contact]),
+        },
     }
     if k_pos:
         report["residual"]["nominal_force_N"] = {
@@ -761,10 +828,14 @@ def analyze(
     lag = {}
     if free.sum() > 20:
         for i, ax in enumerate(AXES):
-            coef, r2 = fit_linear(vel[free, i:i + 1], res_pos[free, i])
-            lag[ax] = {"tau_ms": float(coef[0] * 1e3), "r2": float(r2),
-                       "unexplained_rms_mm": float(
-                           np.std(res_pos[free, i] - coef[0] * vel[free, i] - coef[1]) * 1e3)}
+            coef, r2 = fit_linear(vel[free, i : i + 1], res_pos[free, i])
+            lag[ax] = {
+                "tau_ms": float(coef[0] * 1e3),
+                "r2": float(r2),
+                "unexplained_rms_mm": float(
+                    np.std(res_pos[free, i] - coef[0] * vel[free, i] - coef[1]) * 1e3
+                ),
+            }
     report["lag_free_motion"] = lag
 
     # ── C. system identification: F_ext,i = -K_i r_i + D_i v_i + b_i ───────
@@ -777,8 +848,12 @@ def analyze(
             for i, ax in enumerate(AXES):
                 X = np.column_stack((r[good, i], v[good, i]))
                 coef, r2 = fit_linear(X, w[good, i])
-                entry = {"stiffness": float(-coef[0]), "damping": float(coef[1]),
-                         "bias": float(coef[2]), "r2": float(r2)}
+                entry = {
+                    "stiffness": float(-coef[0]),
+                    "damping": float(coef[1]),
+                    "bias": float(coef[2]),
+                    "r2": float(r2),
+                }
                 if nominal:
                     entry["stiffness_vs_nominal"] = float(-coef[0] / nominal)
                 sysid[group][ax] = entry
@@ -811,12 +886,14 @@ def analyze(
             if mask.sum() < 20:
                 continue
             keep = good  # never train on near-singular wrench frames
-            out = ridge_cv(X[keep], target[keep], episode[keep], mask[keep],
-                           lam=ridge_lambda, folds=folds)
+            out = ridge_cv(
+                X[keep], target[keep], episode[keep], mask[keep], lam=ridge_lambda, folds=folds
+            )
             if out is not None:
                 probe[fname][ename] = {
                     "n_eval": out["n_eval"],
-                    "r2_pos": out["r2"][:3], "r2_rot": out["r2"][3:],
+                    "r2_pos": out["r2"][:3],
+                    "r2_rot": out["r2"][3:],
                     "rmse_pos_mm": [v * 1e3 for v in out["rmse"][:3]],
                     "rmse_rot_deg": [float(np.degrees(v)) for v in out["rmse"][3:]],
                 }
@@ -828,14 +905,25 @@ def analyze(
     if gripper is not None and gripper_target is not None:
         g = np.asarray(gripper, dtype=np.float64).reshape(n, -1)[:, 0]
         gt = np.asarray(gripper_target, dtype=np.float64).reshape(n, -1)[:, 0]
-        gres = gt - g                       # < 0 : commanded more closed than measured
-        entry = {"abs": {"free": _percentiles(np.abs(gres[free])),
-                         "contact": _percentiles(np.abs(gres[contact]))},
-                 "squeezing_fraction_in_contact":
-                     float(np.mean(gres[contact] < -0.02)) if contact.any() else float("nan")}
+        gres = gt - g  # < 0 : commanded more closed than measured
+        entry = {
+            "abs": {
+                "free": _percentiles(np.abs(gres[free])),
+                "contact": _percentiles(np.abs(gres[contact])),
+            },
+            "squeezing_fraction_in_contact": float(np.mean(gres[contact] < -0.02))
+            if contact.any()
+            else float("nan"),
+        }
         if tac_feat is not None:
-            out = ridge_cv(tac_feat, gres[:, None], episode, np.ones(n, dtype=bool),
-                           lam=ridge_lambda, folds=folds)
+            out = ridge_cv(
+                tac_feat,
+                gres[:, None],
+                episode,
+                np.ones(n, dtype=bool),
+                lam=ridge_lambda,
+                folds=folds,
+            )
             if out is not None:
                 entry["tactile_probe_r2"] = out["r2"][0]
         report["gripper_residual"] = entry
@@ -854,7 +942,8 @@ def analyze(
             notes.append(
                 "the `action` column is not the measured pose at any lookahead up to 8 frames "
                 "(already swapped to the command, a delta action, or another layout): step F "
-                "cannot mark which row is the recorded action.")
+                "cannot mark which row is the recorded action."
+            )
     report["action_labels"] = labels
 
     report["notes"] = notes
@@ -862,6 +951,7 @@ def analyze(
 
 
 # ── dataset / config I/O ─────────────────────────────────────────────────────
+
 
 def resolve_key(columns: list[str], key: str, *, required: bool) -> str | None:
     """Exact column name, else a UNIQUE dotted-suffix match."""
@@ -880,8 +970,10 @@ def resolve_key(columns: list[str], key: str, *, required: bool) -> str | None:
 def _to_array(series: "pd.Series") -> np.ndarray:
     """A parquet list/nested-list column -> [N, prod(shape)] float64."""
     return np.asarray(
-        [np.asarray(v.tolist() if hasattr(v, "tolist") else v, dtype=np.float64).reshape(-1)
-         for v in series.to_numpy()]
+        [
+            np.asarray(v.tolist() if hasattr(v, "tolist") else v, dtype=np.float64).reshape(-1)
+            for v in series.to_numpy()
+        ]
     )
 
 
@@ -933,7 +1025,9 @@ def load_dataset(
     files = _data_files(root)
     info = json.loads((root / "meta" / "info.json").read_text())
     columns = dataset_columns(root)
-    resolved = {role: resolve_key(columns, key, required=req) for role, (key, req) in wanted.items()}
+    resolved = {
+        role: resolve_key(columns, key, required=req) for role, (key, req) in wanted.items()
+    }
     read_cols = ["episode_index", "frame_index"] + [c for c in resolved.values() if c]
     df = pd.concat([pd.read_parquet(f, columns=read_cols) for f in files], ignore_index=True)
     if episodes:
@@ -1008,11 +1102,16 @@ def raw_stream_report(
             matched += int(hit.sum())
             frame_values = np.asarray(values)[m].reshape(int(m.sum()), -1)
             if hit.any() and csv_taxels.shape[1] == frame_values.shape[1]:
-                equal += int(np.isclose(csv_taxels[row[hit]], frame_values[hit], atol=1e-3)
-                             .all(axis=1).sum())
+                equal += int(
+                    np.isclose(csv_taxels[row[hit]], frame_values[hit], atol=1e-3).all(axis=1).sum()
+                )
             if hit.sum() > 1:
                 steps.append(np.diff(row[hit]))
-        entry: dict = {"side": side, "episodes_with_csv": n_eps, "episodes_missing_csv": len(missing)}
+        entry: dict = {
+            "side": side,
+            "episodes_with_csv": n_eps,
+            "episodes_missing_csv": len(missing),
+        }
         if missing:
             entry["missing_examples"] = missing[:10]
         if dts:
@@ -1061,8 +1160,9 @@ def load_gains(path: Path, controller: str) -> tuple[float | None, float | None]
         if not vals:
             return None
         if max(vals) - min(vals) > 1e-9:
-            logger.warning("%s differs per axis %s; using the mean for nominal comparisons",
-                           prefix, vals)
+            logger.warning(
+                "%s differs per axis %s; using the mean for nominal comparisons", prefix, vals
+            )
         return float(np.mean(vals))
 
     return mean("k_pos"), mean("k_rot")
@@ -1085,15 +1185,18 @@ def config_search_paths(extra: list[Path] | None = None) -> list[Path]:
     gym = Path(__file__).resolve().parents[1] / "config"
     py = None
     try:
-        spec = importlib.util.find_spec("crisp_py")       # locates, does not import
+        spec = importlib.util.find_spec("crisp_py")  # locates, does not import
         if spec and spec.submodule_search_locations:
             py = Path(list(spec.submodule_search_locations)[0]) / "config"
     except (ImportError, ValueError):
         pass
-    if py is None:                                        # a checkout next to crisp_gym
+    if py is None:  # a checkout next to crisp_gym
         py = Path(__file__).resolve().parents[3] / "crisp_py" / "crisp_py" / "config"
-    user = [Path(part.strip()) for part in os.environ.get("CRISP_CONFIG_PATH", "").split(":")
-            if part.strip()]
+    user = [
+        Path(part.strip())
+        for part in os.environ.get("CRISP_CONFIG_PATH", "").split(":")
+        if part.strip()
+    ]
     paths = list(extra or []) + (user + [gym, py] if user else [py, gym])
     return [path for path in paths if path.is_dir()]
 
@@ -1132,22 +1235,29 @@ def control_file_from_env_config(
             f"{name} names '{value}', which is in none of {[str(d) for d in search]}. "
             "Add its directory with --config-path, or pass the file with --control-config."
         )
-    note = (f"nominal gains read from {matches[0]} (named by {name}). The copy on the PC that "
-            "RECORDED the data is the one that ran; check it is the same file.")
+    note = (
+        f"nominal gains read from {matches[0]} (named by {name}). The copy on the PC that "
+        "RECORDED the data is the one that ran; check it is the same file."
+    )
     if len(matches) > 1:
-        note += (" SHADOWED: the same name also exists in "
-                 + ", ".join(str(m.parent.parent) for m in matches[1:])
-                 + " and was ignored, as find_config does.")
+        note += (
+            " SHADOWED: the same name also exists in "
+            + ", ".join(str(m.parent.parent) for m in matches[1:])
+            + " and was ignored, as find_config does."
+        )
     return matches[0], note
 
 
 # ── report ───────────────────────────────────────────────────────────────────
 
+
 def _fmt_p(d: dict, unit: str) -> str:
     if not d.get("n"):
         return "n=0"
-    return (f"n={d['n']:<7d} median {d['p50']:7.2f}  p90 {d['p90']:7.2f}  "
-            f"p99 {d['p99']:7.2f}  max {d['max']:7.2f} {unit}")
+    return (
+        f"n={d['n']:<7d} median {d['p50']:7.2f}  p90 {d['p90']:7.2f}  "
+        f"p99 {d['p99']:7.2f}  max {d['max']:7.2f} {unit}"
+    )
 
 
 def format_report(r: dict) -> str:
@@ -1160,19 +1270,25 @@ def format_report(r: dict) -> str:
             add(f"  {role:<16s} <- {col if col else '(not found)'}")
     g = r.get("nominal_gains") or {}
     if g.get("k_pos") is not None or g.get("k_rot") is not None:
-        add(f"Nominal gains: k_pos {g.get('k_pos')} N/m, k_rot {g.get('k_rot')} Nm/rad"
-            f"  ({g.get('source', 'given')})")
+        add(
+            f"Nominal gains: k_pos {g.get('k_pos')} N/m, k_rot {g.get('k_rot')} Nm/rad"
+            f"  ({g.get('source', 'given')})"
+        )
     c = r["contact"]
     add(f"Contact flag: {c['source']}, {100 * c.get('fraction', 0):.1f}% of frames in contact")
     if "tactile" in r:
         t = r["tactile"]
-        add(f"  tactile taxels {t['taxels']}, noise floor {t['noise_floor']:.4g}, "
-            f"auto threshold {t['auto_threshold']:.4g}")
+        add(
+            f"  tactile taxels {t['taxels']}, noise floor {t['noise_floor']:.4g}, "
+            f"auto threshold {t['auto_threshold']:.4g}"
+        )
     if "skin_vs_wrench" in c:
         s = c["skin_vs_wrench"]
-        add(f"  skin vs joint-torque contact (>{s['force_threshold_N']:g} N): "
+        add(
+            f"  skin vs joint-torque contact (>{s['force_threshold_N']:g} N): "
             f"both {100 * s['both']:.1f}%, torque only {100 * s['wrench_only']:.1f}% "
-            f"(contact the skin does not see), skin only {100 * s['skin_only']:.1f}%")
+            f"(contact the skin does not see), skin only {100 * s['skin_only']:.1f}%"
+        )
 
     add("\nA. Residual  T_tcp^-1 @ T_cmd  (TCP frame)")
     for label, key, unit in (("translation", "pos_mm", "mm"), ("rotation", "rot_deg", "deg")):
@@ -1180,14 +1296,18 @@ def format_report(r: dict) -> str:
             add(f"  {label:<11s} {split:<8s} {_fmt_p(r['residual'][key][split], unit)}")
     if "nominal_force_N" in r["residual"]:
         for split in ("free", "contact"):
-            add(f"  k_pos*|res|  {split:<8s} {_fmt_p(r['residual']['nominal_force_N'][split], 'N')}")
+            add(
+                f"  k_pos*|res|  {split:<8s} {_fmt_p(r['residual']['nominal_force_N'][split], 'N')}"
+            )
 
     add("\nB. Tracking lag in free motion (residual ~ tau * velocity)")
     if not r["lag_free_motion"]:
         add("  (too few free-motion frames)")
     for ax, v in r["lag_free_motion"].items():
-        add(f"  {ax}: tau {v['tau_ms']:7.1f} ms   R2 {v['r2']:5.2f}   "
-            f"unexplained {v['unexplained_rms_mm']:.2f} mm rms")
+        add(
+            f"  {ax}: tau {v['tau_ms']:7.1f} ms   R2 {v['r2']:5.2f}   "
+            f"unexplained {v['unexplained_rms_mm']:.2f} mm rms"
+        )
 
     add("\nC. System identification  F_ext = -K r + D v  (TCP frame)")
     s = r.get("system_identification")
@@ -1197,27 +1317,36 @@ def format_report(r: dict) -> str:
         add(f"  frames used: {s['frames_used']}")
         for group, ku, du in (("translation", "N/m", "Ns/m"), ("rotation", "Nm/rad", "Nms/rad")):
             for ax, v in s[group].items():
-                vs = f"  ({100 * v['stiffness_vs_nominal']:.0f}% of nominal)" \
-                    if "stiffness_vs_nominal" in v else ""
-                add(f"  {group:<11s} {ax}: K {v['stiffness']:9.1f} {ku:<6s} D {v['damping']:8.1f} "
-                    f"{du:<7s} R2 {v['r2']:5.2f}{vs}")
+                vs = (
+                    f"  ({100 * v['stiffness_vs_nominal']:.0f}% of nominal)"
+                    if "stiffness_vs_nominal" in v
+                    else ""
+                )
+                add(
+                    f"  {group:<11s} {ax}: K {v['stiffness']:9.1f} {ku:<6s} D {v['damping']:8.1f} "
+                    f"{du:<7s} R2 {v['r2']:5.2f}{vs}"
+                )
 
     add("\nD. Predicting the residual on HELD-OUT episodes (linear ridge, single frame)")
     if not r["residual_probe"]:
         add("  (skipped — see notes)")
     for fname, per in r["residual_probe"].items():
         for ename, v in per.items():
-            add(f"  {fname:<17s} on {ename:<8s} R2 pos {np.round(v['r2_pos'], 2).tolist()} "
+            add(
+                f"  {fname:<17s} on {ename:<8s} R2 pos {np.round(v['r2_pos'], 2).tolist()} "
                 f"rot {np.round(v['r2_rot'], 2).tolist()}  "
-                f"rmse {np.round(v['rmse_pos_mm'], 2).tolist()} mm")
+                f"rmse {np.round(v['rmse_pos_mm'], 2).tolist()} mm"
+            )
 
     g = r.get("gripper_residual")
     if g:
         add("\nE. Gripper  (command - measured, normalized units)")
         for split in ("free", "contact"):
             add(f"  |residual| {split:<8s} {_fmt_p(g['abs'][split], '')}")
-        add(f"  squeezing (command >2% more closed) in {100 * g['squeezing_fraction_in_contact']:.0f}%"
-            " of contact frames")
+        add(
+            f"  squeezing (command >2% more closed) in {100 * g['squeezing_fraction_in_contact']:.0f}%"
+            " of contact frames"
+        )
         if "tactile_probe_r2" in g:
             add(f"  tactile -> gripper residual, held-out R2 {g['tactile_probe_r2']:.2f}")
 
@@ -1225,22 +1354,29 @@ def format_report(r: dict) -> str:
     if f and f["by_lookahead"]:
         add("\nF. Command vs measured-pose action label  (gap between command[t] and pose[t+L])")
         rec, best = f.get("action_lookahead"), f.get("best_free_lookahead")
+
+        def cell(d: dict) -> str:
+            return f"{d['p50']:6.2f} / {d['p90']:6.2f}" if d.get("n") else "     -          "
+
         for row in f["by_lookahead"]:
             fr, co = row["pos_mm"]["free"], row["pos_mm"]["contact"]
-            cell = lambda d: f"{d['p50']:6.2f} / {d['p90']:6.2f}" if d.get("n") else "     -          "  # noqa: E731
             tags = []
             if row["lookahead"] == rec:
                 tags.append("<- the recorded `action`: what the two training targets differ by")
             if row["lookahead"] == best:
                 tags.append("<- smallest in free motion")
-            add(f"  L={row['lookahead']} ({row['ms']:4.0f} ms)  free {cell(fr)} mm   contact "
-                f"{cell(co)} mm   (median / p90)  " + "  ".join(tags))
+            add(
+                f"  L={row['lookahead']} ({row['ms']:4.0f} ms)  free {cell(fr)} mm   contact "
+                f"{cell(co)} mm   (median / p90)  " + "  ".join(tags)
+            )
         if best is not None:
             b = next(row for row in f["by_lookahead"] if row["lookahead"] == best)
             if b["pos_mm"]["contact"].get("n"):
-                add(f"  best lookahead L={best}: {b['pos_mm']['free']['p50']:.1f} mm remain in free "
+                add(
+                    f"  best lookahead L={best}: {b['pos_mm']['free']['p50']:.1f} mm remain in free "
                     f"motion, {b['pos_mm']['contact']['p50']:.1f} mm in contact (median). The contact "
-                    "excess is what a measured-pose label does not carry.")
+                    "excess is what a measured-pose label does not carry."
+                )
 
     if r.get("notes"):
         add("\nNotes")
@@ -1254,50 +1390,70 @@ def format_tactile_report(r: dict) -> str:
     out = []
     add = out.append
     add(f"Dataset: {r['episodes']} episodes, {r['frames']} frames at {r['fps']:g} Hz")
-    add(f"Tactile signal per sensor, in sensor units. Zero = mean of the first "
-        f"{r['baseline_frames']} valid frames of each episode.")
+    add(
+        f"Tactile signal per sensor, in sensor units. Zero = mean of the first "
+        f"{r['baseline_frames']} valid frames of each episode."
+    )
     if not r["tactile"]:
         add("  (no tactile column found — pass --tactile-keys)")
     for name, t in r["tactile"].items():
         dead = t["dead_taxels"]
-        add(f"\n  {name}: {t['taxels']} taxels, {t['frames']} frames "
+        add(
+            f"\n  {name}: {t['taxels']} taxels, {t['frames']} frames "
             f"({t['invalid_frames']} with sync_valid false), dead taxels: "
-            f"{dead if dead else 'none'}")
+            f"{dead if dead else 'none'}"
+        )
         if t["raw"]:
-            add(f"    raw level       min {t['raw']['min']:.4g}  median {t['raw']['median']:.4g}  "
-                f"max {t['raw']['max']:.4g}")
-        add(f"    noise           per taxel {t['taxel_noise']:.4g} | norm at rest "
-            f"{t['noise_floor']:.4g} -> contact threshold {t['threshold']:.4g}")
+            add(
+                f"    raw level       min {t['raw']['min']:.4g}  median {t['raw']['median']:.4g}  "
+                f"max {t['raw']['max']:.4g}"
+            )
+        add(
+            f"    noise           per taxel {t['taxel_noise']:.4g} | norm at rest "
+            f"{t['noise_floor']:.4g} -> contact threshold {t['threshold']:.4g}"
+        )
         add(f"    baseline drift  {t['baseline_drift']:.4g} between episodes (median taxel)")
         pe = t["contact_fraction_per_episode"]
-        add(f"    in contact      {100 * t['contact_fraction']:.1f}% of frames | per episode "
+        add(
+            f"    in contact      {100 * t['contact_fraction']:.1f}% of frames | per episode "
             f"min {100 * pe['min']:.0f}% median {100 * pe['median']:.0f}% max {100 * pe['max']:.0f}%"
-            f" | {t['episodes_without_contact']} episode(s) never in contact")
+            f" | {t['episodes_without_contact']} episode(s) never in contact"
+        )
         add(f"    contact norm    {_fmt_p(t['contact_magnitude'], '')}")
         add(f"    strongest taxel {_fmt_p(t['peak_taxel_in_contact'], '')}")
         add(f"    active taxels   {_fmt_p(t['active_taxels_in_contact'], '')}")
         h = t.get("row_width_hint")
         if h and not h["confident"]:
-            add("    layout hint     no clear grid structure in the contact frames (too little or "
-                "too uniform contact)")
+            add(
+                "    layout hint     no clear grid structure in the contact frames (too little or "
+                "too uniform contact)"
+            )
         elif h:
             ranked = sorted(h["correlation_by_width"].items(), key=lambda kv: -kv[1])[:3]
-            add(f"    layout hint     if stored row by row: {h['rows']} rows x {h['width']} "
+            add(
+                f"    layout hint     if stored row by row: {h['rows']} rows x {h['width']} "
                 f"(neighbour correlation by width: "
                 + ", ".join(f"{k}: {v:.2f}" for k, v in ranked)
-                + f"; next index {h['correlation_next_index']:.2f}) — confirm by pressing a corner")
+                + f"; next index {h['correlation_next_index']:.2f}) — confirm by pressing a corner"
+            )
         s = r.get("raw_stream", {}).get(name)
         if s:
-            add(f"    high-rate CSV   '{s['side']}': {s['episodes_with_csv']} episode(s) found, "
-                f"{s['episodes_missing_csv']} missing")
+            add(
+                f"    high-rate CSV   '{s['side']}': {s['episodes_with_csv']} episode(s) found, "
+                f"{s['episodes_missing_csv']} missing"
+            )
             if "dt_ms_median" in s:
-                add(f"                    mean {s['mean_rate_hz']:.0f} Hz | interval median "
+                add(
+                    f"                    mean {s['mean_rate_hz']:.0f} Hz | interval median "
                     f"{s['dt_ms_median']:.2f} ms  p99 {s['dt_ms_p99']:.2f}  max {s['dt_ms_max']:.2f}"
-                    f" | {100 * s['gap_time_fraction']:.0f}% of the time inside gaps (>2x median)")
+                    f" | {100 * s['gap_time_fraction']:.0f}% of the time inside gaps (>2x median)"
+                )
             if "frames_joined_by_stamp" in s:
-                add(f"                    frames joined by stamp {100 * s['frames_joined_by_stamp']:.1f}%"
+                add(
+                    f"                    frames joined by stamp {100 * s['frames_joined_by_stamp']:.1f}%"
                     f" | taxels equal at the joined row {100 * s['taxels_equal_at_joined_row']:.1f}%"
-                    f" | rows per frame, median {s.get('rows_per_frame_median', float('nan')):.0f}")
+                    f" | rows per frame, median {s.get('rows_per_frame_median', float('nan')):.0f}"
+                )
     if r.get("notes"):
         add("\nNotes")
         for note in r["notes"]:
@@ -1306,6 +1462,7 @@ def format_tactile_report(r: dict) -> str:
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
+
 
 def build_parser() -> argparse.ArgumentParser:
     """Command-line interface."""
@@ -1316,53 +1473,104 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--episodes", type=int, nargs="*", help="only these episode indices")
     p.add_argument("--pose-key", default=POSE_KEY)
     p.add_argument("--target-key", default=TARGET_KEY)
-    p.add_argument("--tactile-keys", nargs="*", default=None,
-                   help="tactile columns, any shape (default: extra.tactile.left/right, "
-                        "else left_tactile/right_tactile, whichever the dataset has)")
-    p.add_argument("--tactile-only", action="store_true",
-                   help="report the tactile signal alone; needs no command, so it also runs on "
-                        "handheld and joint-driven data")
-    p.add_argument("--tactile-raw-dir", type=Path, default=None,
-                   help="directory with the high-rate CSVs episode_<NNNNNN>_<side>.csv "
-                        "(default: <dataset>/tactile_raw when it exists)")
-    p.add_argument("--tactile-shape", type=int, nargs="+", default=None,
-                   help="expected per-sensor shape, e.g. 8 10 — only CHECKED against the data; "
-                        "the script itself adapts to whatever shape is stored")
+    p.add_argument(
+        "--tactile-keys",
+        nargs="*",
+        default=None,
+        help="tactile columns, any shape (default: extra.tactile.left/right, "
+        "else left_tactile/right_tactile, whichever the dataset has)",
+    )
+    p.add_argument(
+        "--tactile-only",
+        action="store_true",
+        help="report the tactile signal alone; needs no command, so it also runs on "
+        "handheld and joint-driven data",
+    )
+    p.add_argument(
+        "--tactile-raw-dir",
+        type=Path,
+        default=None,
+        help="directory with the high-rate CSVs episode_<NNNNNN>_<side>.csv "
+        "(default: <dataset>/tactile_raw when it exists)",
+    )
+    p.add_argument(
+        "--tactile-shape",
+        type=int,
+        nargs="+",
+        default=None,
+        help="expected per-sensor shape, e.g. 8 10 — only CHECKED against the data; "
+        "the script itself adapts to whatever shape is stored",
+    )
     p.add_argument("--ext-torque-key", default=EXT_TORQUE_KEY)
     p.add_argument("--joints-key", default=JOINTS_KEY)
     p.add_argument("--gripper-key", default=GRIPPER_KEY)
     p.add_argument("--gripper-target-key", default=GRIPPER_TARGET_KEY)
-    p.add_argument("--action-key", default="action",
-                   help="the recorded action column; only used to mark, in step F, which "
-                        "lookahead it was recorded with")
+    p.add_argument(
+        "--action-key",
+        default="action",
+        help="the recorded action column; only used to mark, in step F, which "
+        "lookahead it was recorded with",
+    )
     p.add_argument("--k-pos", type=float, help="nominal translational stiffness, N/m")
     p.add_argument("--k-rot", type=float, help="nominal rotational stiffness, Nm/rad")
-    p.add_argument("--control-config", type=Path,
-                   help="YAML to read nominal gains from (crisp_gym control YAML or "
-                        "ros2_control controllers.yaml); --k-pos/--k-rot override it")
-    p.add_argument("--controller", default="cartesian_impedance_controller",
-                   help="controller block to read in a controllers.yaml")
-    p.add_argument("--env-config", type=Path,
-                   help="crisp_gym env YAML the data was recorded with: the gains are read from "
-                        "the control file its cartesian_control_param_config names, found the "
-                        "way the env finds it. --control-config and --k-pos/--k-rot override it")
-    p.add_argument("--config-path", type=Path, action="append", default=None,
-                   help="extra config directory searched FIRST for that control file (repeatable); "
-                        "CRISP_CONFIG_PATH is honoured too")
-    p.add_argument("--baseline-frames", type=int, default=10,
-                   help="frames at the start of each episode averaged as the tactile zero")
+    p.add_argument(
+        "--control-config",
+        type=Path,
+        help="YAML to read nominal gains from (crisp_gym control YAML or "
+        "ros2_control controllers.yaml); --k-pos/--k-rot override it",
+    )
+    p.add_argument(
+        "--controller",
+        default="cartesian_impedance_controller",
+        help="controller block to read in a controllers.yaml",
+    )
+    p.add_argument(
+        "--env-config",
+        type=Path,
+        help="crisp_gym env YAML the data was recorded with: the gains are read from "
+        "the control file its cartesian_control_param_config names, found the "
+        "way the env finds it. --control-config and --k-pos/--k-rot override it",
+    )
+    p.add_argument(
+        "--config-path",
+        type=Path,
+        action="append",
+        default=None,
+        help="extra config directory searched FIRST for that control file (repeatable); "
+        "CRISP_CONFIG_PATH is honoured too",
+    )
+    p.add_argument(
+        "--baseline-frames",
+        type=int,
+        default=10,
+        help="frames at the start of each episode averaged as the tactile zero",
+    )
     p.add_argument("--contact-from", choices=("auto", "tactile", "wrench", "none"), default="auto")
-    p.add_argument("--tactile-threshold", type=float,
-                   help="contact threshold on the baseline-removed tactile norm (default: auto)")
-    p.add_argument("--force-threshold", type=float, default=3.0,
-                   help="contact threshold on the TCP force norm, N (--contact-from wrench)")
-    p.add_argument("--min-sigma", type=float, default=0.03,
-                   help="drop frames whose Jacobian smallest singular value is below this")
+    p.add_argument(
+        "--tactile-threshold",
+        type=float,
+        help="contact threshold on the baseline-removed tactile norm (default: auto)",
+    )
+    p.add_argument(
+        "--force-threshold",
+        type=float,
+        default=3.0,
+        help="contact threshold on the TCP force norm, N (--contact-from wrench)",
+    )
+    p.add_argument(
+        "--min-sigma",
+        type=float,
+        default=0.03,
+        help="drop frames whose Jacobian smallest singular value is below this",
+    )
     p.add_argument("--ridge-lambda", type=float, default=1.0)
     p.add_argument("--folds", type=int, default=5)
     p.add_argument("--out", type=Path, help="write the full report as JSON")
-    p.add_argument("--dump-npz", type=Path,
-                   help="write per-frame arrays (residual, velocity, contact, wrench) for plotting")
+    p.add_argument(
+        "--dump-npz",
+        type=Path,
+        help="write per-frame arrays (residual, velocity, contact, wrench) for plotting",
+    )
     return p
 
 
@@ -1393,8 +1601,11 @@ def main(argv: list[str] | None = None) -> int:
     arrays, resolved, fps, features = load_dataset(args.dataset, wanted, args.episodes)
 
     def by_role(prefix: str) -> dict[str, np.ndarray]:
-        return {role.split(":", 1)[1]: arr for role, arr in arrays.items()
-                if role.startswith(prefix + ":")}
+        return {
+            role.split(":", 1)[1]: arr
+            for role, arr in arrays.items()
+            if role.startswith(prefix + ":")
+        }
 
     tactile, valid, stamps = by_role("tactile"), by_role("valid"), by_role("stamp")
     raw_dir = args.tactile_raw_dir
@@ -1416,7 +1627,8 @@ def main(argv: list[str] | None = None) -> int:
     control_config = args.control_config
     if args.env_config:
         found, note = control_file_from_env_config(
-            args.env_config, config_search_paths(args.config_path))
+            args.env_config, config_search_paths(args.config_path)
+        )
         if control_config is None:
             control_config = found
             gain_notes.append(note)
@@ -1429,20 +1641,30 @@ def main(argv: list[str] | None = None) -> int:
     if args.tactile_only:
         episode = arrays["episode"]
         report = {
-            "frames": int(len(episode)), "episodes": int(len(np.unique(episode))), "fps": fps,
-            "baseline_frames": args.baseline_frames, "columns": resolved, "notes": [],
+            "frames": int(len(episode)),
+            "episodes": int(len(np.unique(episode))),
+            "fps": fps,
+            "baseline_frames": args.baseline_frames,
+            "columns": resolved,
+            "notes": [],
             "tactile": tactile_report(
-                episode, tactile, baseline_frames=args.baseline_frames,
-                tactile_threshold=args.tactile_threshold, valid=valid),
+                episode,
+                tactile,
+                baseline_frames=args.baseline_frames,
+                tactile_threshold=args.tactile_threshold,
+                valid=valid,
+            ),
         }
         if tactile and raw_dir is not None:
             report["raw_stream"] = raw_stream_report(raw_dir, episode, tactile, stamps)
         elif tactile:
             report["notes"].append(
                 f"no high-rate CSVs: {args.dataset / RAW_DIR_NAME} does not exist "
-                "(pass --tactile-raw-dir).")
+                "(pass --tactile-raw-dir)."
+            )
         report["notes"].append(
-            "an episode that STARTS in contact hides that contact (its zero is taken there).")
+            "an episode that STARTS in contact hides that contact (its zero is taken there)."
+        )
         print(format_tactile_report(report))
         if args.out:
             args.out.write_text(json.dumps(report, indent=2))
@@ -1453,13 +1675,25 @@ def main(argv: list[str] | None = None) -> int:
     if valid:
         all_valid = np.all(np.column_stack(list(valid.values())), axis=1)
     report, frames = analyze(
-        episode=arrays["episode"], pose9=arrays["pose9"], target9=arrays["target9"], fps=fps,
-        tactile=tactile, joints=arrays.get("joints"), ext_torque=arrays.get("ext_torque"),
-        gripper=arrays.get("gripper"), gripper_target=arrays.get("gripper_target"),
-        k_pos=k_pos, k_rot=k_rot, baseline_frames=args.baseline_frames,
-        contact_from=args.contact_from, tactile_threshold=args.tactile_threshold,
-        force_threshold=args.force_threshold, min_sigma=args.min_sigma,
-        ridge_lambda=args.ridge_lambda, folds=args.folds, tactile_valid=all_valid,
+        episode=arrays["episode"],
+        pose9=arrays["pose9"],
+        target9=arrays["target9"],
+        fps=fps,
+        tactile=tactile,
+        joints=arrays.get("joints"),
+        ext_torque=arrays.get("ext_torque"),
+        gripper=arrays.get("gripper"),
+        gripper_target=arrays.get("gripper_target"),
+        k_pos=k_pos,
+        k_rot=k_rot,
+        baseline_frames=args.baseline_frames,
+        contact_from=args.contact_from,
+        tactile_threshold=args.tactile_threshold,
+        force_threshold=args.force_threshold,
+        min_sigma=args.min_sigma,
+        ridge_lambda=args.ridge_lambda,
+        folds=args.folds,
+        tactile_valid=all_valid,
         action=arrays.get("action"),
     )
     report["columns"] = resolved
@@ -1479,5 +1713,5 @@ def main(argv: list[str] | None = None) -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except NoCommandError as e:      # an expected outcome, not a crash: no traceback
+    except NoCommandError as e:  # an expected outcome, not a crash: no traceback
         sys.exit(f"audit_command_residual: {e}")

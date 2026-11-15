@@ -291,9 +291,7 @@ class ManipulatorBaseEnv(gym.Env):
         3. legacy hardcoded defaults (backwards compatible).
         """
         ctrl = (
-            ControlType.from_string(control_type)
-            if isinstance(control_type, str)
-            else control_type
+            ControlType.from_string(control_type) if isinstance(control_type, str) else control_type
         )
         configured = self.config.controller_names.get(ctrl.value)
         if configured:
@@ -367,15 +365,11 @@ class ManipulatorBaseEnv(gym.Env):
         while time.time() - t_start < timeout:
             controllers = self.robot.controller_switcher_client.get_controller_list()
             controller_names = [c.name for c in controllers]
-            missing = [
-                name for name in self.required_controllers if name not in controller_names
-            ]
+            missing = [name for name in self.required_controllers if name not in controller_names]
             if not missing:
                 logger.debug("All required controllers are loaded.")
                 return
-            logger.debug(
-                f"Waiting for controllers to be loaded: {missing}"
-            )
+            logger.debug(f"Waiting for controllers to be loaded: {missing}")
             time.sleep(0.5)
 
         raise TimeoutError(

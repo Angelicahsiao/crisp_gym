@@ -52,6 +52,7 @@ def _exec_members(source: Path, class_name: str, names: set, ns: dict) -> dict:
 
 # ── the policy index on RecordingManager ─────────────────────────────────────
 
+
 class _FakeManager:
     """Duck-typed manager carrying only what the switch logic touches."""
 
@@ -132,6 +133,7 @@ def test_the_banner_mentions_p_only_with_several_policies():
 
 # ── the evaluator's policy column and the two bugs it sat on ─────────────────
 
+
 def _load_evaluator():
     ns = {
         "logging": __import__("logging"),
@@ -142,9 +144,7 @@ def _load_evaluator():
         "logger": __import__("logging").getLogger("evaluator-test"),
     }
     tree = ast.parse(EVALUATOR.read_text())
-    cls = next(
-        n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Evaluator"
-    )
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Evaluator")
     module = ast.Module(body=[cls], type_ignores=[])
     ast.fix_missing_locations(module)
     exec(compile(module, str(EVALUATOR), "exec"), ns)  # noqa: S102
@@ -231,6 +231,7 @@ def test_deactivated_evaluation_writes_nothing():
 
 # ── the paired CLI flags ─────────────────────────────────────────────────────
 
+
 def _deploy_parser():
     """Rebuild a parser from deploy_policy.py's own --path / --policy-config
     add_argument calls, so the flag shape is tested, not a copy of it."""
@@ -268,8 +269,7 @@ def _deploy_parser():
 
 def test_both_flags_are_repeatable_and_land_in_lists():
     a = _deploy_parser().parse_args(
-        ["--policy-config", "cfgA", "--path", "A",
-         "--policy-config", "cfgB", "--path", "B"]
+        ["--policy-config", "cfgA", "--path", "A", "--policy-config", "cfgB", "--path", "B"]
     )
     assert a.policy_configs == ["cfgA", "cfgB"]
     assert a.paths == ["A", "B"]

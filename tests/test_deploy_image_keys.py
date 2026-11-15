@@ -43,6 +43,7 @@ OBS_IMAGES = "observation.images"
 # rest of the suite (tests/test_pose_math.py installs its own, richer stub).
 try:  # pragma: no cover - the robot/training envs have the real thing
     import torch as _torch
+
     _stack = _torch.stack
 except ImportError:
     _stack = lambda seq, dim=0: np.stack([np.asarray(x) for x in seq], axis=dim)  # noqa: E731
@@ -54,11 +55,11 @@ def _load_prepare(preprocessor, image_features):
     """Exec the real `_prepare` closure out of inference_worker()."""
     tree = ast.parse(SOURCE.read_text())
     worker = next(
-        fn for fn in tree.body
-        if isinstance(fn, ast.FunctionDef) and fn.name == "inference_worker"
+        fn for fn in tree.body if isinstance(fn, ast.FunctionDef) and fn.name == "inference_worker"
     )
     fn = next(
-        node for node in ast.walk(worker)
+        node
+        for node in ast.walk(worker)
         if isinstance(node, ast.FunctionDef) and node.name == "_prepare"
     )
     module = ast.Module(body=[fn], type_ignores=[])
@@ -102,6 +103,7 @@ def _passthrough_preprocessor(batch: dict) -> dict:
 
 # ── 1. the GR00T regression ───────────────────────────────────────────────────
 
+
 def test_groot_preprocessor_consuming_the_image_keys_is_not_an_error():
     keys = [f"{OBS_IMAGES}.oakw_cam"]
     prepare = _load_prepare(_groot_preprocessor, keys)
@@ -132,6 +134,7 @@ def test_groot_with_several_cameras_also_survives():
 
 # ── 2. the diffusion/ACT path must be unchanged ───────────────────────────────
 
+
 def test_diffusion_path_still_stacks_into_observation_images():
     keys = [f"{OBS_IMAGES}.oakw_cam"]
     prepare = _load_prepare(_passthrough_preprocessor, keys)
@@ -146,8 +149,7 @@ def test_diffusion_multi_camera_stacks_in_image_features_order():
     wrist frames into the base-camera encoder slot."""
     keys = [f"{OBS_IMAGES}.oakw_cam", f"{OBS_IMAGES}.wrist"]
     prepare = _load_prepare(_passthrough_preprocessor, keys)
-    frame = {keys[0]: np.full((3, 4, 6), 1, np.uint8),
-             keys[1]: np.full((3, 4, 6), 2, np.uint8)}
+    frame = {keys[0]: np.full((3, 4, 6), 1, np.uint8), keys[1]: np.full((3, 4, 6), 2, np.uint8)}
     out = np.asarray(prepare(frame)[OBS_IMAGES])
     assert out.shape == (2, 3, 4, 6)
     assert out[0].max() == 1 and out[1].max() == 2
@@ -168,6 +170,7 @@ def test_state_only_checkpoint_adds_no_image_key():
 
 # ── 3. the camera-name preflight ──────────────────────────────────────────────
 
+
 def _load_policy_module():
     """Load relative_lerobot_policy with the crisp_gym package chain stubbed
     (the real chain reaches rclpy). Same shape as tests/test_relative_deploy.py,
@@ -182,8 +185,9 @@ def _load_policy_module():
     polpol.Action = object
     polpol.Observation = dict
     polpol.register_policy = lambda name: (lambda cls: cls)
-    saved = {k: sys.modules.get(k) for k in
-             ("crisp_gym", "crisp_gym.policy", "crisp_gym.policy.policy")}
+    saved = {
+        k: sys.modules.get(k) for k in ("crisp_gym", "crisp_gym.policy", "crisp_gym.policy.policy")
+    }
     sys.modules.update(
         {"crisp_gym": pkg, "crisp_gym.policy": pol, "crisp_gym.policy.policy": polpol}
     )
@@ -239,8 +243,9 @@ def test_state_only_checkpoint_is_not_flagged():
 
 
 def test_rename_map_is_reported_when_set():
-    pol = _policy([f"{OBS_IMAGES}.camera1"],
-                  rename_map={f"{OBS_IMAGES}.oakw_cam": f"{OBS_IMAGES}.camera1"})
+    pol = _policy(
+        [f"{OBS_IMAGES}.camera1"], rename_map={f"{OBS_IMAGES}.oakw_cam": f"{OBS_IMAGES}.camera1"}
+    )
     with pytest.raises(ValueError) as exc:
         pol._verify_image_keys({f"{OBS_IMAGES}.oakw_cam": _img()})
     assert "rename_map" in str(exc.value)
@@ -258,7 +263,8 @@ def test_the_preflight_is_actually_wired_into_the_obs_loop():
     the built frame, beside the observation.state width check."""
     tree = ast.parse(SOURCE.read_text())
     fn = next(
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.FunctionDef) and node.name == "make_data_fn"
     )
     called = {
@@ -294,18 +300,17 @@ ASYNC_SOURCE = REPO / "crisp_gym" / "policy" / "async_lerobot_policy.py"
 def _async_worker() -> ast.FunctionDef:
     tree = ast.parse(ASYNC_SOURCE.read_text())
     return next(
-        fn for fn in tree.body
-        if isinstance(fn, ast.FunctionDef) and fn.name == "inference_worker"
+        fn for fn in tree.body if isinstance(fn, ast.FunctionDef) and fn.name == "inference_worker"
     )
 
 
 def _obs_images_stacks(node: ast.AST) -> list[ast.Assign]:
     return [
-        n for n in ast.walk(node)
+        n
+        for n in ast.walk(node)
         if isinstance(n, ast.Assign)
         and any(
-            isinstance(t, ast.Subscript) and "OBS_IMAGES" in ast.dump(t.slice)
-            for t in n.targets
+            isinstance(t, ast.Subscript) and "OBS_IMAGES" in ast.dump(t.slice) for t in n.targets
         )
     ]
 
@@ -321,7 +326,8 @@ def test_async_worker_guards_the_image_stack():
     """An unconditional stack is the GR00T KeyError, in the other worker."""
     worker = _async_worker()
     guarded = [
-        node for node in ast.walk(worker)
+        node
+        for node in ast.walk(worker)
         if isinstance(node, ast.If)
         and _obs_images_stacks(ast.Module(body=node.body, type_ignores=[]))
     ]

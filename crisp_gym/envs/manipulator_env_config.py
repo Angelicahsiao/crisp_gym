@@ -179,15 +179,13 @@ class ManipulatorEnvConfig(ABC):
             self.home_gripper = HomeGripper(self.home_gripper)
 
         if isinstance(self.cartesian_control_param_config, str):
-            self.cartesian_control_param_config = (
-                find_config(self.cartesian_control_param_config)
-                or Path(self.cartesian_control_param_config)
-            )
+            self.cartesian_control_param_config = find_config(
+                self.cartesian_control_param_config
+            ) or Path(self.cartesian_control_param_config)
 
         if isinstance(self.joint_control_param_config, str):
-            self.joint_control_param_config = (
-                find_config(self.joint_control_param_config)
-                or Path(self.joint_control_param_config)
+            self.joint_control_param_config = find_config(self.joint_control_param_config) or Path(
+                self.joint_control_param_config
             )
 
         if (
@@ -351,6 +349,7 @@ class ManipulatorEnvConfig(ABC):
 @dataclass(kw_only=True)
 class FrankaEnvConfig(ManipulatorEnvConfig, ABC):
     """Franka Gym Environment Configuration."""
+
     control_frequency: float = 30.0
 
     robot_config: RobotConfig = field(default_factory=lambda: FrankaConfig())
@@ -364,7 +363,6 @@ class FrankaEnvConfig(ManipulatorEnvConfig, ABC):
         default_factory=lambda: find_config("control/fr3_joint_control.yaml")
         or CRISP_CONFIG_PATH / "control" / "fr3_joint_control.yaml"
     )
-
 
 
 @dataclass
@@ -431,6 +429,7 @@ class OnlyWristCamFrankaEnvConfig(FrankaEnvConfig):
         ]
     )
 
+
 @dataclass
 class RobotiqFrankaEnvConfig(FrankaEnvConfig):
     """Franka Gym Environment Configuration."""
@@ -445,12 +444,12 @@ class RobotiqFrankaEnvConfig(FrankaEnvConfig):
             enable_torque_service="robotiq_2f85/dynamixel_hardware_interface/set_dxl_torque",
         )
     )
-#   min_value: 0.8
-#   max_value: 0.0
-#   command_topic: "/robotiq_2f85/robotiq_gripper_controller/gripper_cmd"
-#   use_gripper_command_action: True
-#   max_delta: 1.0
-#   max_effort: 5.0
+    #   min_value: 0.8
+    #   max_value: 0.0
+    #   command_topic: "/robotiq_2f85/robotiq_gripper_controller/gripper_cmd"
+    #   use_gripper_command_action: True
+    #   max_delta: 1.0
+    #   max_effort: 5.0
 
     camera_configs: List[CameraConfig] = field(
         default_factory=lambda: [

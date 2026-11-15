@@ -198,10 +198,7 @@ class FACTRStreamedJoints:
         gripper_at_call = self._gripper_msg_count
         start = time.time()
         while time.time() - start < timeout:
-            if (
-                self._joint_msg_count > joints_at_call
-                and self._gripper_msg_count > gripper_at_call
-            ):
+            if self._joint_msg_count > joints_at_call and self._gripper_msg_count > gripper_at_call:
                 return True
             time.sleep(0.01)
         return False
@@ -262,10 +259,7 @@ class FACTRStreamedJoints:
         # the previous state between the two statements.
         self._follow_mode_state = msg.data
         self._follow_mode_publisher.publish(msg)
-        logger.info(
-            f"Requested FACTR leader follow_mode={msg.data} via "
-            f"{self._follow_mode_topic}."
-        )
+        logger.info(f"Requested FACTR leader follow_mode={msg.data} via {self._follow_mode_topic}.")
 
     def is_ready(self) -> bool:
         return self._last_joint_pos is not None and self._last_gripper is not None

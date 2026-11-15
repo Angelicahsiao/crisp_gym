@@ -51,11 +51,12 @@ logger = logging.getLogger(__name__)
 
 ACTION_KEY = "action"
 TARGET_KEY = "extra.target_cartesian"
-ARM_DIMS = 9          # pos(3) + rot6d(6); action dim 9 is the gripper, kept as-is
+ARM_DIMS = 9  # pos(3) + rot6d(6); action dim 9 is the gripper, kept as-is
 TARGET_DIMS = 9
 
 
 # ── Dataset wrapper ───────────────────────────────────────────────────────────
+
 
 class TargetCartesianActionDataset:
     """Wrap a LeRobotDataset so `action`'s arm dims come from extra.target_cartesian.
@@ -141,8 +142,8 @@ class TargetCartesianActionDataset:
             )
             return
         try:
-            tc = np.asarray(hf[TARGET_KEY], dtype=np.float64)          # (N, 9)
-            ep = np.asarray(hf["episode_index"], dtype=np.int64)       # (N,)
+            tc = np.asarray(hf[TARGET_KEY], dtype=np.float64)  # (N, 9)
+            ep = np.asarray(hf["episode_index"], dtype=np.int64)  # (N,)
         except Exception as e:
             logger.warning("Could not read %s for the variance check: %s", TARGET_KEY, e)
             return
@@ -165,7 +166,8 @@ class TargetCartesianActionDataset:
             )
         logger.info(
             "%s varies (max per-episode spread %.3g) — OK to use as action.",
-            TARGET_KEY, max_spread,
+            TARGET_KEY,
+            max_spread,
         )
 
     def _inject_windowing(self, dataset) -> None:
@@ -207,7 +209,7 @@ class TargetCartesianActionDataset:
                 "--input <root> --output <root_targetcmd>` then train the result "
                 "with train_absolute_next_pose.py."
             )
-        a[..., :ARM_DIMS] = tc[..., :ARM_DIMS]     # arm := commanded pose; gripper kept
+        a[..., :ARM_DIMS] = tc[..., :ARM_DIMS]  # arm := commanded pose; gripper kept
         item[ACTION_KEY] = torch.from_numpy(a.astype(np.float32))
         return item
 
@@ -303,6 +305,7 @@ def recompute_action_stats(wrapped: TargetCartesianActionDataset, num_samples: i
 
 # ── Provenance ────────────────────────────────────────────────────────────────
 
+
 def _installed_lerobot_version() -> str:
     try:
         from importlib.metadata import version
@@ -327,10 +330,10 @@ def stamp_action_repr(cfg, dataset) -> None:
                 "pose_repr": "absolute",
                 "layout": "[x, y, z, rot6d(6), gripper]",
                 "note": "ARM dims (0-8) replaced with extra.target_cartesian "
-                        "(pose COMMANDED to the CIC); gripper (dim 9) kept from "
-                        "the recorded next_tcp_pose action. Observations "
-                        "unchanged/absolute. Deploy as an absolute-pose policy; "
-                        "NOT a relative (RelativeLerobotPolicy) checkpoint.",
+                "(pose COMMANDED to the CIC); gripper (dim 9) kept from "
+                "the recorded next_tcp_pose action. Observations "
+                "unchanged/absolute. Deploy as an absolute-pose policy; "
+                "NOT a relative (RelativeLerobotPolicy) checkpoint.",
             },
             "fps": getattr(meta, "fps", None),
             "lerobot_version_target": _installed_lerobot_version(),
@@ -412,6 +415,7 @@ def _setup_epochs(argv):
 
 
 # ── Training launcher ─────────────────────────────────────────────────────────
+
 
 def main():
     """Run lerobot-train with the target-cartesian action swap injected.

@@ -55,7 +55,8 @@ from crisp_gym.policy.remote_worker import RemoteWorkerConnection  # noqa: E402
 
 def _load_server_module():
     spec = importlib.util.spec_from_file_location(
-        "policy_server", REPO / "scripts" / "policy_server.py")
+        "policy_server", REPO / "scripts" / "policy_server.py"
+    )
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -65,13 +66,19 @@ ps = _load_server_module()
 
 CAM = "observation.images.cam"
 META = {
-    "n_obs_steps": 2, "n_action_steps": 8, "image_keys": [CAM],
-    "policy_type": "diffusion", "state_input": "relative_wrt_start",
-    "state_dim": 16, "rename_map": {}, "image_shapes": {CAM: (3, 24, 32)},
+    "n_obs_steps": 2,
+    "n_action_steps": 8,
+    "image_keys": [CAM],
+    "policy_type": "diffusion",
+    "state_input": "relative_wrt_start",
+    "state_dim": 16,
+    "rename_map": {},
+    "image_shapes": {CAM: (3, 24, 32)},
 }
 
 
 # ── the stand-in for the model ───────────────────────────────────────────────
+
 
 def chunk_for(window: list, steps: int = 8) -> np.ndarray:
     """A chunk that identifies the window it was computed from."""
@@ -121,30 +128,52 @@ def make_checkpoint(root: Path, absolute: bool = False) -> Path:
     run = root / "run"
     ckpt = run / "checkpoints" / "000100" / "pretrained_model"
     ckpt.mkdir(parents=True, exist_ok=True)
-    (ckpt / "config.json").write_text(json.dumps(
-        {"type": "diffusion", "output_features": {"action": {"type": "ACTION", "shape": [10]}}}))
-    (run / "pose_repr.json").write_text(json.dumps({
-        "pose_layout": "pos3_rot6d_rows",
-        "action": {"pose_repr": "relative", "layout": "[x, y, z, rot6d(6), gripper]"},
-        "gripper": {"semantics": "clip(width_m / reference_width, 0, 1)"},
-    }))
+    (ckpt / "config.json").write_text(
+        json.dumps(
+            {"type": "diffusion", "output_features": {"action": {"type": "ACTION", "shape": [10]}}}
+        )
+    )
+    (run / "pose_repr.json").write_text(
+        json.dumps(
+            {
+                "pose_layout": "pos3_rot6d_rows",
+                "action": {"pose_repr": "relative", "layout": "[x, y, z, rot6d(6), gripper]"},
+                "gripper": {"semantics": "clip(width_m / reference_width, 0, 1)"},
+            }
+        )
+    )
     if absolute:
-        (run / "action_repr.json").write_text(json.dumps(
-            {"action": {"pose_repr": "absolute", "source": "next_pose"}}))
+        (run / "action_repr.json").write_text(
+            json.dumps({"action": {"pose_repr": "absolute", "source": "next_pose"}})
+        )
     return ckpt
 
 
 @contextlib.contextmanager
-def serving(tmp_path, *, meta=None, script=None, image_spec=None, gate=None,
-            target=None, extra=None, absolute=False, port=0, server_cls=None):
+def serving(
+    tmp_path,
+    *,
+    meta=None,
+    script=None,
+    image_spec=None,
+    gate=None,
+    target=None,
+    extra=None,
+    absolute=False,
+    port=0,
+    server_cls=None,
+):
     seen: list = []
     kwargs = {"meta": dict(meta or META), "seen": seen, **(extra or {})}
     if target is None:
         kwargs.update(script=script, gate=gate)
     worker = ps.Worker(target or stand_in_worker, kwargs, in_thread=True)
     server = (server_cls or ps.PolicyServer)(
-        worker, str(make_checkpoint(tmp_path, absolute)),
-        host="127.0.0.1", port=port, image_spec=image_spec,
+        worker,
+        str(make_checkpoint(tmp_path, absolute)),
+        host="127.0.0.1",
+        port=port,
+        image_spec=image_spec,
     ).start()
     server.seen = seen
     server.uri = f"ws://127.0.0.1:{server.port}"
@@ -206,6 +235,7 @@ class Raw:
 
 # ── 1. the handshake describes the checkpoint ────────────────────────────────
 
+
 def test_the_handshake_describes_the_checkpoint(tmp_path):
     with serving(tmp_path) as server:
         client = WebsocketPolicyClient(server.uri, contract=None)
@@ -219,15 +249,15 @@ def test_the_handshake_describes_the_checkpoint(tmp_path):
     assert hello["image"] == {"encoding": "raw"}
     assert hello["normalization"] == "server_side"
     action = hello["action"]
-    assert action["dim"] == 10                       # from config.json
-    assert action["pose_repr"] == "relative"         # from pose_repr.json
+    assert action["dim"] == 10  # from config.json
+    assert action["pose_repr"] == "relative"  # from pose_repr.json
     assert action["layout"] == "[x, y, z, rot6d(6), gripper]"
     assert action["gripper"] == "clip(width_m / reference_width, 0, 1)"
     keys = {k["name"]: k for k in hello["observation"]["keys"]}
     # The CLIENT sends 10 numbers: the worker appends the 6 wrt-start dims.
     assert keys["observation.state"]["shape"] == [10]
     assert keys["observation.state"]["layout"] == "pos3_rot6d_rows"
-    assert keys[CAM]["shape"] == [24, 32, 3]         # HWC, as the robot sends it
+    assert keys[CAM]["shape"] == [24, 32, 3]  # HWC, as the robot sends it
     assert keys[CAM]["dtype"] == "uint8"
     assert hello["observation"]["n_obs_steps"] == 2
     assert hello["observation"]["state_input"] == "relative_wrt_start"
@@ -254,9 +284,9 @@ def test_the_warm_up_window_matches_what_a_robot_sends():
     assert len(window) == 2
     state = window[-1]["observation.state"]
     assert state.shape == (10,) and state.dtype == np.float32
-    np.testing.assert_array_equal(state[3:9], [1, 0, 0, 0, 1, 0])   # identity rot6d rows
+    np.testing.assert_array_equal(state[3:9], [1, 0, 0, 0, 1, 0])  # identity rot6d rows
     assert window[-1][CAM].shape == (24, 32, 3) and window[-1][CAM].dtype == np.uint8
-    assert ps.warmup_window({"n_obs_steps": 2}) is None             # not enough to build one
+    assert ps.warmup_window({"n_obs_steps": 2}) is None  # not enough to build one
 
 
 def test_healthz_answers_without_a_websocket(tmp_path):
@@ -267,6 +297,7 @@ def test_healthz_answers_without_a_websocket(tmp_path):
 
 
 # ── 2. what goes in is what the worker gets; what it returns comes back ───────
+
 
 def test_a_raw_window_reaches_the_worker_bit_exact(tmp_path):
     window = make_window(seed=3)
@@ -285,7 +316,7 @@ def test_a_raw_window_reaches_the_worker_bit_exact(tmp_path):
             assert got[key].dtype == sent[key].dtype
             assert got[key].shape == sent[key].shape
             np.testing.assert_array_equal(got[key], sent[key])
-            assert got[key].flags.writeable      # as over a local pipe
+            assert got[key].flags.writeable  # as over a local pipe
     np.testing.assert_array_equal(chunk, chunk_for(window))
     assert chunk.dtype == np.float32 and chunk.shape == (8, 10)
 
@@ -324,20 +355,22 @@ def test_jpeg_images_arrive_close_but_not_exact(tmp_path):
     with serving(tmp_path, image_spec={"encoding": "jpeg", "quality": 95}) as server:
         client = WebsocketPolicyClient(server.uri, contract=None)
         client.connect()
-        assert client.image_spec["encoding"] == "jpeg"   # the server decides
+        assert client.image_spec["encoding"] == "jpeg"  # the server decides
         client.infer(window)
         client.close()
         (received,) = infers(server)
     got = received[-1][CAM]
     assert got.shape == smooth.shape and got.dtype == np.uint8
-    assert got.flags.c_contiguous                         # torch.from_numpy needs this
+    assert got.flags.c_contiguous  # torch.from_numpy needs this
     assert np.abs(got.astype(int) - smooth.astype(int)).mean() < 4.0
     # state is never lossy
-    np.testing.assert_array_equal(received[-1]["observation.state"],
-                                  window[-1]["observation.state"])
+    np.testing.assert_array_equal(
+        received[-1]["observation.state"], window[-1]["observation.state"]
+    )
 
 
 # ── 3. protocol rules, server side ───────────────────────────────────────────
+
 
 def test_infer_before_reset_is_refused(tmp_path):
     with serving(tmp_path) as server:
@@ -347,7 +380,7 @@ def test_infer_before_reset_is_refused(tmp_path):
         reply = raw.ask(proto.infer(1, obs, None, 1.0))
         assert (reply["t"], reply["code"], reply["id"]) == (proto.T_ERROR, proto.E_NOT_READY, 1)
         assert reply["fatal"] is False
-        assert infers(server) == []                       # the model never ran
+        assert infers(server) == []  # the model never ran
         # ... and the same socket works once it is reset
         assert raw.ask(proto.reset(2))["t"] == proto.T_RESET_OK
         assert raw.ask(proto.infer(3, obs, None, 2.0))["t"] == proto.T_ACTIONS
@@ -395,10 +428,10 @@ def test_a_superseded_request_is_not_served(tmp_path):
         windows = [make_window(seed=s) for s in (10, 11, 12)]
         enc = [proto.encode_window(w, {"encoding": "raw"}) for w in windows]
         raw.send(proto.infer(10, enc[0], None, 1.0))
-        assert wait_for(lambda: len(infers(server)) == 1)   # the model is busy with #10
+        assert wait_for(lambda: len(infers(server)) == 1)  # the model is busy with #10
         raw.send(proto.infer(11, enc[1], None, 2.0))
         raw.send(proto.infer(12, enc[2], None, 3.0))
-        time.sleep(0.3)                                     # both are waiting behind #10
+        time.sleep(0.3)  # both are waiting behind #10
         gate.set()
 
         first, second, third = raw.recv(), raw.recv(), raw.recv()
@@ -408,7 +441,7 @@ def test_a_superseded_request_is_not_served(tmp_path):
         assert second["fatal"] is False
         assert (third["t"], third["id"]) == (proto.T_ACTIONS, 12)
         np.testing.assert_array_equal(third["actions"], chunk_for(windows[2]))
-        assert len(infers(server)) == 2                     # #11 never reached the model
+        assert len(infers(server)) == 2  # #11 never reached the model
 
 
 def test_an_observation_older_than_one_already_served_is_refused(tmp_path):
@@ -459,8 +492,9 @@ def test_a_second_client_is_refused_while_one_is_connected(tmp_path):
 
 def test_a_dead_worker_stops_the_server(tmp_path):
     with serving(tmp_path, script={1: "die"}) as server:
-        client = WebsocketPolicyClient(server.uri, contract=None, reconnect_attempts=1,
-                                       connect_timeout=2.0)
+        client = WebsocketPolicyClient(
+            server.uri, contract=None, reconnect_attempts=1, connect_timeout=2.0
+        )
         client.connect()
         with pytest.raises(RuntimeError, match="infer_failed.*worker is gone"):
             client.infer(make_window())
@@ -468,8 +502,9 @@ def test_a_dead_worker_stops_the_server(tmp_path):
         # no longer listening: a restart is needed, and the robot side is told so
         assert wait_for(lambda: server._server.socket.fileno() == -1)
         with pytest.raises(Exception):  # noqa: B017, PT011 — refused or closed, by platform
-            late = WebsocketPolicyClient(server.uri, contract=None, reconnect_attempts=1,
-                                         connect_timeout=2.0)
+            late = WebsocketPolicyClient(
+                server.uri, contract=None, reconnect_attempts=1, connect_timeout=2.0
+            )
             late.connect()
 
 
@@ -486,6 +521,7 @@ def test_a_worker_that_dies_without_a_word_is_not_waited_for_forever():
     """An import that fails before the worker's own error handling leaves
     nothing on the pipe. Found with a real checkpoint on a machine without
     `rich`: the server sat there, silent, until it was killed."""
+
     def silent(conn):
         raise ModuleNotFoundError("No module named 'rich'")
 
@@ -508,6 +544,7 @@ def test_the_requirement_check_names_what_is_missing(monkeypatch):
 
 
 # ── 4. the transport behaves like the pipe it replaces ───────────────────────
+
 
 def test_the_first_recv_is_the_worker_metadata(tmp_path):
     with serving(tmp_path) as server:
@@ -532,8 +569,8 @@ def test_send_returns_at_once_and_recv_gives_that_windows_chunk(tmp_path):
         window = make_window(seed=7)
         t0 = time.monotonic()
         conn.send(("infer", window))
-        assert time.monotonic() - t0 < 0.5         # did not wait for the model
-        assert conn.poll(0) is False               # nothing yet: the prefetch keeps going
+        assert time.monotonic() - t0 < 0.5  # did not wait for the model
+        assert conn.poll(0) is False  # nothing yet: the prefetch keeps going
         assert conn.poll(0.05) is False
         gate.set()
         assert conn.poll(5.0) is True
@@ -583,7 +620,7 @@ def test_a_timeout_is_an_error_and_the_late_chunk_is_never_delivered(tmp_path):
         conn.send(("infer", slow))
         kind, message = conn.recv()
         assert kind == "error" and "TimeoutError" in message
-        time.sleep(0.6)                            # the late answer is now in the socket
+        time.sleep(0.6)  # the late answer is now in the socket
         fresh = make_window(seed=2)
         conn.send(("infer", fresh))
         chunk = conn.recv()
@@ -602,21 +639,23 @@ def test_a_vanished_server_is_an_error_not_a_hang_and_a_new_one_is_picked_up(tmp
         np.testing.assert_array_equal(conn.recv(), chunk_for(window))
     # the server is gone now
     conn.send(("infer", make_window(seed=2)))
-    assert conn.poll(10.0) is True                 # recv() would not block forever
+    assert conn.poll(10.0) is True  # recv() would not block forever
     kind, _ = conn.recv()
     assert kind == "error"
-    conn.send(("infer", make_window(seed=3)))      # still gone
+    conn.send(("infer", make_window(seed=3)))  # still gone
     assert conn.recv()[0] == "error"
 
-    with serving(tmp_path, port=port) as server:   # restarted on the same port
+    with serving(tmp_path, port=port) as server:  # restarted on the same port
         window = make_window(seed=4)
         with caplog.at_level(logging.WARNING):
             conn.send(("infer", window))
             np.testing.assert_array_equal(conn.recv(), chunk_for(window))
         # it was reset before it was used, and the operator is told what that means
         assert [kind for kind, _ in server.seen] == ["reset", "infer"]
-        assert any("reconnected" in r.getMessage() and "Restart the episode" in r.getMessage()
-                   for r in caplog.records)
+        assert any(
+            "reconnected" in r.getMessage() and "Restart the episode" in r.getMessage()
+            for r in caplog.records
+        )
         conn.close()
 
 
@@ -624,7 +663,7 @@ def test_stopping_frees_the_server_for_the_next_robot_process(tmp_path):
     with serving(tmp_path) as server:
         conn = RemoteWorkerConnection(server.uri)
         conn.recv()
-        conn.send(None)                            # what Policy.shutdown() sends
+        conn.send(None)  # what Policy.shutdown() sends
         assert wait_for(lambda: not conn._thread.is_alive())
         with pytest.raises(OSError, match="closed"):
             conn.send(("infer", make_window()))
@@ -647,6 +686,7 @@ def test_a_server_without_worker_metadata_is_refused(tmp_path):
 
 
 # ── 5. the unmodified RelativeLerobotPolicy loop, over the network ───────────
+
 
 def _random_traj(n: int, seed: int) -> np.ndarray:
     from scipy.spatial.transform import Rotation
@@ -700,10 +740,14 @@ def ground_truth_worker(conn, meta, seen, GT, delay=0.0):
         base_inv = np.linalg.inv(_mat(base9))
         if delay:
             time.sleep(delay)
-        conn.send(np.stack([
-            np.concatenate([_pose9(base_inv @ GT[k + 1 + j]), [0.7]]).astype(np.float32)
-            for j in range(meta["n_action_steps"])
-        ]))
+        conn.send(
+            np.stack(
+                [
+                    np.concatenate([_pose9(base_inv @ GT[k + 1 + j]), [0.7]]).astype(np.float32)
+                    for j in range(meta["n_action_steps"])
+                ]
+            )
+        )
 
 
 class _Env:
@@ -717,14 +761,16 @@ class _Env:
         self.k = 0
         self.commands: list = []
         self.config = types.SimpleNamespace(
-            orientation_representation="rotation_6d", use_relative_actions=False)
+            orientation_representation="rotation_6d", use_relative_actions=False
+        )
         self.robot = types.SimpleNamespace()
         self._sync()
 
     def _sync(self):
         T = self.GT[self.k]
         self.robot.end_effector_pose = types.SimpleNamespace(
-            position=T[:3, 3].copy(), orientation=self._Rotation.from_matrix(T[:3, :3]))
+            position=T[:3, 3].copy(), orientation=self._Rotation.from_matrix(T[:3, :3])
+        )
 
     def get_obs(self):
         return {
@@ -739,37 +785,51 @@ class _Env:
         self._sync()
 
 
-GT_META = {"n_obs_steps": 2, "n_action_steps": 8, "state_input": "relative",
-           "state_dim": 10, "image_keys": ["observation.images.primary"],
-           "policy_type": "diffusion", "rename_map": {},
-           "image_shapes": {"observation.images.primary": (3, 4, 4)}}
+GT_META = {
+    "n_obs_steps": 2,
+    "n_action_steps": 8,
+    "state_input": "relative",
+    "state_dim": 10,
+    "image_keys": ["observation.images.primary"],
+    "policy_type": "diffusion",
+    "rename_map": {},
+    "image_shapes": {"observation.images.primary": (3, 4, 4)},
+}
 
 
 def _deploy(env, server, **kwargs):
     """The policy exactly as deploy_policy builds it: through its constructor,
     with `server` set. `pretrained_path` is only a label on this side."""
     return rlp.RelativeLerobotPolicy(
-        env=env, pretrained_path="remote", device_max_width=0.085,
-        reference_width=0.085, server=server.uri, **kwargs)
+        env=env,
+        pretrained_path="remote",
+        device_max_width=0.085,
+        reference_width=0.085,
+        server=server.uri,
+        **kwargs,
+    )
 
 
-@pytest.mark.parametrize(("async_inference", "delay"), [
-    (False, 0.0),      # the classic loop: block for each chunk
-    (True, 0.0),       # prefetch, the answer is back before the swap
-    (True, 0.05),      # prefetch, the answer is late: the loop stalls, then swaps
-])
-def test_the_real_policy_commands_ground_truth_over_the_network(
-        tmp_path, async_inference, delay):
+@pytest.mark.parametrize(
+    ("async_inference", "delay"),
+    [
+        (False, 0.0),  # the classic loop: block for each chunk
+        (True, 0.0),  # prefetch, the answer is back before the swap
+        (True, 0.05),  # prefetch, the answer is late: the loop stalls, then swaps
+    ],
+)
+def test_the_real_policy_commands_ground_truth_over_the_network(tmp_path, async_inference, delay):
     GT = _random_traj(60, seed=41)
-    with serving(tmp_path, meta=GT_META, target=ground_truth_worker,
-                 extra={"GT": GT, "delay": delay}) as server:
+    with serving(
+        tmp_path, meta=GT_META, target=ground_truth_worker, extra={"GT": GT, "delay": delay}
+    ) as server:
         env = _Env(GT)
         pol = _deploy(env, server, async_inference=async_inference, prefetch_lead=3)
-        assert pol.inf_proc is None                 # nothing local to stop
+        assert pol.inf_proc is None  # nothing local to stop
         assert isinstance(pol.parent_conn, RemoteWorkerConnection)
         assert pol.n_obs_steps == 2 and pol.n_action_steps == 8
         fn = pol.make_data_fn()
-        for _ in range(28):                      # three and a half chunks
+        for _ in range(28):  # three and a half chunks
             _, action = fn()
             assert action is not None, "the loop held pose: a request failed"
 
@@ -780,7 +840,7 @@ def test_the_real_policy_commands_ground_truth_over_the_network(
             assert abs(action[9] - 0.7) < 1e-6
 
         windows = infers(server)
-        assert all(len(w) == 2 for w in windows[1:])       # the full obs window travels
+        assert all(len(w) == 2 for w in windows[1:])  # the full obs window travels
         # consecutive frames of a window are ONE control tick apart — the
         # reason the window is built on the robot side and not on the server
         for window in windows[1:]:
@@ -804,6 +864,7 @@ def test_the_real_policy_commands_ground_truth_over_the_network(
 
 # ── 6. the seam: one place decides where the model runs ──────────────────────
 
+
 def test_both_kinds_of_connection_satisfy_the_one_interface(tmp_path):
     import multiprocessing as mp
 
@@ -821,13 +882,16 @@ def test_both_kinds_of_connection_satisfy_the_one_interface(tmp_path):
     assert not is_error({"n_obs_steps": 2})
 
 
-@pytest.mark.parametrize(("setting", "uri"), [
-    ("ws://192.168.1.50:8765", "ws://192.168.1.50:8765"),
-    ("192.168.1.50:8765", "ws://192.168.1.50:8765"),
-    ({"host": "gpu", "port": 9000}, "ws://gpu:9000"),
-    ({"host": "gpu"}, "ws://gpu:8765"),
-    ({"uri": "wss://gpu:1"}, "wss://gpu:1"),
-])
+@pytest.mark.parametrize(
+    ("setting", "uri"),
+    [
+        ("ws://192.168.1.50:8765", "ws://192.168.1.50:8765"),
+        ("192.168.1.50:8765", "ws://192.168.1.50:8765"),
+        ({"host": "gpu", "port": 9000}, "ws://gpu:9000"),
+        ({"host": "gpu"}, "ws://gpu:8765"),
+        ({"uri": "wss://gpu:1"}, "wss://gpu:1"),
+    ],
+)
 def test_the_server_setting_names_a_server(setting, uri):
     parsed = rlp.parse_server_setting(setting)
     assert parsed["uri"] == uri
@@ -841,14 +905,18 @@ def test_no_server_setting_means_a_local_worker():
 
 def test_the_server_setting_carries_its_timeouts():
     parsed = rlp.parse_server_setting(
-        {"host": "gpu", "infer_timeout_s": 2, "connect_timeout_s": 3, "reconnect_attempts": 7})
-    assert (parsed["infer_timeout"], parsed["connect_timeout"],
-            parsed["reconnect_attempts"]) == (2.0, 3.0, 7)
+        {"host": "gpu", "infer_timeout_s": 2, "connect_timeout_s": 3, "reconnect_attempts": 7}
+    )
+    assert (parsed["infer_timeout"], parsed["connect_timeout"], parsed["reconnect_attempts"]) == (
+        2.0,
+        3.0,
+        7,
+    )
 
 
 def test_a_misspelt_server_key_is_refused_not_ignored():
     with pytest.raises(ValueError, match="infer_timeout"):
-        rlp.parse_server_setting({"host": "gpu", "infer_timeout": 2})   # missing _s
+        rlp.parse_server_setting({"host": "gpu", "infer_timeout": 2})  # missing _s
     with pytest.raises(ValueError, match="uri.*host"):
         rlp.parse_server_setting({"port": 8765})
     with pytest.raises(ValueError, match="address or a mapping"):
@@ -860,8 +928,9 @@ def test_remote_action_repr_auto_comes_from_the_servers_stamp(tmp_path, absolute
     """Locally `auto` reads action_repr.json next to the checkpoint. That file
     is on the GPU machine now; the server has read it and says so."""
     GT = _random_traj(20, seed=3)
-    with serving(tmp_path, meta=GT_META, target=ground_truth_worker,
-                 extra={"GT": GT}, absolute=absolute) as server:
+    with serving(
+        tmp_path, meta=GT_META, target=ground_truth_worker, extra={"GT": GT}, absolute=absolute
+    ) as server:
         pol = _deploy(_Env(GT), server)
         assert pol.meta["action_pose_repr"] == expected
         assert pol.action_repr == expected
@@ -876,7 +945,9 @@ def test_remote_action_repr_auto_comes_from_the_servers_stamp(tmp_path, absolute
 def test_a_state_input_the_server_does_not_run_refuses_to_start(tmp_path):
     GT = _random_traj(20, seed=3)
     with serving(tmp_path, meta=GT_META, target=ground_truth_worker, extra={"GT": GT}) as server:
-        with pytest.raises(ValueError, match=r"state_input='absolute'.*runs the checkpoint as 'relative'"):
+        with pytest.raises(
+            ValueError, match=r"state_input='absolute'.*runs the checkpoint as 'relative'"
+        ):
             _deploy(_Env(GT), server, state_input="absolute")
         # the refused attempt did not leave the server occupied
         assert wait_for(lambda: not server._busy.locked())
@@ -905,18 +976,29 @@ def test_an_unreachable_server_fails_at_construction_not_in_the_control_loop():
     GT = _random_traj(20, seed=3)
     with pytest.raises(Exception, match="."):  # noqa: B017, PT011 — refused, by platform
         rlp.RelativeLerobotPolicy(
-            env=_Env(GT), pretrained_path="remote", device_max_width=0.085,
-            server={"uri": "ws://127.0.0.1:9", "connect_timeout_s": 1.0, "reconnect_attempts": 1})
+            env=_Env(GT),
+            pretrained_path="remote",
+            device_max_width=0.085,
+            server={"uri": "ws://127.0.0.1:9", "connect_timeout_s": 1.0, "reconnect_attempts": 1},
+        )
 
 
 def local_stand_in(conn, pretrained_path, state_input, overrides, num_inference_steps, scheduler):
     """Stands where inference_worker stands in a LOCAL deployment (module-level,
     so the spawned process can import it). Reports the arguments it was started
     with, then answers like the stand-in above."""
-    conn.send({**GT_META, "started_with": {
-        "pretrained_path": pretrained_path, "state_input": state_input,
-        "overrides": overrides, "num_inference_steps": num_inference_steps,
-        "scheduler": scheduler}})
+    conn.send(
+        {
+            **GT_META,
+            "started_with": {
+                "pretrained_path": pretrained_path,
+                "state_input": state_input,
+                "overrides": overrides,
+                "num_inference_steps": num_inference_steps,
+                "scheduler": scheduler,
+            },
+        }
+    )
     while True:
         try:
             message = conn.recv()
@@ -938,17 +1020,26 @@ def test_without_a_server_the_constructor_starts_a_local_worker_as_before(tmp_pa
     ckpt = make_checkpoint(tmp_path, absolute=True)
     GT = _random_traj(20, seed=3)
     pol = rlp.RelativeLerobotPolicy(
-        env=_Env(GT), pretrained_path=str(ckpt), device_max_width=0.085,
-        num_inference_steps=10, scheduler="ddim", overrides={"a": 1})
+        env=_Env(GT),
+        pretrained_path=str(ckpt),
+        device_max_width=0.085,
+        num_inference_steps=10,
+        scheduler="ddim",
+        overrides={"a": 1},
+    )
     try:
         assert pol.inf_proc is not None and pol.inf_proc.is_alive()
         assert pol.inf_proc.daemon
         assert isinstance(pol.parent_conn, WorkerConnection)
         assert not isinstance(pol.parent_conn, RemoteWorkerConnection)
         assert pol.meta["started_with"] == {
-            "pretrained_path": str(ckpt), "state_input": "auto", "overrides": {"a": 1},
-            "num_inference_steps": 10, "scheduler": "ddim"}
-        assert pol.action_repr == "absolute"         # action_repr.json, from disk
+            "pretrained_path": str(ckpt),
+            "state_input": "auto",
+            "overrides": {"a": 1},
+            "num_inference_steps": 10,
+            "scheduler": "ddim",
+        }
+        assert pol.action_repr == "absolute"  # action_repr.json, from disk
         _, action = pol.make_data_fn()()
         assert action is not None and action.shape == (10,)
     finally:

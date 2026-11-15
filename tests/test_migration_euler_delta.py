@@ -52,14 +52,23 @@ def _decode_rot6d(v9):
 
 def _features(state_names):
     return {
-        "observation.state.cartesian": {"dtype": "float32", "shape": [6],
-                                        "names": ["x", "y", "z", "roll", "pitch", "yaw"]},
+        "observation.state.cartesian": {
+            "dtype": "float32",
+            "shape": [6],
+            "names": ["x", "y", "z", "roll", "pitch", "yaw"],
+        },
         "observation.state.gripper": {"dtype": "float32", "shape": [1], "names": ["gripper"]},
         "observation.state": {"dtype": "float32", "shape": [7], "names": state_names},
-        "observation.images.env_cam": {"dtype": "video", "shape": [64, 64, 3],
-                                       "names": ["h", "w", "c"]},
-        "action": {"dtype": "float32", "shape": [7],
-                   "names": ["x", "y", "z", "roll", "pitch", "yaw", "gripper"]},
+        "observation.images.env_cam": {
+            "dtype": "video",
+            "shape": [64, 64, 3],
+            "names": ["h", "w", "c"],
+        },
+        "action": {
+            "dtype": "float32",
+            "shape": [7],
+            "names": ["x", "y", "z", "roll", "pitch", "yaw", "gripper"],
+        },
         "episode_index": {"dtype": "int64", "shape": [1]},
         "frame_index": {"dtype": "int64", "shape": [1]},
         "index": {"dtype": "int64", "shape": [1]},
@@ -74,17 +83,38 @@ def _make_dataset(root: Path, episodes, layout: str, scramble_state: bool = Fals
     (vdir / "file-000.mp4").write_bytes(b"FAKEVIDEO_BYTES")
 
     state_names = ["x", "y", "z", "roll", "pitch", "yaw", "gripper"]
-    json.dump({"features": _features(state_names), "codebase_version": "v3.0"},
-              open(root / "meta" / "info.json", "w"))
-    json.dump({
-        "observation.state.cartesian": {"mean": [0] * 6, "std": [1] * 6, "min": [0] * 6,
-                                        "max": [1] * 6, "count": [1], "q50": [0] * 6},
-        "observation.state": {"mean": [0] * 7, "std": [1] * 7, "min": [0] * 7,
-                              "max": [1] * 7, "count": [1]},
-        "action": {"mean": [0] * 7, "std": [1] * 7, "min": [0] * 7,
-                   "max": [1] * 7, "count": [1]},
-        "observation.images.env_cam": {"mean": [[[0.5]]]},
-    }, open(root / "meta" / "stats.json", "w"))
+    json.dump(
+        {"features": _features(state_names), "codebase_version": "v3.0"},
+        open(root / "meta" / "info.json", "w"),
+    )
+    json.dump(
+        {
+            "observation.state.cartesian": {
+                "mean": [0] * 6,
+                "std": [1] * 6,
+                "min": [0] * 6,
+                "max": [1] * 6,
+                "count": [1],
+                "q50": [0] * 6,
+            },
+            "observation.state": {
+                "mean": [0] * 7,
+                "std": [1] * 7,
+                "min": [0] * 7,
+                "max": [1] * 7,
+                "count": [1],
+            },
+            "action": {
+                "mean": [0] * 7,
+                "std": [1] * 7,
+                "min": [0] * 7,
+                "max": [1] * 7,
+                "count": [1],
+            },
+            "observation.images.env_cam": {"mean": [[[0.5]]]},
+        },
+        open(root / "meta" / "stats.json", "w"),
+    )
 
     rows, idx = [], 0
     for ep, (Rs, ps, gs) in enumerate(episodes):
@@ -94,13 +124,17 @@ def _make_dataset(root: Path, episodes, layout: str, scramble_state: bool = Fals
             state = np.concatenate([cart, grip]).astype(np.float32)
             if scramble_state:
                 state = np.concatenate([grip, cart]).astype(np.float32)  # wrong order
-            rows.append({
-                "observation.state.cartesian": cart,
-                "observation.state.gripper": grip,
-                "observation.state": state,
-                "action": np.random.randn(7).astype(np.float32),  # legacy delta (discarded)
-                "episode_index": ep, "frame_index": fi, "index": idx,
-            })
+            rows.append(
+                {
+                    "observation.state.cartesian": cart,
+                    "observation.state.gripper": grip,
+                    "observation.state": state,
+                    "action": np.random.randn(7).astype(np.float32),  # legacy delta (discarded)
+                    "episode_index": ep,
+                    "frame_index": fi,
+                    "index": idx,
+                }
+            )
             idx += 1
 
     ddir = root / "data" / "chunk-000"
@@ -109,7 +143,8 @@ def _make_dataset(root: Path, episodes, layout: str, scramble_state: bool = Fals
         df = pd.DataFrame(rows)
         for ep in sorted({r["episode_index"] for r in rows}):
             df[df["episode_index"] == ep].to_parquet(
-                ddir / f"episode_{ep:06d}.parquet", index=False)
+                ddir / f"episode_{ep:06d}.parquet", index=False
+            )
     else:  # v3: all episodes in ONE file + per-episode stats parquet
         pd.DataFrame(rows).to_parquet(ddir / "file-000.parquet", index=False)
         edir = root / "meta" / "episodes" / "chunk-000"
@@ -117,8 +152,12 @@ def _make_dataset(root: Path, episodes, layout: str, scramble_state: bool = Fals
         ep_rows = []
         for ep, (Rs, _, _) in enumerate(episodes):
             r = {"episode_index": ep, "length": len(Rs)}
-            for k, D in [("observation.state.cartesian", 6), ("observation.state", 7),
-                         ("action", 7), ("observation.state.gripper", 1)]:
+            for k, D in [
+                ("observation.state.cartesian", 6),
+                ("observation.state", 7),
+                ("action", 7),
+                ("observation.state.gripper", 1),
+            ]:
                 for st in ("min", "max", "mean", "std"):
                     r[f"stats/{k}/{st}"] = np.zeros(D, np.float32)
                 r[f"stats/{k}/count"] = np.array([len(Rs)])
@@ -138,16 +177,18 @@ def _rand_episode(rng, n):
 
 
 def _run_migration(mig, src: Path, dst: Path, dry_run=False):
-    args = types.SimpleNamespace(input=str(src), output=str(dst),
-                                 no_action_gripper=False, dry_run=dry_run,
-                                 log_level="ERROR")
+    args = types.SimpleNamespace(
+        input=str(src), output=str(dst), no_action_gripper=False, dry_run=dry_run, log_level="ERROR"
+    )
     return mig.migrate(args)
 
 
 def _check_migrated(out: Path, episodes):
-    frames = pd.concat(
-        [pd.read_parquet(f) for f in sorted((out / "data").rglob("*.parquet"))]
-    ).sort_values(["episode_index", "frame_index"]).reset_index(drop=True)
+    frames = (
+        pd.concat([pd.read_parquet(f) for f in sorted((out / "data").rglob("*.parquet"))])
+        .sort_values(["episode_index", "frame_index"])
+        .reset_index(drop=True)
+    )
 
     info = json.load(open(out / "meta" / "info.json"))
     assert info["features"]["observation.state.cartesian"]["shape"] == [9]

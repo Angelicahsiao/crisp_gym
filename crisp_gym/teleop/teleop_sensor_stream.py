@@ -42,7 +42,7 @@ class TeleopStreamedPose:
 
         self._gripper_topic = gripper_topic or f"/{self._prefix}phone_gripper"
         self._pose_topic = pose_topic or f"/{self._prefix}phone_pose"
-        
+
         logger.info(f"Creating subscriptions to: {self._pose_topic}, {self._gripper_topic}")
 
         self._pose_sub = self.node.create_subscription(
@@ -52,7 +52,7 @@ class TeleopStreamedPose:
             callback_group=ReentrantCallbackGroup(),
             qos_profile=qos_profile_sensor_data,
         )
-        
+
         self._gripper_sub = self.node.create_subscription(
             Float32,
             self._gripper_topic,
@@ -60,7 +60,7 @@ class TeleopStreamedPose:
             callback_group=ReentrantCallbackGroup(),
             qos_profile=qos_profile_sensor_data,
         )
-        
+
         logger.info("Subscriptions created, starting executor thread...")
 
         threading.Thread(target=self._spin_node, daemon=True).start()

@@ -32,6 +32,7 @@ def _import_lerobot_metadata():
         from lerobot.datasets.lerobot_dataset import CODEBASE_VERSION, LeRobotDatasetMetadata
     return CODEBASE_VERSION, LeRobotDatasetMetadata
 
+
 # These follow the environment set-up above on purpose (lerobot reads it when
 # it is first imported), hence the E402 exemptions.
 import sys  # noqa: E402
@@ -45,6 +46,7 @@ import numpy as np  # noqa: E402
 # Stub out ROS2 and robot packages so the module can be imported without them
 # ---------------------------------------------------------------------------
 
+
 def _make_stub(name):
     mod = types.ModuleType(name)
     mod.__path__ = []
@@ -52,14 +54,26 @@ def _make_stub(name):
 
 
 ROS_STUBS = [
-    "rclpy", "rclpy.node", "rclpy.executors", "rclpy.qos",
-    "std_msgs", "std_msgs.msg",
-    "crisp_py", "crisp_py.robot", "crisp_py.robot.robot_config",
-    "crisp_py.gripper", "crisp_py.gripper.gripper",
-    "crisp_py.camera", "crisp_py.camera.camera_config",
-    "crisp_py.sensors", "crisp_py.sensors.sensor", "crisp_py.sensors.sensor_config",
-    "crisp_py.utils", "crisp_py.utils.geometry",
-    "pynput", "pynput.keyboard",
+    "rclpy",
+    "rclpy.node",
+    "rclpy.executors",
+    "rclpy.qos",
+    "std_msgs",
+    "std_msgs.msg",
+    "crisp_py",
+    "crisp_py.robot",
+    "crisp_py.robot.robot_config",
+    "crisp_py.gripper",
+    "crisp_py.gripper.gripper",
+    "crisp_py.camera",
+    "crisp_py.camera.camera_config",
+    "crisp_py.sensors",
+    "crisp_py.sensors.sensor",
+    "crisp_py.sensors.sensor_config",
+    "crisp_py.utils",
+    "crisp_py.utils.geometry",
+    "pynput",
+    "pynput.keyboard",
 ]
 
 for _name in ROS_STUBS:
@@ -74,11 +88,13 @@ sys.modules["std_msgs.msg"].String = object
 
 _geo = sys.modules["crisp_py.utils.geometry"]
 
+
 class _OrientationRepresentation:
     EULER = "euler"
     QUATERNION = "quaternion"
     ANGLE_AXIS = "angle_axis"
     ROTATION_6D = "rotation_6d"
+
 
 _geo.OrientationRepresentation = _OrientationRepresentation
 _geo.Pose = object
@@ -158,21 +174,24 @@ def run(label, fn):
 # Mock environment
 # ---------------------------------------------------------------------------
 
+
 def _make_mock_env(num_joints=7):
     """Return a mock ManipulatorBaseEnv-like object with a realistic obs space."""
     import gymnasium
 
-    obs_space = gymnasium.spaces.Dict({
-        "observation.state.cartesian": gymnasium.spaces.Box(
-            low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32
-        ),
-        "observation.state.gripper": gymnasium.spaces.Box(
-            low=0.0, high=1.0, shape=(1,), dtype=np.float32
-        ),
-        "observation.images.wrist": gymnasium.spaces.Box(
-            low=0, high=255, shape=(480, 640, 3), dtype=np.uint8
-        ),
-    })
+    obs_space = gymnasium.spaces.Dict(
+        {
+            "observation.state.cartesian": gymnasium.spaces.Box(
+                low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32
+            ),
+            "observation.state.gripper": gymnasium.spaces.Box(
+                low=0.0, high=1.0, shape=(1,), dtype=np.float32
+            ),
+            "observation.images.wrist": gymnasium.spaces.Box(
+                low=0, high=255, shape=(480, 640, 3), dtype=np.uint8
+            ),
+        }
+    )
 
     robot_config = types.SimpleNamespace(num_joints=lambda: num_joints)
     config = types.SimpleNamespace(
@@ -195,6 +214,7 @@ def _make_mock_env(num_joints=7):
 # Tests
 # ---------------------------------------------------------------------------
 
+
 def test_codebase_version_import():
     """CODEBASE_VERSION must be importable (v0.5.1 path or v0.4.x fallback)."""
     CODEBASE_VERSION, _ = _import_lerobot_metadata()
@@ -205,6 +225,7 @@ def test_codebase_version_import():
 def test_get_features():
     """get_features() should return a valid feature dict without warnings."""
     from crisp_gym.util.lerobot_features import get_features
+
     env = _make_mock_env()
     features = get_features(env, use_video=True)
 
@@ -231,6 +252,7 @@ def test_get_features_version_check():
                 warnings.append(record.getMessage())
 
     import logging as _logging
+
     logger = _logging.getLogger("crisp_gym.util.lerobot_features")
     handler = CapturingHandler()
     logger.addHandler(handler)
@@ -249,6 +271,7 @@ def test_get_features_version_check():
 def _add_frame_compat(dataset, frame, task):
     """Call add_frame with task as kwarg (v0.4.x) or in frame dict (v0.5.x)."""
     from inspect import signature
+
     if "task" in signature(dataset.add_frame).parameters:
         dataset.add_frame(frame, task=task)
     else:
@@ -305,11 +328,13 @@ def _make_concrete_rm():
     class ConcreteRM(RecordingManager):
         def get_instructions(self):
             return ""
+
     return ConcreteRM
 
 
 def _unique_repo_id(prefix):
     import uuid
+
     return f"test_user/{prefix}_{uuid.uuid4().hex[:8]}"
 
 
@@ -341,11 +366,10 @@ def test_recording_manager_create(tmp_dir):
     assert dataset.num_episodes == 0
 
 
-
-
 # ---------------------------------------------------------------------------
 # Deploy / inference tests
 # ---------------------------------------------------------------------------
+
 
 def test_concatenate_state_features():
     """concatenate_state_features should join all observation.state.* into one vector."""
@@ -387,6 +411,7 @@ def test_make_pre_post_processors_detection():
 
     try:
         from lerobot.policies.factory import make_pre_post_processors  # noqa: F401
+
         expected = True
     except ImportError:
         expected = False
@@ -433,6 +458,7 @@ def _make_tiny_act_policy(state_dim=7, action_dim=7, image_shape=(3, 96, 96)):
 
     # Dataset stats are needed for normalization layers
     import torch
+
     stats = {
         "observation.state": {
             "mean": torch.zeros(state_dim),
@@ -489,26 +515,40 @@ def test_policy_save_load_inference(tmp_dir):
 
 if __name__ == "__main__":
     import multiprocessing
+
     multiprocessing.set_start_method("spawn", force=True)
 
     print("\n=== LeRobot Record Pipeline Tests (v0.4.x / v0.5.1) ===\n")
 
     with tempfile.TemporaryDirectory() as tmp:
         from pathlib import Path
+
         tmp_path = Path(tmp)
 
         run("CODEBASE_VERSION import from dataset_metadata", test_codebase_version_import)
         run("get_features() returns valid schema", test_get_features)
         run("get_features() no spurious version warning", test_get_features_version_check)
-        run("LeRobotDataset.create → add_frame → save_episode", lambda: test_dataset_create_add_save(tmp_path))
-        run("LeRobotDatasetMetadata import from dataset_metadata", test_lerobot_dataset_metadata_import)
-        run("RecordingManager._create_dataset() new dataset", lambda: test_recording_manager_create(tmp_path))
+        run(
+            "LeRobotDataset.create → add_frame → save_episode",
+            lambda: test_dataset_create_add_save(tmp_path),
+        )
+        run(
+            "LeRobotDatasetMetadata import from dataset_metadata",
+            test_lerobot_dataset_metadata_import,
+        )
+        run(
+            "RecordingManager._create_dataset() new dataset",
+            lambda: test_recording_manager_create(tmp_path),
+        )
 
         print("\n--- Deploy / inference tests ---\n")
         run("concatenate_state_features", test_concatenate_state_features)
         run("numpy_obs_to_torch", test_numpy_obs_to_torch)
         run("USE_LEROBOT_PROCESSORS detection", test_make_pre_post_processors_detection)
-        run("ACT policy save_pretrained → from_pretrained → select_action", lambda: test_policy_save_load_inference(tmp_path))
+        run(
+            "ACT policy save_pretrained → from_pretrained → select_action",
+            lambda: test_policy_save_load_inference(tmp_path),
+        )
 
     print("\n=== Summary ===")
     passed = sum(1 for _, s in results if s == "pass")

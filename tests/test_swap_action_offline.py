@@ -35,10 +35,11 @@ def _load():
 
 def test_swap_arm_replaces_arm_keeps_gripper_and_does_not_mutate():
     m = _load()
-    act = np.array([[-1, -1, -1, -1, -1, -1, -1, -1, -1, 0.3],
-                    [-2, -2, -2, -2, -2, -2, -2, -2, -2, 0.7]], dtype=np.float32)
-    tc = np.array([[1, 2, 3, 4, 5, 6, 7, 8, 9],
-                   [9, 8, 7, 6, 5, 4, 3, 2, 1]], dtype=np.float32)
+    act = np.array(
+        [[-1, -1, -1, -1, -1, -1, -1, -1, -1, 0.3], [-2, -2, -2, -2, -2, -2, -2, -2, -2, 0.7]],
+        dtype=np.float32,
+    )
+    tc = np.array([[1, 2, 3, 4, 5, 6, 7, 8, 9], [9, 8, 7, 6, 5, 4, 3, 2, 1]], dtype=np.float32)
     out = m.swap_arm(act, tc)
     assert out.shape == (2, 10)
     assert np.allclose(out[:, :9], tc), "arm dims must become target_cartesian"
@@ -58,10 +59,14 @@ def test_features_guard_rejects_missing_target():
 def test_features_guard_rejects_wrong_action_dim():
     m = _load()
     try:
-        m._assert_features({"features": {
-            "action": {"shape": [7]},
-            "extra.target_cartesian": {"shape": [9]},
-        }})
+        m._assert_features(
+            {
+                "features": {
+                    "action": {"shape": [7]},
+                    "extra.target_cartesian": {"shape": [9]},
+                }
+            }
+        )
         raise AssertionError("wrong action dim not rejected")
     except ValueError as e:
         assert "10D" in str(e)
@@ -69,10 +74,14 @@ def test_features_guard_rejects_wrong_action_dim():
 
 def test_features_guard_accepts_valid():
     m = _load()
-    m._assert_features({"features": {
-        "action": {"shape": [10]},
-        "extra.target_cartesian": {"shape": [9]},
-    }})
+    m._assert_features(
+        {
+            "features": {
+                "action": {"shape": [10]},
+                "extra.target_cartesian": {"shape": [9]},
+            }
+        }
+    )
 
 
 if __name__ == "__main__":

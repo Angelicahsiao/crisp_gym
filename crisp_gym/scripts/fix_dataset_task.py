@@ -205,9 +205,7 @@ def rename_task(root: Path, old: str, new: str, dry_run: bool) -> None:
     """
     tasks, was_index = read_tasks(root)
     if old not in set(tasks["task"]):
-        raise SystemExit(
-            f"task {old!r} not found. Present: {sorted(tasks['task'])}"
-        )
+        raise SystemExit(f"task {old!r} not found. Present: {sorted(tasks['task'])}")
     if new in set(tasks["task"]) and new != old:
         raise SystemExit(
             f"task {new!r} already exists — renaming {old!r} onto it would merge "
@@ -303,10 +301,14 @@ def main() -> None:
     ap.add_argument("root", type=Path, help="Dataset root holding meta/ and data/")
     ap.add_argument("--list", action="store_true", help="Show tasks and usage counts.")
     ap.add_argument("--validate", action="store_true", help="Check the four locations agree.")
-    ap.add_argument("--rename", nargs=2, metavar=("OLD", "NEW"),
-                    help="Rename one task, keeping its task_index.")
-    ap.add_argument("--set-all", metavar="NEW",
-                    help="Collapse every task to one. Rewrites task_index on every frame.")
+    ap.add_argument(
+        "--rename", nargs=2, metavar=("OLD", "NEW"), help="Rename one task, keeping its task_index."
+    )
+    ap.add_argument(
+        "--set-all",
+        metavar="NEW",
+        help="Collapse every task to one. Rewrites task_index on every frame.",
+    )
     ap.add_argument("--dry-run", action="store_true", help="Report only; write nothing.")
     args = ap.parse_args()
 

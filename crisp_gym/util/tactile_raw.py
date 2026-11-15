@@ -65,7 +65,7 @@ def load_csv(path: Path | str) -> tuple[np.ndarray, np.ndarray]:
     taxel_cols = [c for c in df.columns if c.startswith(TAXEL_PREFIX)]
     if not taxel_cols:
         raise KeyError(f"{path}: no '{TAXEL_PREFIX}*' columns.")
-    taxel_cols.sort(key=lambda c: int(c[len(TAXEL_PREFIX):]))
+    taxel_cols.sort(key=lambda c: int(c[len(TAXEL_PREFIX) :]))
     stamps = df[STAMP_COLUMN].to_numpy(np.int64)
     order = np.argsort(stamps, kind="stable")
     return stamps[order], df[taxel_cols].to_numpy(np.float32)[order]

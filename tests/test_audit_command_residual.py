@@ -47,7 +47,7 @@ def _exp(rv):
     K[..., 2, 0], K[..., 2, 1] = -rv[..., 1], rv[..., 0]
     with np.errstate(divide="ignore", invalid="ignore"):
         a = np.where(th > 1e-9, np.sin(th) / th, 1.0)
-        b = np.where(th > 1e-9, (1 - np.cos(th)) / th ** 2, 0.5)
+        b = np.where(th > 1e-9, (1 - np.cos(th)) / th**2, 0.5)
     return np.eye(3) + a * K + b * (K @ K)
 
 
@@ -80,8 +80,23 @@ def synth(mod, *, episodes=6, n=160, seed=0, tactile_shape=(8, 10), torque_noise
     taxels = int(np.prod(tactile_shape))
     A_left = rng.normal(0, 1.0, (6, taxels))
     A_right = rng.normal(0, 1.0, (6, taxels))
-    out = {k: [] for k in ("episode", "pose9", "target9", "joints", "ext_torque", "left",
-                           "right", "gripper", "gripper_target", "res_pos", "res_rot", "wrench")}
+    out = {
+        k: []
+        for k in (
+            "episode",
+            "pose9",
+            "target9",
+            "joints",
+            "ext_torque",
+            "left",
+            "right",
+            "gripper",
+            "gripper_target",
+            "res_pos",
+            "res_rot",
+            "wrench",
+        )
+    }
     tool = _tool()
     for ep in range(episodes):
         q = q0 + _smooth(rng, n, 7, 0.25)
@@ -102,8 +117,9 @@ def synth(mod, *, episodes=6, n=160, seed=0, tactile_shape=(8, 10), torque_noise
         Tcmd = T @ Tres
 
         R = T[:, :3, :3]
-        w_base = np.concatenate([np.einsum("nij,nj->ni", R, F[:, :3]),
-                                 np.einsum("nij,nj->ni", R, F[:, 3:])], axis=1)
+        w_base = np.concatenate(
+            [np.einsum("nij,nj->ni", R, F[:, :3]), np.einsum("nij,nj->ni", R, F[:, 3:])], axis=1
+        )
         J = mod.fr3_jacobian_at(q, T[:, :3, 3])
         tau = np.einsum("nji,nj->ni", J, w_base) + rng.normal(0, torque_noise, (n, 7))
 
@@ -114,8 +130,12 @@ def synth(mod, *, episodes=6, n=160, seed=0, tactile_shape=(8, 10), torque_noise
         out["target9"].append(_pose9(Tcmd))
         out["joints"].append(q)
         out["ext_torque"].append(tau)
-        out["left"].append(F @ A_left + rng.normal(0, 0.02, (n, taxels)) + rng.normal(0, 5.0, taxels))
-        out["right"].append(F @ A_right + rng.normal(0, 0.02, (n, taxels)) + rng.normal(0, 5.0, taxels))
+        out["left"].append(
+            F @ A_left + rng.normal(0, 0.02, (n, taxels)) + rng.normal(0, 5.0, taxels)
+        )
+        out["right"].append(
+            F @ A_right + rng.normal(0, 0.02, (n, taxels)) + rng.normal(0, 5.0, taxels)
+        )
         out["gripper"].append(g)
         out["gripper_target"].append(g - 0.15 * grasp)
         out["res_pos"].append(r_pos)
@@ -123,22 +143,29 @@ def synth(mod, *, episodes=6, n=160, seed=0, tactile_shape=(8, 10), torque_noise
         out["wrench"].append(F)
     d = {k: np.concatenate(v) for k, v in out.items()}
     kwargs = dict(
-        episode=d["episode"], pose9=d["pose9"], target9=d["target9"], fps=FPS,
+        episode=d["episode"],
+        pose9=d["pose9"],
+        target9=d["target9"],
+        fps=FPS,
         tactile={"left_tactile": d["left"], "right_tactile": d["right"]},
-        joints=d["joints"], ext_torque=d["ext_torque"],
-        gripper=d["gripper"], gripper_target=d["gripper_target"],
-        k_pos=K_POS, k_rot=K_ROT,
+        joints=d["joints"],
+        ext_torque=d["ext_torque"],
+        gripper=d["gripper"],
+        gripper_target=d["gripper_target"],
+        k_pos=K_POS,
+        k_rot=K_ROT,
     )
     return kwargs, d
 
 
 # ── geometry ─────────────────────────────────────────────────────────────────
 
+
 def test_rotvec_roundtrip():
     mod = _load()
     rng = np.random.default_rng(1)
     rv = rng.normal(0, 0.7, (500, 3))
-    rv[:50] *= 1e-6                      # the small-angle branch
+    rv[:50] *= 1e-6  # the small-angle branch
     np.testing.assert_allclose(mod.mat_to_rotvec(_exp(rv)), rv, atol=1e-9)
 
 
@@ -220,6 +247,7 @@ def test_wrench_is_recovered_from_joint_torques():
 
 # ── the analysis ─────────────────────────────────────────────────────────────
 
+
 def test_system_identification_recovers_the_gains():
     mod = _load()
     kwargs, _ = synth(mod)
@@ -282,7 +310,7 @@ def test_probe_scores_on_held_out_GROUPS_not_random_frames():
     groups = np.repeat(np.arange(8), 50)
     offsets = rng.normal(0, 1.0, 8)
     y = (offsets[groups] + rng.normal(0, 0.01, 400))[:, None]
-    X = np.eye(8)[groups]                       # one-hot episode id
+    X = np.eye(8)[groups]  # one-hot episode id
     out = mod.ridge_cv(X, y, groups, np.ones(400, dtype=bool), lam=1e-3, folds=4)
     assert out["r2"][0] < 0.1, out
 
@@ -381,19 +409,19 @@ def test_tactile_report_per_sensor():
     rng = np.random.default_rng(0)
     eps, n, taxels = 4, 100, 12
     episode = np.repeat(np.arange(eps), n)
-    press = np.tile(np.r_[np.zeros(40), np.ones(60)], eps)            # 60% in contact
+    press = np.tile(np.r_[np.zeros(40), np.ones(60)], eps)  # 60% in contact
     offset = np.repeat(rng.normal(0, 5.0, (eps, taxels)), n, axis=0)  # per-episode zero
     left = offset + rng.normal(0, 0.02, (eps * n, taxels))
-    left[:, :4] += 3.0 * press[:, None]                               # 4 taxels respond
-    left[:, 11] = 7.0                                                 # dead taxel
-    right = offset + rng.normal(0, 0.02, (eps * n, taxels))           # never touched
+    left[:, :4] += 3.0 * press[:, None]  # 4 taxels respond
+    left[:, 11] = 7.0  # dead taxel
+    right = offset + rng.normal(0, 0.02, (eps * n, taxels))  # never touched
     rep = mod.tactile_report(episode, {"l": left, "r": right})
     assert rep["l"]["taxels"] == taxels and rep["l"]["dead_taxels"] == [11]
     assert abs(rep["l"]["contact_fraction"] - 0.6) < 1e-9
     assert rep["l"]["episodes_without_contact"] == 0
     assert rep["l"]["active_taxels_in_contact"]["p50"] == 4
     assert 0.015 < rep["l"]["taxel_noise"] < 0.025
-    assert rep["l"]["baseline_drift"] > 1.0                           # the zero differs per episode
+    assert rep["l"]["baseline_drift"] > 1.0  # the zero differs per episode
     assert abs(rep["l"]["peak_taxel_in_contact"]["p50"] - 3.0) < 0.1
     assert rep["r"]["contact_fraction"] < 0.01 and rep["r"]["episodes_without_contact"] >= 3
 
@@ -401,12 +429,20 @@ def test_tactile_report_per_sensor():
     valid = np.ones(eps * n, dtype=bool)
     valid[:5] = False
     left2 = left.copy()
-    left2[:5] += 100.0                                                # garbage while invalid
+    left2[:5] += 100.0  # garbage while invalid
     rep2 = mod.tactile_report(episode, {"l": left2}, valid={"l": valid})
     assert rep2["l"]["invalid_frames"] == 5
     assert abs(rep2["l"]["contact_fraction"] - 240 / 395) < 1e-9
-    mod.format_tactile_report({"episodes": eps, "frames": eps * n, "fps": FPS,
-                               "baseline_frames": 10, "tactile": rep2, "notes": []})
+    mod.format_tactile_report(
+        {
+            "episodes": eps,
+            "frames": eps * n,
+            "fps": FPS,
+            "baseline_frames": 10,
+            "tactile": rep2,
+            "notes": [],
+        }
+    )
 
 
 def test_row_width_hint_recovers_a_row_major_grid():
@@ -418,13 +454,15 @@ def test_row_width_hint_recovers_a_row_major_grid():
         frames = []
         for _ in range(400):
             cy, cx = rng.uniform(0, rows - 1), rng.uniform(0, width - 1)
-            blob = np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / (2 * 1.2 ** 2))
-            frames.append((rng.uniform(1, 3) * blob).reshape(-1) + rng.normal(0, 0.02, rows * width))
+            blob = np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / (2 * 1.2**2))
+            frames.append(
+                (rng.uniform(1, 3) * blob).reshape(-1) + rng.normal(0, 0.02, rows * width)
+            )
         hint = mod.row_width_hint(np.asarray(frames))
         assert (hint["rows"], hint["width"]) == (rows, width) and hint["confident"], hint
     # taxels that respond with no spatial structure: no confident guess
     assert not mod.row_width_hint(rng.normal(size=(400, 72)))["confident"]
-    assert mod.row_width_hint(np.zeros((10, 72))) is None      # too few frames: no guess
+    assert mod.row_width_hint(np.zeros((10, 72))) is None  # too few frames: no guess
 
 
 def test_invalid_tactile_frames_are_left_out_of_the_probe():
@@ -434,10 +472,12 @@ def test_invalid_tactile_frames_are_left_out_of_the_probe():
     base, _ = mod.analyze(**kwargs)
     valid = np.ones(n, dtype=bool)
     valid[60:90] = False
-    kwargs["tactile"]["left_tactile"][60:90] = 1e3                   # garbage where invalid
+    kwargs["tactile"]["left_tactile"][60:90] = 1e3  # garbage where invalid
     report, _ = mod.analyze(**kwargs, tactile_valid=valid)
-    assert report["system_identification"]["frames_used"] == \
-        base["system_identification"]["frames_used"] - 30
+    assert (
+        report["system_identification"]["frames_used"]
+        == base["system_identification"]["frames_used"] - 30
+    )
     assert any("sync_valid" in note for note in report["notes"])
     r2 = report["residual_probe"]["tactile+velocity"]["all"]["r2_pos"]
     assert min(r2) > 0.9, r2
@@ -461,20 +501,30 @@ def _write_handheld_dataset(root, *, taxels=72, episodes=3, n=60, seed=0, stamp_
         for side in ("left", "right"):
             stamps = t0 + ep * 10**11 + np.cumsum(rng.integers(4_000_000, 6_000_000, m))
             values = rng.normal(0, 0.02, (m, taxels)).astype(np.float32)
-            values[m // 2:, :6] += 2.0
-            csv = pd.DataFrame({"episode_index": ep, "raw_episode_index": ep,
-                                "source_stamp_ns": stamps, "frame_id": side})
+            values[m // 2 :, :6] += 2.0
+            csv = pd.DataFrame(
+                {
+                    "episode_index": ep,
+                    "raw_episode_index": ep,
+                    "source_stamp_ns": stamps,
+                    "frame_id": side,
+                }
+            )
             for j in range(taxels):
                 csv[f"taxel_{j}"] = values[:, j]
             csv.to_csv(root / "tactile_raw" / f"episode_{ep:06d}_{side}.csv", index=False)
             pick = np.arange(n) * 14 + 3
             per_side[side] = (stamps[pick], values[pick])
         for i in range(n):
-            row = {"episode_index": ep, "frame_index": i,
-                   "observation.state.cartesian": np.r_[0.4 + 0.001 * i, 0, 0.3, 1, 0, 0, 0, 1, 0]
-                   .astype(np.float32),
-                   "extra.target_cartesian": np.zeros(9, np.float32),
-                   "extra.joints": np.zeros(7, np.float32)}
+            row = {
+                "episode_index": ep,
+                "frame_index": i,
+                "observation.state.cartesian": np.r_[
+                    0.4 + 0.001 * i, 0, 0.3, 1, 0, 0, 0, 1, 0
+                ].astype(np.float32),
+                "extra.target_cartesian": np.zeros(9, np.float32),
+                "extra.joints": np.zeros(7, np.float32),
+            }
             for side, (stamps, values) in per_side.items():
                 k = f"extra.tactile.{side}"
                 row[k] = values[i]
@@ -539,7 +589,7 @@ def test_tactile_only_end_to_end_on_a_handheld_dataset():
 def test_kinematics_mismatch_skips_sysid_instead_of_lying():
     mod = _load()
     kwargs, _ = synth(mod, episodes=3)
-    kwargs["joints"] = kwargs["joints"][::-1].copy()      # joints out of sync with pose
+    kwargs["joints"] = kwargs["joints"][::-1].copy()  # joints out of sync with pose
     report, _ = mod.analyze(**kwargs)
     assert "system_identification" not in report
     assert any("not rigid" in n for n in report["notes"])
@@ -560,6 +610,7 @@ def test_skin_vs_wrench_flags_contact_the_skin_misses():
 
 
 # ── I/O ──────────────────────────────────────────────────────────────────────
+
 
 def test_resolve_key_suffix_and_ambiguity():
     mod = _load()
@@ -600,8 +651,14 @@ def test_load_gains_from_both_yaml_layouts():
 
 def test_the_shipped_fr3_controllers_yaml_layout_parses():
     """The bring-up file the dric Cartesian env actually takes its gains from."""
-    path = (REPO.parent / "crisp_controllers_demos" / "crisp_controllers_robot_demos"
-            / "config" / "fr3" / "controllers.yaml")
+    path = (
+        REPO.parent
+        / "crisp_controllers_demos"
+        / "crisp_controllers_robot_demos"
+        / "config"
+        / "fr3"
+        / "controllers.yaml"
+    )
     if not path.exists():
         print("skip: crisp_controllers_demos not checked out next to crisp_gym")
         return
@@ -622,14 +679,16 @@ def test_step_F_separates_lag_from_what_only_the_command_carries():
         t = np.arange(n + lag) / FPS
         T = np.tile(np.eye(4), (n + lag, 1, 1))
         T[:, :3, :3] = _exp(np.stack([0.3 * np.sin(t), 0.2 * np.cos(0.7 * t), 0.1 * t], axis=1))
-        T[:, :3, 3] = np.stack([0.4 + 0.1 * np.sin(1.3 * t + ep), 0.1 * np.cos(t),
-                                0.3 + 0.05 * np.sin(0.5 * t)], axis=1)
+        T[:, :3, 3] = np.stack(
+            [0.4 + 0.1 * np.sin(1.3 * t + ep), 0.1 * np.cos(t), 0.3 + 0.05 * np.sin(0.5 * t)],
+            axis=1,
+        )
         c = np.arange(n) >= 80
         push = np.tile(np.eye(4), (n, 1, 1))
         push[c, 2, 3] = 0.020
         episode.append(np.full(n, ep))
         poses.append(T[:n])
-        cmds.append(T[lag:lag + n] @ push)
+        cmds.append(T[lag : lag + n] @ push)
         contact.append(c)
     episode, contact = np.concatenate(episode), np.concatenate(contact)
     T_tcp, T_cmd = np.concatenate(poses), np.concatenate(cmds)
@@ -639,7 +698,7 @@ def test_step_F_separates_lag_from_what_only_the_command_carries():
     free = [r["pos_mm"]["free"]["p50"] for r in rows]
     assert int(np.argmin(free)) == lag and free[lag] < 1e-6
     assert abs(rows[lag]["pos_mm"]["contact"]["p50"] - 20.0) < 1e-6
-    assert rows[0]["pos_mm"]["free"]["p50"] > 5.0                 # the lag is visible at L = 0
+    assert rows[0]["pos_mm"]["free"]["p50"] > 5.0  # the lag is visible at L = 0
     assert rows[lag]["ms"] == 1e3 * lag / FPS
     # pairs never cross an episode: L frames are lost per episode
     assert rows[lag]["pos_mm"]["free"]["n"] + rows[lag]["pos_mm"]["contact"]["n"] == eps * (n - lag)
@@ -655,8 +714,14 @@ def test_step_F_separates_lag_from_what_only_the_command_carries():
     assert mod.detect_action_lookahead(not_a_pose, pose9, episode) is None
 
     # through analyze + the printed report
-    report, _ = mod.analyze(episode=episode, pose9=pose9, target9=_pose9(T_cmd), fps=FPS,
-                            contact_from="none", action=action)
+    report, _ = mod.analyze(
+        episode=episode,
+        pose9=pose9,
+        target9=_pose9(T_cmd),
+        fps=FPS,
+        contact_from="none",
+        action=action,
+    )
     f = report["action_labels"]
     assert f["best_free_lookahead"] == lag and f["action_lookahead"] == 1
     text = mod.format_report({**report, "columns": {}})
@@ -671,8 +736,10 @@ def test_gains_from_an_env_config():
         print("skip: pyyaml not installed")
         return
     mod = _load()
-    control = "task.k_pos_x: 200.0\ntask.k_pos_y: 200.0\ntask.k_pos_z: 200.0\n" \
-              "task.k_rot_x: 60.0\ntask.k_rot_y: 60.0\ntask.k_rot_z: 60.0\n"
+    control = (
+        "task.k_pos_x: 200.0\ntask.k_pos_y: 200.0\ntask.k_pos_z: 200.0\n"
+        "task.k_rot_x: 60.0\ntask.k_rot_y: 60.0\ntask.k_rot_z: 60.0\n"
+    )
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         first, second = root / "robot_pc", root / "repo"
@@ -733,53 +800,97 @@ def test_end_to_end_on_a_parquet_dataset():
         root = Path(tmp)
         (root / "meta").mkdir()
         (root / "data" / "chunk-000").mkdir(parents=True)
-        (root / "meta" / "info.json").write_text(json.dumps({
-            "fps": FPS, "features": {"extra.left_tactile": {"shape": [8, 10]}}}))
-        df = pd.DataFrame({
-            "episode_index": d["episode"], "frame_index": frame,
-            "observation.state.cartesian": list(d["pose9"].astype(np.float32)),
-            "extra.target_cartesian": list(d["target9"].astype(np.float32)),
-            "extra.joints": list(d["joints"].astype(np.float32)),
-            "extra.ext_torque": list(d["ext_torque"].astype(np.float32)),
-            # nested 8x10, the way a 2-D feature is stored
-            "extra.left_tactile": [x.reshape(8, 10).tolist() for x in d["left"].astype(np.float32)],
-            "extra.right_tactile": list(d["right"].astype(np.float32)),
-            "observation.state.gripper": list(d["gripper"].astype(np.float32)[:, None]),
-            "extra.gripper_target": list(d["gripper_target"].astype(np.float32)[:, None]),
-        })
+        (root / "meta" / "info.json").write_text(
+            json.dumps({"fps": FPS, "features": {"extra.left_tactile": {"shape": [8, 10]}}})
+        )
+        df = pd.DataFrame(
+            {
+                "episode_index": d["episode"],
+                "frame_index": frame,
+                "observation.state.cartesian": list(d["pose9"].astype(np.float32)),
+                "extra.target_cartesian": list(d["target9"].astype(np.float32)),
+                "extra.joints": list(d["joints"].astype(np.float32)),
+                "extra.ext_torque": list(d["ext_torque"].astype(np.float32)),
+                # nested 8x10, the way a 2-D feature is stored
+                "extra.left_tactile": [
+                    x.reshape(8, 10).tolist() for x in d["left"].astype(np.float32)
+                ],
+                "extra.right_tactile": list(d["right"].astype(np.float32)),
+                "observation.state.gripper": list(d["gripper"].astype(np.float32)[:, None]),
+                "extra.gripper_target": list(d["gripper_target"].astype(np.float32)[:, None]),
+            }
+        )
         # two files, rows shuffled: the loader must restore (episode, frame) order
         df = df.sample(frac=1.0, random_state=0)
         df.iloc[: n // 2].to_parquet(root / "data" / "chunk-000" / "file-000.parquet")
-        df.iloc[n // 2:].to_parquet(root / "data" / "chunk-000" / "file-001.parquet")
+        df.iloc[n // 2 :].to_parquet(root / "data" / "chunk-000" / "file-001.parquet")
 
         out, npz = root / "audit.json", root / "frames.npz"
-        rc = mod.main([str(root), "--k-pos", str(K_POS), "--k-rot", str(K_ROT),
-                       "--tactile-shape", "8", "10", "--out", str(out), "--dump-npz", str(npz)])
+        rc = mod.main(
+            [
+                str(root),
+                "--k-pos",
+                str(K_POS),
+                "--k-rot",
+                str(K_ROT),
+                "--tactile-shape",
+                "8",
+                "10",
+                "--out",
+                str(out),
+                "--dump-npz",
+                str(npz),
+            ]
+        )
         assert rc == 0
         report = json.loads(out.read_text())
         # no --tactile-keys: the columns the dataset has are found and named in full
         assert report["columns"]["tactile:extra.left_tactile"] == "extra.left_tactile"
         assert report["tactile"]["taxels"] == {"extra.left_tactile": 80, "extra.right_tactile": 80}
         k = report["system_identification"]["translation"]["z"]["stiffness"]
-        assert abs(k - K_POS) / K_POS < 0.03, k          # float32 storage
+        assert abs(k - K_POS) / K_POS < 0.03, k  # float32 storage
         assert np.load(npz)["res_pos"].shape == (n, 3)
 
         # gains from the env config; an explicit --k-pos still wins over it
         cfg = root / "cfg"
         (cfg / "control").mkdir(parents=True)
         (cfg / "control" / "ci.yaml").write_text(
-            "".join(f"task.k_{kind}_{ax}: {val}\n" for kind, val in (("pos", K_POS), ("rot", K_ROT))
-                    for ax in "xyz"))
+            "".join(
+                f"task.k_{kind}_{ax}: {val}\n"
+                for kind, val in (("pos", K_POS), ("rot", K_ROT))
+                for ax in "xyz"
+            )
+        )
         env = root / "env.yaml"
         env.write_text('cartesian_control_param_config: "control/ci.yaml"\n')
-        assert mod.main([str(root), "--env-config", str(env), "--config-path", str(cfg),
-                         "--out", str(out)]) == 0
+        assert (
+            mod.main(
+                [str(root), "--env-config", str(env), "--config-path", str(cfg), "--out", str(out)]
+            )
+            == 0
+        )
         report = json.loads(out.read_text())
-        assert report["nominal_gains"]["k_pos"] == K_POS and report["nominal_gains"]["k_rot"] == K_ROT
+        assert (
+            report["nominal_gains"]["k_pos"] == K_POS and report["nominal_gains"]["k_rot"] == K_ROT
+        )
         assert report["nominal_gains"]["source"].endswith("ci.yaml")
         assert any("nominal gains read from" in note for note in report["notes"])
-        assert mod.main([str(root), "--env-config", str(env), "--config-path", str(cfg),
-                         "--k-pos", "123", "--out", str(out)]) == 0
+        assert (
+            mod.main(
+                [
+                    str(root),
+                    "--env-config",
+                    str(env),
+                    "--config-path",
+                    str(cfg),
+                    "--k-pos",
+                    "123",
+                    "--out",
+                    str(out),
+                ]
+            )
+            == 0
+        )
         gains = json.loads(out.read_text())["nominal_gains"]
         assert gains["k_pos"] == 123 and gains["k_rot"] == K_ROT
 

@@ -26,8 +26,13 @@ sys.modules["fix_dataset_task"] = fdt
 _spec.loader.exec_module(fdt)
 
 
-def _make_dataset(root: Path, tasks: list[str], frames_per_task: int = 3,
-                  task_as_index: bool = True, episode_tasks_as_list: bool = True) -> Path:
+def _make_dataset(
+    root: Path,
+    tasks: list[str],
+    frames_per_task: int = 3,
+    task_as_index: bool = True,
+    episode_tasks_as_list: bool = True,
+) -> Path:
     """A minimal v3.0-shaped dataset with `tasks` distinct task strings."""
     (root / "data" / "chunk-000").mkdir(parents=True, exist_ok=True)
     (root / "meta" / "episodes" / "chunk-000").mkdir(parents=True, exist_ok=True)
@@ -35,17 +40,21 @@ def _make_dataset(root: Path, tasks: list[str], frames_per_task: int = 3,
     rows, episodes = [], []
     for task_index, task in enumerate(tasks):
         for i in range(frames_per_task):
-            rows.append({
-                "task_index": task_index,
+            rows.append(
+                {
+                    "task_index": task_index,
+                    "episode_index": task_index,
+                    "frame_index": i,
+                    "index": task_index * frames_per_task + i,
+                }
+            )
+        episodes.append(
+            {
                 "episode_index": task_index,
-                "frame_index": i,
-                "index": task_index * frames_per_task + i,
-            })
-        episodes.append({
-            "episode_index": task_index,
-            "tasks": [task] if episode_tasks_as_list else task,
-            "length": frames_per_task,
-        })
+                "tasks": [task] if episode_tasks_as_list else task,
+                "length": frames_per_task,
+            }
+        )
     pd.DataFrame(rows).to_parquet(root / "data/chunk-000/file-000.parquet", index=False)
     pd.DataFrame(episodes).to_parquet(
         root / "meta/episodes/chunk-000/file-000.parquet", index=False

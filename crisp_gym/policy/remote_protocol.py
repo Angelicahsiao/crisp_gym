@@ -97,12 +97,12 @@ CLIENT_FRAMES = frozenset({T_HELLO, T_RESET, T_INFER, T_BYE})
 SERVER_FRAMES = frozenset({T_HELLO_OK, T_RESET_OK, T_ACTIONS, T_ERROR})
 
 # error codes. `fatal` means the client must stop the episode rather than retry.
-E_BAD_VERSION = "bad_version"        # fatal
-E_BAD_FRAME = "bad_frame"            # fatal
+E_BAD_VERSION = "bad_version"  # fatal
+E_BAD_FRAME = "bad_frame"  # fatal
 E_CONTRACT_MISMATCH = "contract_mismatch"  # fatal
-E_NOT_READY = "not_ready"            # retryable: reset not acked yet
-E_STALE_OBS = "stale_obs"            # retryable: obs older than the budget
-E_INFER_FAILED = "infer_failed"      # retryable: the model raised
+E_NOT_READY = "not_ready"  # retryable: reset not acked yet
+E_STALE_OBS = "stale_obs"  # retryable: obs older than the budget
+E_INFER_FAILED = "infer_failed"  # retryable: the model raised
 FATAL_CODES = frozenset({E_BAD_VERSION, E_BAD_FRAME, E_CONTRACT_MISMATCH})
 
 
@@ -120,8 +120,7 @@ _ND = "__ndarray__"
 def _default(o: Any):
     if isinstance(o, np.ndarray):
         arr = np.ascontiguousarray(o)
-        return {_ND: True, "data": arr.tobytes(), "dtype": str(arr.dtype),
-                "shape": list(arr.shape)}
+        return {_ND: True, "data": arr.tobytes(), "dtype": str(arr.dtype), "shape": list(arr.shape)}
     if isinstance(o, (np.integer,)):
         return int(o)
     if isinstance(o, (np.floating,)):
@@ -156,8 +155,7 @@ def unpack(payload: bytes) -> dict:
             "A v0 server cannot talk to a v1 client."
         )
     try:
-        frame = msgpack.unpackb(payload, object_hook=_object_hook, raw=False,
-                                strict_map_key=False)
+        frame = msgpack.unpackb(payload, object_hook=_object_hook, raw=False, strict_map_key=False)
     except Exception as exc:  # noqa: BLE001
         raise ProtocolError(f"undecodable frame: {exc}") from exc
     if not isinstance(frame, dict):
@@ -166,6 +164,7 @@ def unpack(payload: bytes) -> dict:
 
 
 # ── frame validation ─────────────────────────────────────────────────────────
+
 
 def validate(frame: dict, *, expect_from: frozenset) -> dict:
     """Check the three mandatory fields and the type's direction.
@@ -219,17 +218,31 @@ def bye(id_: int) -> dict:
 
 
 # server -> client
-def hello_ok(id_: int, *, model_id: str, observation: dict, action: dict,
-             chunk_size: int, normalization: str, image: dict,
-             contract: dict, meta: dict | None = None) -> dict:
+def hello_ok(
+    id_: int,
+    *,
+    model_id: str,
+    observation: dict,
+    action: dict,
+    chunk_size: int,
+    normalization: str,
+    image: dict,
+    contract: dict,
+    meta: dict | None = None,
+) -> dict:
     """Answer to hello: what the SERVER's checkpoint actually requires.
 
     `meta` is the inference worker's own metadata, passed through untouched.
     """
     fields = dict(
-        model_id=model_id, observation=observation,
-        action=action, chunk_size=int(chunk_size), normalization=normalization,
-        image=image, contract=contract, contract_digest=digest(contract),
+        model_id=model_id,
+        observation=observation,
+        action=action,
+        chunk_size=int(chunk_size),
+        normalization=normalization,
+        image=image,
+        contract=contract,
+        contract_digest=digest(contract),
     )
     if meta is not None:
         fields["meta"] = meta
@@ -240,8 +253,7 @@ def reset_ok(id_: int) -> dict:
     return _frame(T_RESET_OK, id_)
 
 
-def actions(id_: int, chunk: np.ndarray, server_t: float,
-            timing: dict | None = None) -> dict:
+def actions(id_: int, chunk: np.ndarray, server_t: float, timing: dict | None = None) -> dict:
     arr = np.asarray(chunk, dtype=np.float32)
     if arr.ndim == 1:
         arr = arr[None]
@@ -255,11 +267,17 @@ def actions(id_: int, chunk: np.ndarray, server_t: float,
 
 def error(id_: int | None, code: str, message: str) -> dict:
     """`fatal` is derived from the code, so the two can never disagree."""
-    return _frame(T_ERROR, id_ if id_ is not None else 0, code=code,
-                  message=message, fatal=code in FATAL_CODES)
+    return _frame(
+        T_ERROR,
+        id_ if id_ is not None else 0,
+        code=code,
+        message=message,
+        fatal=code in FATAL_CODES,
+    )
 
 
 # ── contract digest ──────────────────────────────────────────────────────────
+
 
 def digest(contract: dict) -> str:
     """Stable sha256 over the contract, for a one-glance handshake compare.
@@ -268,8 +286,7 @@ def digest(contract: dict) -> str:
     that change what the robot DOES are included by the caller — see
     contract_fields().
     """
-    blob = json.dumps(contract, sort_keys=True, separators=(",", ":"),
-                      default=str).encode()
+    blob = json.dumps(contract, sort_keys=True, separators=(",", ":"), default=str).encode()
     return "sha256:" + hashlib.sha256(blob).hexdigest()[:32]
 
 
@@ -294,8 +311,10 @@ def _observation_keys(keys: dict | list | None) -> list[dict]:
                 f"observation.keys entries must be maps, got {type(item).__name__}: {item!r}"
             )
     return sorted(
-        ({"name": k.get("name"), "shape": list(k.get("shape") or []),
-          "layout": k.get("layout")} for k in items),
+        (
+            {"name": k.get("name"), "shape": list(k.get("shape") or []), "layout": k.get("layout")}
+            for k in items
+        ),
         key=lambda k: str(k["name"]),
     )
 
@@ -332,8 +351,11 @@ def compare_contracts(client: dict, server: dict) -> list[str]:
     def walk(a, b, path):
         if isinstance(a, dict) and isinstance(b, dict):
             for key in sorted(set(a) | set(b)):
-                walk(a.get(key, "<missing>"), b.get(key, "<missing>"),
-                     f"{path}.{key}" if path else key)
+                walk(
+                    a.get(key, "<missing>"),
+                    b.get(key, "<missing>"),
+                    f"{path}.{key}" if path else key,
+                )
         elif isinstance(a, list) and isinstance(b, list):
             if len(a) != len(b):
                 diffs.append(f"{path}: client has {len(a)} entries, server has {len(b)}")
@@ -349,6 +371,7 @@ def compare_contracts(client: dict, server: dict) -> list[str]:
 
 # ── image transport ──────────────────────────────────────────────────────────
 
+
 def encode_image(img: np.ndarray, spec: dict) -> np.ndarray | dict:
     """Encode one HWC uint8 frame per the server's declared image spec.
 
@@ -362,8 +385,7 @@ def encode_image(img: np.ndarray, spec: dict) -> np.ndarray | dict:
         import cv2
 
         quality = int((spec or {}).get("quality", 90))
-        ok, buf = cv2.imencode(".jpg", img[:, :, ::-1],
-                               [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+        ok, buf = cv2.imencode(".jpg", img[:, :, ::-1], [int(cv2.IMWRITE_JPEG_QUALITY), quality])
         if not ok:
             raise ProtocolError("cv2.imencode failed on a camera frame")
         return {"__jpeg__": True, "data": buf.tobytes(), "shape": list(img.shape)}
@@ -398,7 +420,9 @@ def _map_images(frame: dict, fn: Callable[[Any], Any]) -> dict:
 def encode_window(obs: dict | list, spec: dict) -> dict | list:
     """Apply the server's image encoding to one frame or to every frame of a window."""
     if isinstance(obs, (list, tuple)):
-        return [_map_images(frame, lambda img: encode_image(np.asarray(img), spec)) for frame in obs]
+        return [
+            _map_images(frame, lambda img: encode_image(np.asarray(img), spec)) for frame in obs
+        ]
     return _map_images(obs, lambda img: encode_image(np.asarray(img), spec))
 
 

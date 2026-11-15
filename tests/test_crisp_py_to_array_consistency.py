@@ -97,12 +97,11 @@ def _rand_pos() -> np.ndarray:
 
 # ── crisp_py Pose.to_array: layout + round-trip ───────────────────────────────
 
+
 def test_to_array_default_is_euler():
     for _ in range(50):
         pose = Pose(_rand_pos(), _rand_R())
-        np.testing.assert_allclose(
-            pose.to_array(), pose.to_array(OrientationRepresentation.EULER)
-        )
+        np.testing.assert_allclose(pose.to_array(), pose.to_array(OrientationRepresentation.EULER))
 
 
 def test_to_array_euler_layout_and_roundtrip():
@@ -128,6 +127,7 @@ def test_to_array_rot6d_is_first_two_rows():
 
 
 # ── consistency: crisp_py encode <-> crisp_gym encode/decode ──────────────────
+
 
 def test_crisp_py_rot6d_encode_matches_crisp_gym():
     # crisp_py Pose.to_array(ROTATION_6D)[3:] must equal crisp_gym's encoder.

@@ -33,6 +33,7 @@ home_open_up = [
     -0.021739227284989265,
 ]
 
+
 class HomeConfig(Enum):
     """Enum for different home configurations."""
 
@@ -74,12 +75,8 @@ def randomized_home_for(
     if preferred is not None and len(preferred.value) == nq:
         return preferred.randomize(noise=noise)
     if len(fallback) != nq:
-        raise ValueError(
-            f"fallback home config has {len(fallback)} joints, robot has {nq}."
-        )
-    return (
-        np.array(fallback, dtype=float) + np.random.uniform(-noise, noise, size=nq)
-    ).tolist()
+        raise ValueError(f"fallback home config has {len(fallback)} joints, robot has {nq}.")
+    return (np.array(fallback, dtype=float) + np.random.uniform(-noise, noise, size=nq)).tolist()
 
 
 def home_for_env(env, name: str, noise: float = 0.01) -> list:

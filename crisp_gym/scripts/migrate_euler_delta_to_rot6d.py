@@ -94,6 +94,7 @@ CART_NAMES = ["x", "y", "z"] + ROT6D_NAMES
 # rot6d math is a LOCAL COPY by design (standalone script, no crisp imports).
 # Canonical in-package version: crisp_gym/util/rot6d.py — keep identical.
 
+
 def euler_pose_to_rot6d(pose6: np.ndarray) -> np.ndarray:
     """``[x,y,z, roll,pitch,yaw]`` (xyz radians) -> ``[x,y,z, rot6d(6)]``.
 
@@ -110,6 +111,7 @@ def euler_pose_to_rot6d(pose6: np.ndarray) -> np.ndarray:
 
 
 # ── dataset helpers (mirrors postprocess_align_datasets.py) ───────────────────
+
 
 def data_parquet_files(dataset_dir: Path) -> list[Path]:
     """All frame-data parquet files, layout-agnostic.
@@ -134,10 +136,7 @@ def state_subfeature_order(features: dict) -> list[str]:
     """Sub-features that make up the concatenated ``observation.state`` vector,
     in info.json order (matches how recording concatenated them).
     """
-    return [
-        k for k in features
-        if k.startswith("observation.state.") and k != STATE_KEY
-    ]
+    return [k for k in features if k.startswith("observation.state.") and k != STATE_KEY]
 
 
 def feature_dim(feat: dict) -> int:
@@ -145,6 +144,7 @@ def feature_dim(feat: dict) -> int:
 
 
 # ── info.json feature rewriting ───────────────────────────────────────────────
+
 
 def rewrite_features(features: dict, action_has_gripper: bool) -> dict:
     if CARTESIAN_KEY not in features:
@@ -183,6 +183,7 @@ def rewrite_features(features: dict, action_has_gripper: bool) -> dict:
 
 
 # ── stats recomputation for the rewritten keys ────────────────────────────────
+
 
 def _compute_stats(values: np.ndarray, stat_names) -> dict:
     """Per-dimension stats for a [N, D] array, for the requested stat names.
@@ -263,7 +264,7 @@ def update_v3_episode_stats(out_dir: Path, per_ep: dict[int, dict[str, np.ndarra
                 if k not in per_ep[ep]:
                     continue
                 prefix = f"stats/{k}/"
-                names = [c[len(prefix):] for c in df.columns if c.startswith(prefix)]
+                names = [c[len(prefix) :] for c in df.columns if c.startswith(prefix)]
                 if not names:
                     continue
                 cs = _compute_stats(per_ep[ep][k], names)
@@ -278,7 +279,10 @@ def update_v3_episode_stats(out_dir: Path, per_ep: dict[int, dict[str, np.ndarra
                         # preserve scalar-vs-1d-array form of the original cell
                         cols[col][i] = (
                             np.full(np.asarray(ref).shape, n, dtype=np.asarray(ref).dtype)
-                            if ref_is_arr else type(ref)(n) if ref is not None else n
+                            if ref_is_arr
+                            else type(ref)(n)
+                            if ref is not None
+                            else n
                         )
                     else:
                         arr = np.asarray(cs[name]).reshape(-1)
@@ -334,6 +338,7 @@ def update_stats_files(out_dir: Path, per_ep: dict[int, dict[str, np.ndarray]]):
 
 # ── main migration ────────────────────────────────────────────────────────────
 
+
 def migrate(args) -> int:
     src = Path(args.input).expanduser().resolve()
     out = Path(args.output).expanduser().resolve()
@@ -347,7 +352,8 @@ def migrate(args) -> int:
     if not args.no_action_gripper and GRIPPER_KEY not in features:
         logger.warning(
             "'%s' not found; reconstructed action will be pose-only (9d). "
-            "Pass --no-action-gripper to silence this.", GRIPPER_KEY,
+            "Pass --no-action-gripper to silence this.",
+            GRIPPER_KEY,
         )
 
     # plan
@@ -355,8 +361,12 @@ def migrate(args) -> int:
     logger.info("Planned feature changes:")
     for key in (CARTESIAN_KEY, STATE_KEY, ACTION_KEY):
         if key in features:
-            logger.info("  %-28s %s -> %s", key,
-                        tuple(features[key]["shape"]), tuple(new_features[key]["shape"]))
+            logger.info(
+                "  %-28s %s -> %s",
+                key,
+                tuple(features[key]["shape"]),
+                tuple(new_features[key]["shape"]),
+            )
     logger.info("  action gripper channel: %s", "yes" if action_has_gripper else "no")
 
     data_files = data_parquet_files(src)
@@ -386,12 +396,16 @@ def migrate(args) -> int:
         # its sub-features, or rebuilding it would silently reorder the vector.
         if not state_verified and STATE_KEY in df.columns and state_order:
             old_parts = [
-                cart6[0] if sk == CARTESIAN_KEY else np.asarray(df[sk].iloc[0], np.float32).reshape(-1)
+                cart6[0]
+                if sk == CARTESIAN_KEY
+                else np.asarray(df[sk].iloc[0], np.float32).reshape(-1)
                 for sk in state_order
             ]
             old_concat = np.concatenate(old_parts)
             existing = np.asarray(df[STATE_KEY].iloc[0], np.float32).reshape(-1)
-            if old_concat.shape != existing.shape or not np.allclose(old_concat, existing, atol=1e-4):
+            if old_concat.shape != existing.shape or not np.allclose(
+                old_concat, existing, atol=1e-4
+            ):
                 raise ValueError(
                     f"'{STATE_KEY}' is not the ordered concat of its sub-features "
                     f"{state_order} (got len {existing.shape} vs rebuilt {old_concat.shape}). "
@@ -438,11 +452,7 @@ def migrate(args) -> int:
             if "episode_index" in df.columns
             else np.zeros(len(df), dtype=int)
         )
-        fi_col = (
-            df["frame_index"].to_numpy()
-            if "frame_index" in df.columns
-            else np.arange(len(df))
-        )
+        fi_col = df["frame_index"].to_numpy() if "frame_index" in df.columns else np.arange(len(df))
         for ep in np.unique(ep_col):
             pos = np.where(ep_col == ep)[0]
             pos = pos[np.argsort(fi_col[pos])]  # episode rows in temporal order
@@ -455,7 +465,9 @@ def migrate(args) -> int:
                 actions[pos[j]] = a
 
             ep_key = int(ep)
-            frames = per_ep_frames.setdefault(ep_key, {CARTESIAN_KEY: [], ACTION_KEY: [], STATE_KEY: []})
+            frames = per_ep_frames.setdefault(
+                ep_key, {CARTESIAN_KEY: [], ACTION_KEY: [], STATE_KEY: []}
+            )
             frames[CARTESIAN_KEY].extend(cart9[pos])
             frames[ACTION_KEY].extend([actions[p] for p in pos])
             if STATE_KEY in df.columns and state_order:
@@ -467,9 +479,7 @@ def migrate(args) -> int:
     # collapse per-episode frame lists to arrays
     per_ep_arrays: dict[int, dict[str, np.ndarray]] = {}
     for ep, d in per_ep_frames.items():
-        per_ep_arrays[ep] = {
-            k: np.stack(v) for k, v in d.items() if v
-        }
+        per_ep_arrays[ep] = {k: np.stack(v) for k, v in d.items() if v}
 
     # 4. meta updates
     info["features"] = new_features
@@ -491,11 +501,13 @@ def main():
     parser.add_argument("--input", required=True, help="Source dataset root dir.")
     parser.add_argument("--output", required=True, help="Destination dataset root dir.")
     parser.add_argument(
-        "--no-action-gripper", action="store_true",
+        "--no-action-gripper",
+        action="store_true",
         help="Emit a pose-only (9d) action instead of pos+rot6d+gripper (10d).",
     )
     parser.add_argument(
-        "--dry-run", action="store_true",
+        "--dry-run",
+        action="store_true",
         help="Validate and print the planned schema change without writing.",
     )
     parser.add_argument("--log-level", default="INFO")

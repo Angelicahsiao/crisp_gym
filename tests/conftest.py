@@ -88,11 +88,11 @@ _AVAILABLE = {name: _installed(name) for needs in MARKER_NEEDS.values() for name
 
 # ── 1. isolation ─────────────────────────────────────────────────────────────
 
+
 def _is_real(module: object) -> bool:
     """Loaded from somewhere (has a spec or a file), as opposed to hand-made."""
     return isinstance(module, types.ModuleType) and (
-        getattr(module, "__spec__", None) is not None
-        or bool(getattr(module, "__file__", None))
+        getattr(module, "__spec__", None) is not None or bool(getattr(module, "__file__", None))
     )
 
 
@@ -125,9 +125,9 @@ def _belongs_to_a_test_file(name: str, module: object, now: dict) -> bool:
         return False
     top = now.get(name.partition(".")[0])
     if _is_project(module) or (top is not None and _is_project(top)):
-        return True                       # a whole project package goes together
+        return True  # a whole project package goes together
     if _is_real(module):
-        return False                      # real third-party: shared by everyone
+        return False  # real third-party: shared by everyone
     # A module that was not loaded from anywhere. It is a test's fake unless it
     # sits under a real third-party package, where the library made it itself
     # (torch._C._nn, cv2.gapi, six.moves, pyexpat.errors ...).
@@ -142,14 +142,17 @@ def _take_back(before: dict) -> dict:
     now = dict(sys.modules)
     # decide everything first: a package's path cannot be read once its parent
     # has been taken out
-    taken = {name: module for name, module in now.items()
-             if before.get(name) is not module and _belongs_to_a_test_file(name, module, now)}
+    taken = {
+        name: module
+        for name, module in now.items()
+        if before.get(name) is not module and _belongs_to_a_test_file(name, module, now)
+    }
     for name in taken:
         if name in before:
             sys.modules[name] = before[name]
         else:
             del sys.modules[name]
-    for name, module in before.items():   # a real module a test removed
+    for name, module in before.items():  # a real module a test removed
         if name not in sys.modules and not _belongs_to_a_test_file(name, module, before):
             sys.modules[name] = module
     return taken
@@ -184,6 +187,7 @@ def _own_modules(request: pytest.FixtureRequest):  # noqa: ANN202
 
 # ── 2. markers ───────────────────────────────────────────────────────────────
 
+
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Apply FILE_MARKERS and skip marked tests whose packages are missing."""
     for item in items:
@@ -192,11 +196,15 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         for marker, needs in MARKER_NEEDS.items():
             missing = [name for name in needs if not _AVAILABLE[name]]
             if missing and item.get_closest_marker(marker):
-                item.add_marker(pytest.mark.skip(
-                    reason=f"marked '{marker}': needs {', '.join(missing)} (not installed)"))
+                item.add_marker(
+                    pytest.mark.skip(
+                        reason=f"marked '{marker}': needs {', '.join(missing)} (not installed)"
+                    )
+                )
 
 
 # ── 3. fixtures ──────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def tmp_dir(tmp_path: Path) -> Path:

@@ -62,6 +62,7 @@ def se3_inverse(T: np.ndarray) -> np.ndarray:
 
 # ── A. forward / backward on the SE(3) (rot6d/matrix) path — the ACCURATE one ──
 
+
 def test_pose9d_to_mat_is_valid_se3():
     for _ in range(200):
         pose9 = np.concatenate([_rng.normal(size=3), _rand_R().as_matrix()[:2, :].flatten()])
@@ -103,6 +104,7 @@ def test_backward_then_forward_recovers_target():
 
 
 # ── B. the EULER representation does NOT obey the SE(3) formulas ───────────────
+
 
 def test_euler_negation_is_not_se3_inverse():
     # A general pose whose rotation is far from identity.

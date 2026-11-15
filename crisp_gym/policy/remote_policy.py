@@ -110,9 +110,7 @@ class WebsocketPolicyClient:
         while True:
             left = deadline - time.monotonic()
             if left <= 0:
-                raise TimeoutError(
-                    f"no {want_type} for request {want_id} within {timeout:.2f}s"
-                )
+                raise TimeoutError(f"no {want_type} for request {want_id} within {timeout:.2f}s")
             frame = proto.validate(
                 proto.unpack(self._conn.recv(timeout=left)),
                 expect_from=proto.SERVER_FRAMES,
@@ -134,7 +132,9 @@ class WebsocketPolicyClient:
                 # chunk against the CURRENT base pose.
                 logger.warning(
                     "dropping stale %s for request %s (waiting for %s)",
-                    frame["t"], frame["id"], want_id,
+                    frame["t"],
+                    frame["id"],
+                    want_id,
                 )
                 continue
             if frame["t"] != want_type:
@@ -150,9 +150,7 @@ class WebsocketPolicyClient:
         # __enter__ returns the connection itself; it is closed explicitly in
         # close() / _drop_connection(). websockets >= 17.1 deprecates using the
         # result of connect() without entering it; older versions do not care.
-        self._conn = connect(
-            self.uri, open_timeout=self.connect_timeout, max_size=None
-        ).__enter__()
+        self._conn = connect(self.uri, open_timeout=self.connect_timeout, max_size=None).__enter__()
         hid = self._id()
         self._send(proto.hello(hid, self.contract))
         meta = self._await(hid, proto.T_HELLO_OK, self.connect_timeout)
@@ -163,7 +161,8 @@ class WebsocketPolicyClient:
         server_contract = meta.get("contract") or {}
         diffs = (
             proto.compare_contracts(self.contract, server_contract)
-            if self._declares_contract else []
+            if self._declares_contract
+            else []
         )
         if diffs:
             detail = "\n  ".join(diffs)
@@ -180,7 +179,9 @@ class WebsocketPolicyClient:
             logger.warning("contract mismatch (verify_handshake off):\n  %s", detail)
         logger.info(
             "Connected to %s | model=%s chunk=%s images=%s",
-            self.uri, meta.get("model_id"), meta.get("chunk_size"),
+            self.uri,
+            meta.get("model_id"),
+            meta.get("chunk_size"),
             self.image_spec.get("encoding"),
         )
 
@@ -199,7 +200,10 @@ class WebsocketPolicyClient:
                 last = exc
                 logger.warning(
                     "connect to %s failed (%s/%s): %s",
-                    self.uri, attempt, self.reconnect_attempts, exc,
+                    self.uri,
+                    attempt,
+                    self.reconnect_attempts,
+                    exc,
                 )
                 self._conn = None
                 if attempt < self.reconnect_attempts:
@@ -218,8 +222,9 @@ class WebsocketPolicyClient:
         self._reset_acked = False
 
     # ── requests ─────────────────────────────────────────────────────────
-    def infer(self, obs: dict | list, task: str | None = None,
-              obs_t: float | None = None) -> np.ndarray:
+    def infer(
+        self, obs: dict | list, task: str | None = None, obs_t: float | None = None
+    ) -> np.ndarray:
         """Send an observation, return its action chunk (steps, action_dim).
 
         `obs` is one frame, or the whole observation window: a list of frames,
@@ -247,8 +252,9 @@ class WebsocketPolicyClient:
                     payload[key] = value
         rid = self._id()
         try:
-            self._send(proto.infer(rid, payload, task,
-                                   obs_t if obs_t is not None else time.monotonic()))
+            self._send(
+                proto.infer(rid, payload, task, obs_t if obs_t is not None else time.monotonic())
+            )
             frame = self._await(rid, proto.T_ACTIONS, self.infer_timeout)
         except (TimeoutError, RuntimeError, proto.ProtocolError):
             raise
@@ -414,31 +420,24 @@ class RemotePolicy(Policy):
             obs_raw["observation.state"] = concatenate_state_features(obs_raw)
 
             # Request a fresh chunk when the current one is exhausted
-            if self._chunk is None or self._chunk_idx >= min(
-                self.n_action_steps, len(self._chunk)
-            ):
+            if self._chunk is None or self._chunk_idx >= min(self.n_action_steps, len(self._chunk)):
                 # Snapshot the base pose NOW — the same tick as the observation
                 # being sent — before inference latency lets the robot drift.
                 # The whole chunk is composed against this one base.
-                chunk_base = (
-                    self._current_pose_mat() if self.relative_actions else None
-                )
+                chunk_base = self._current_pose_mat() if self.relative_actions else None
                 t0 = time.monotonic()
                 try:
                     # obs_t is the capture instant, so the server can drop an
                     # observation that queued too long instead of spending a
                     # GPU slot on it.
-                    self._chunk = self.client.infer(
-                        obs_raw, task=obs_raw.get("task"), obs_t=t0
-                    )
+                    self._chunk = self.client.infer(obs_raw, task=obs_raw.get("task"), obs_t=t0)
                 except Exception as e:
                     logger.error(f"Remote inference failed: {e} — holding pose.")
                     return obs_raw, None
                 self._chunk_idx = 0
                 self._chunk_base = chunk_base
                 logger.debug(
-                    f"Received chunk {self._chunk.shape} in "
-                    f"{(time.monotonic() - t0) * 1e3:.1f} ms"
+                    f"Received chunk {self._chunk.shape} in {(time.monotonic() - t0) * 1e3:.1f} ms"
                 )
 
             action = self._chunk[self._chunk_idx]

@@ -241,9 +241,7 @@ def test_missing_dataset_is_reported_by_path(tmp_path):
 
 def _signatures(video_feature):
     """Run one feature through the real describe() path."""
-    return reencode.feature_signatures(
-        {"features": {"observation.images.cam": video_feature}}
-    )
+    return reencode.feature_signatures({"features": {"observation.images.cam": video_feature}})
 
 
 def _feature(dtype="float32", shape=(10,), **extra):
@@ -317,9 +315,7 @@ def test_feature_shape_mismatch_is_reported():
 def test_feature_present_on_only_one_side_is_reported():
     out = _report(
         _summary(signatures={"action": _feature()}),
-        _summary(
-            signatures={"action": _feature(), "extra.ext_torque": _feature(shape=(7,))}
-        ),
+        _summary(signatures={"action": _feature(), "extra.ext_torque": _feature(shape=(7,))}),
     )
     assert "extra.ext_torque" in out and "feature keys differ" in out, out
 
@@ -358,13 +354,17 @@ def test_a_stale_video_info_block_is_reported():
 def test_encoder_tuning_keys_do_not_block_a_merge():
     """lerobot exempts exactly these six inside `info`; we must too, or we
     report a blocker that does not exist."""
-    a = _feature(dtype="video", shape=(800, 1280, 3),
-                 info={"video.codec": "h264", "video.crf": 21, "video.g": 2})
-    b = _feature(dtype="video", shape=(800, 1280, 3),
-                 info={"video.codec": "h264", "video.crf": 30, "video.g": 60})
-    out = _report(
-        _summary(signatures=_signatures(a)), _summary(signatures=_signatures(b))
+    a = _feature(
+        dtype="video",
+        shape=(800, 1280, 3),
+        info={"video.codec": "h264", "video.crf": 21, "video.g": 2},
     )
+    b = _feature(
+        dtype="video",
+        shape=(800, 1280, 3),
+        info={"video.codec": "h264", "video.crf": 30, "video.g": 60},
+    )
+    out = _report(_summary(signatures=_signatures(a)), _summary(signatures=_signatures(b)))
     assert "should accept these" in out, out
 
 
@@ -471,16 +471,27 @@ def test_resized_shape_refuses_to_guess():
 def _video_dataset(root: Path, height=800, width=1280) -> Path:
     key = "observation.images.cam"
     (root / "meta").mkdir(parents=True)
-    (root / "meta" / "info.json").write_text(json.dumps({
-        "fps": 15,
-        "features": {key: {
-            "dtype": "video",
-            "shape": [height, width, 3],
-            "names": ["height", "width", "channels"],
-            "info": {"video.codec": "av1", "video.pix_fmt": "yuv420p",
-                     "video.height": height, "video.width": width, "video.fps": 15},
-        }},
-    }))
+    (root / "meta" / "info.json").write_text(
+        json.dumps(
+            {
+                "fps": 15,
+                "features": {
+                    key: {
+                        "dtype": "video",
+                        "shape": [height, width, 3],
+                        "names": ["height", "width", "channels"],
+                        "info": {
+                            "video.codec": "av1",
+                            "video.pix_fmt": "yuv420p",
+                            "video.height": height,
+                            "video.width": width,
+                            "video.fps": 15,
+                        },
+                    }
+                },
+            }
+        )
+    )
     video = root / "videos" / key / "chunk-000" / "file-000.mp4"
     video.parent.mkdir(parents=True)
     video.write_bytes(b"")
@@ -492,7 +503,9 @@ def _run_main(argv, monkeypatch, width=1280, height=800):
     import io
     import logging as _logging
 
-    monkeypatch.setattr(reencode, "probe", lambda path: _probe(width=width, height=height, path=path))
+    monkeypatch.setattr(
+        reencode, "probe", lambda path: _probe(width=width, height=height, path=path)
+    )
     stream = io.StringIO()
     handler = _logging.StreamHandler(stream)
     reencode.logger.addHandler(handler)
@@ -504,27 +517,28 @@ def _run_main(argv, monkeypatch, width=1280, height=800):
     return code, stream.getvalue()
 
 
-
 def test_resize_dry_run_keeps_the_source_codec_and_plans_the_shape(tmp_path, monkeypatch):
     root = _video_dataset(tmp_path / "ds")
     code, log = _run_main(["--root", str(root), "--resize", "320", "512", "--dry-run"], monkeypatch)
     assert code == 0
     assert "keeping the source's codec=av1" in log
     assert "Resizing to 512x320 (WxH)" in log
-    assert "[320, 512, 3]" in log                  # the planned info.json shape
-    assert "STRETCHED" not in log                  # 800x1280 -> 320x512 keeps 0.625
+    assert "[320, 512, 3]" in log  # the planned info.json shape
+    assert "STRETCHED" not in log  # 800x1280 -> 320x512 keeps 0.625
 
 
 def test_resize_warns_when_the_aspect_ratio_changes(tmp_path, monkeypatch):
     root = _video_dataset(tmp_path / "ds")
     code, log = _run_main(["--root", str(root), "--resize", "320", "320", "--dry-run"], monkeypatch)
-    assert code == 0                               # allowed, but loudly
+    assert code == 0  # allowed, but loudly
     assert "STRETCHED" in log
 
 
 def test_resize_warns_when_it_upscales(tmp_path, monkeypatch):
     root = _video_dataset(tmp_path / "ds")
-    code, log = _run_main(["--root", str(root), "--resize", "1600", "2560", "--dry-run"], monkeypatch)
+    code, log = _run_main(
+        ["--root", str(root), "--resize", "1600", "2560", "--dry-run"], monkeypatch
+    )
     assert code == 0
     assert "UPSCALES" in log
 
@@ -536,7 +550,7 @@ def test_resize_refuses_a_shape_it_cannot_update(tmp_path, monkeypatch):
     info["features"]["observation.images.cam"].pop("names")
     (root / "meta" / "info.json").write_text(json.dumps(info))
     code, log = _run_main(["--root", str(root), "--resize", "320", "512", "--dry-run"], monkeypatch)
-    assert code == 1                               # before any encoding
+    assert code == 1  # before any encoding
     assert "height and" in log
 
 
@@ -545,10 +559,10 @@ def test_resize_argument_errors_exit_2(tmp_path, monkeypatch):
 
     root = _video_dataset(tmp_path / "ds")
     for argv in (
-        ["--root", str(root), "--resize", "321", "512"],               # odd height
-        ["--root", str(root), "--resize", "320", "511"],               # odd width
-        ["--root", str(root), "--resize", "0", "512"],                 # not positive
-        ["--root", str(root), "--resize", "320", "512", "--in-place"], # destructive
+        ["--root", str(root), "--resize", "321", "512"],  # odd height
+        ["--root", str(root), "--resize", "320", "511"],  # odd width
+        ["--root", str(root), "--resize", "0", "512"],  # not positive
+        ["--root", str(root), "--resize", "320", "512", "--in-place"],  # destructive
     ):
         with pytest.raises(SystemExit) as exc:
             _run_main(argv, monkeypatch)

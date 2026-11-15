@@ -12,12 +12,12 @@ from crisp_gym.envs.manipulator_env import ManipulatorCartesianEnv
 from crisp_gym.envs.manipulator_env_config import make_env_config
 
 # === Parameters ===
-RADIUS = 0.15         # [m]
+RADIUS = 0.15  # [m]
 CENTER = np.array([0.4, 0.0, 0.4])
-CTRL_FREQ = 50        # Hz
-SIN_FREQ_Y = 0.25     # Hz — y oscillation (full figure-eight period = 4 s)
-SIN_FREQ_Z = 0.125    # Hz — z oscillation at half frequency → figure eight
-MAX_TIME = 8.0        # seconds (two full figure-eights)
+CTRL_FREQ = 50  # Hz
+SIN_FREQ_Y = 0.25  # Hz — y oscillation (full figure-eight period = 4 s)
+SIN_FREQ_Z = 0.125  # Hz — z oscillation at half frequency → figure eight
+MAX_TIME = 8.0  # seconds (two full figure-eights)
 
 # === Environment ===
 env_config = make_env_config("ur7e", control_frequency=CTRL_FREQ)

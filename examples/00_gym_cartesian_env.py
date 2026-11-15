@@ -17,9 +17,7 @@ env_config = FrankaEnvConfig(control_frequency=CTRL_FREQ, gripper_config=None, c
 env_config.cartesian_control_param_config = (
     "./crisp_gym/config/control/default_cartesian_impedance.yaml"
 )
-env_config.joint_control_param_config = (
-    "./crisp_gym/config/control/fr3_joint_control.yaml"
-)
+env_config.joint_control_param_config = "./crisp_gym/config/control/fr3_joint_control.yaml"
 env = ManipulatorCartesianEnv(namespace="", config=env_config)
 
 # %% === Move to Starting Point ===

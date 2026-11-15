@@ -80,12 +80,17 @@ def _make_dataset(root: Path, robot_type: str, dof: int, *, ext_torque: bool) ->
                 "rate_hz": 15.0,
                 "action": {"definition": "next_tcp_pose", "lookahead": 1},
                 "observations": [
-                    {"key": "observation.state.cartesian", "source": "robot.tcp_pose",
-                     "include_in_state": True},
-                    {"key": "observation.state.gripper", "source": "gripper.value",
-                     "include_in_state": True},
-                    {"key": "extra.joints", "source": "robot.joints",
-                     "include_in_state": False},
+                    {
+                        "key": "observation.state.cartesian",
+                        "source": "robot.tcp_pose",
+                        "include_in_state": True,
+                    },
+                    {
+                        "key": "observation.state.gripper",
+                        "source": "gripper.value",
+                        "include_in_state": True,
+                    },
+                    {"key": "extra.joints", "source": "robot.joints", "include_in_state": False},
                 ],
             },
             indent=4,
@@ -94,8 +99,12 @@ def _make_dataset(root: Path, robot_type: str, dof: int, *, ext_torque: bool) ->
 
     columns = {k: [np.zeros(s, np.float32)] for k, (_, s) in SHARED_FEATURES.items()}
     columns.update({k: [0] for k in BOOKKEEPING})
-    for key in ("extra.joints", "extra.joint_efforts", "extra.joint_velocities",
-                "extra.target_joints"):
+    for key in (
+        "extra.joints",
+        "extra.joint_efforts",
+        "extra.joint_velocities",
+        "extra.target_joints",
+    ):
         columns[key] = [np.zeros(dof, np.float32)]
     if ext_torque:
         columns["extra.ext_torque"] = [np.zeros(dof, np.float32)]
@@ -160,8 +169,12 @@ def test_same_name_different_shape_columns_are_dropped(ur_and_franka):
 
     for root in (ur, franka):
         features = _aligned_info(root)["features"]
-        for key in ("extra.joints", "extra.joint_efforts",
-                    "extra.joint_velocities", "extra.target_joints"):
+        for key in (
+            "extra.joints",
+            "extra.joint_efforts",
+            "extra.joint_velocities",
+            "extra.target_joints",
+        ):
             assert key not in features, f"{key} still present in {root.name}"
 
 
@@ -239,14 +252,11 @@ def test_original_robot_type_is_kept_as_provenance(ur_and_franka):
 # ── stats must follow the columns out ───────────────────────────────────────
 
 
-DOF_KEYS = ("extra.joints", "extra.joint_efforts",
-            "extra.joint_velocities", "extra.target_joints")
+DOF_KEYS = ("extra.joints", "extra.joint_efforts", "extra.joint_velocities", "extra.target_joints")
 
 
 def _aligned_stats(root: Path, suffix: str = "_aligned") -> dict:
-    return json.loads(
-        (root.parent / (root.name + suffix) / "meta" / "stats.json").read_text()
-    )
+    return json.loads((root.parent / (root.name + suffix) / "meta" / "stats.json").read_text())
 
 
 def test_dropped_columns_are_removed_from_stats_json(ur_and_franka):
@@ -279,8 +289,14 @@ def test_per_episode_stat_columns_are_dropped_too(ur_and_franka):
     ur, franka = ur_and_franka
     align_mod.align([ur, franka], "_aligned", None, [], dry_run=False)
     for root in (ur, franka):
-        path = (root.parent / (root.name + "_aligned") / "meta" / "episodes"
-                / "chunk-000" / "file-000.parquet")
+        path = (
+            root.parent
+            / (root.name + "_aligned")
+            / "meta"
+            / "episodes"
+            / "chunk-000"
+            / "file-000.parquet"
+        )
         cols = set(pd.read_parquet(path).columns)
         for key in DOF_KEYS:
             assert not any(c.startswith(f"stats/{key}/") for c in cols), key
@@ -403,8 +419,7 @@ def test_dry_run_names_each_dataset_distinctly(tmp_path, caplog):
         tmp_path / "franka_electricbox" / "lerobot", "franka", 7, ext_torque=True
     )
     with caplog.at_level("INFO"):
-        align_mod.align([ur, franka], "_aligned", None, [], dry_run=True,
-                        robot_type="ur+franka")
+        align_mod.align([ur, franka], "_aligned", None, [], dry_run=True, robot_type="ur+franka")
     text = caplog.text
     assert "ur_electricbox/lerobot" in text
     assert "franka_electricbox/lerobot" in text
@@ -439,8 +454,13 @@ def test_missing_contract_is_allowed_with_the_flag(ur_and_franka):
     ur, franka = ur_and_franka
     _strip_contract(franka)
     align_mod.align(
-        [ur, franka], "_aligned", None, [], dry_run=False,
-        robot_type="ur+franka", skip_contract_check=True,
+        [ur, franka],
+        "_aligned",
+        None,
+        [],
+        dry_run=False,
+        robot_type="ur+franka",
+        skip_contract_check=True,
     )
     assert _aligned_info(ur)["features"] == _aligned_info(franka)["features"]
     assert _aligned_info(franka)["robot_type"] == "ur+franka"
@@ -450,9 +470,7 @@ def test_contractless_output_simply_has_no_record_config(ur_and_franka):
     """Nothing to rewrite must not mean a crash or a fabricated contract."""
     ur, franka = ur_and_franka
     _strip_contract(franka)
-    align_mod.align(
-        [ur, franka], "_aligned", None, [], dry_run=False, skip_contract_check=True
-    )
+    align_mod.align([ur, franka], "_aligned", None, [], dry_run=False, skip_contract_check=True)
     assert not (franka.parent / "franka_aligned" / "meta" / "record_config.json").exists()
     # the dataset that HAD one still gets it rewritten
     assert (ur.parent / "ur_aligned" / "meta" / "record_config.json").exists()
@@ -469,7 +487,11 @@ def test_the_flag_does_not_abandon_checks_it_can_still_make(ur_and_franka, tmp_p
 
     with pytest.raises(SystemExit, match="not mixable"):
         align_mod.align(
-            [ur, franka, third], "_aligned", None, [], dry_run=False,
+            [ur, franka, third],
+            "_aligned",
+            None,
+            [],
+            dry_run=False,
             skip_contract_check=True,
         )
 

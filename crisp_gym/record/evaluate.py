@@ -113,9 +113,7 @@ class Evaluator:
             # above); formatting that with :.2f used to raise TypeError and
             # lose the user's just-entered success/score with it.
             time_str = "" if elapsed_time is None else f"{elapsed_time:.2f}"
-            self.eval_writer.write(
-                f"{episode},{policy or ''},{success},{score},{time_str}\n"
-            )
+            self.eval_writer.write(f"{episode},{policy or ''},{success},{score},{time_str}\n")
             self.eval_writer.flush()
             logger.info(
                 f"Recorded evaluation for episode {episode}: "

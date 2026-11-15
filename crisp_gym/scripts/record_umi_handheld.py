@@ -150,8 +150,7 @@ def main():
         config_path = find_config("envs/umi_handheld.yaml")
         if config_path is None:
             raise FileNotFoundError(
-                "Could not find bundled 'umi_handheld.yaml'. "
-                "Specify --env-config explicitly."
+                "Could not find bundled 'umi_handheld.yaml'. Specify --env-config explicitly."
             )
     else:
         config_path = Path(args.env_config)
@@ -204,9 +203,7 @@ def main():
             push_to_hub=args.push_to_hub,
             timing_csv_dir=args.timing_csv_dir,
             **(
-                {}
-                if args.reduce_gc_pauses is None
-                else {"reduce_gc_pauses": args.reduce_gc_pauses}
+                {} if args.reduce_gc_pauses is None else {"reduce_gc_pauses": args.reduce_gc_pauses}
             ),
         )
         recording_manager.wait_until_ready()

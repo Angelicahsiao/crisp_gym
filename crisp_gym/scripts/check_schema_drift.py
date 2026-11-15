@@ -44,8 +44,8 @@ def report(root: Path) -> tuple[set[str], set[str]]:
     # video features live as mp4 on disk, never as a parquet column
     declared = {k for k, v in feats.items() if v.get("dtype") != "video"}
 
-    orphan_cols = cols - declared          # in parquet, not declared -> CastError
-    missing_cols = declared - cols         # declared, absent from parquet -> also fatal
+    orphan_cols = cols - declared  # in parquet, not declared -> CastError
+    missing_cols = declared - cols  # declared, absent from parquet -> also fatal
 
     print(f"\n=== {root}")
     print(f"  data files        : {len(files)}")
@@ -80,8 +80,7 @@ def repair(root: Path, orphans: set[str]) -> None:
     # meta/episodes/*.parquet carries flattened stats/<key>/<stat> columns
     for p in sorted((root / "meta" / "episodes").rglob("*.parquet")):
         df = pd.read_parquet(p)
-        stale = [c for c in df.columns
-                 if c.startswith("stats/") and c.split("/")[1] in orphans]
+        stale = [c for c in df.columns if c.startswith("stats/") and c.split("/")[1] in orphans]
         if stale:
             df.drop(columns=stale).to_parquet(p, index=False)
             print(f"  epstat {p.name}: dropped {len(stale)} stats column(s)")
@@ -100,13 +99,14 @@ def repair(root: Path, orphans: set[str]) -> None:
             print(f"  stats.json: dropped {removed}")
 
 
-
 # ─────────────────────── video timeline integrity ────────────────────────────
+
 
 def _probe_duration(path: Path) -> float | None:
     """Seconds, via PyAV then ffprobe. None when neither is available."""
     try:
         import av  # type: ignore
+
         with av.open(str(path)) as c:
             if c.duration:
                 return float(c.duration) / 1_000_000.0
@@ -119,12 +119,24 @@ def _probe_duration(path: Path) -> float | None:
         return None
     import shutil as _sh
     import subprocess
+
     if _sh.which("ffprobe"):
         try:
             out = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                 "-of", "default=nw=1:nk=1", str(path)],
-                capture_output=True, text=True, check=True).stdout.strip()
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=nw=1:nk=1",
+                    str(path),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
             return float(out)
         except Exception:
             return None
@@ -149,18 +161,23 @@ def check_videos(root: Path) -> bool:
     eps = pd.concat([pd.read_parquet(p) for p in ep_files], ignore_index=True)
     with open(root / "meta" / "info.json") as f:
         info = json.load(f)
-    template = info.get("video_path",
-                        "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4")
+    template = info.get(
+        "video_path", "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4"
+    )
 
-    print(f"  episodes in meta   : {len(eps)}"
-          f"   (info.json total_episodes: {info.get('total_episodes')})")
+    print(
+        f"  episodes in meta   : {len(eps)}"
+        f"   (info.json total_episodes: {info.get('total_episodes')})"
+    )
     ok = len(eps) == info.get("total_episodes")
     if not ok:
         print("  ** episode count in meta/episodes does not match info.json")
 
     for key in video_keys:
-        cols = [f"videos/{key}/{c}" for c in
-                ("chunk_index", "file_index", "from_timestamp", "to_timestamp")]
+        cols = [
+            f"videos/{key}/{c}"
+            for c in ("chunk_index", "file_index", "from_timestamp", "to_timestamp")
+        ]
         if any(c not in eps.columns for c in cols):
             print(f"  ** {key}: episodes parquet lacks {[c for c in cols if c not in eps.columns]}")
             ok = False
@@ -206,12 +223,17 @@ def main() -> None:
     """CLI entry point."""
     ap = argparse.ArgumentParser()
     ap.add_argument("roots", nargs="+", type=Path)
-    ap.add_argument("--videos", action="store_true",
-                    help="Also check that every episode's video reference resolves "
-                         "to a file that exists and is long enough.")
-    ap.add_argument("--repair", action="store_true",
-                    help="Drop orphan columns in place (parquet + stats). "
-                         "Back the dataset up first.")
+    ap.add_argument(
+        "--videos",
+        action="store_true",
+        help="Also check that every episode's video reference resolves "
+        "to a file that exists and is long enough.",
+    )
+    ap.add_argument(
+        "--repair",
+        action="store_true",
+        help="Drop orphan columns in place (parquet + stats). Back the dataset up first.",
+    )
     args = ap.parse_args()
 
     any_bad = False
@@ -221,8 +243,10 @@ def main() -> None:
             any_bad = True
         if missing:
             any_bad = True
-            print(f"  !! {root}: MISSING columns cannot be repaired by dropping — "
-                  "info.json declares data the parquet does not have.")
+            print(
+                f"  !! {root}: MISSING columns cannot be repaired by dropping — "
+                "info.json declares data the parquet does not have."
+            )
         if orphans:
             any_bad = True
             if args.repair:

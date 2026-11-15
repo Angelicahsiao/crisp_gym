@@ -45,31 +45,45 @@ def layout(tmp_path):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake = fake_bin / "python"
-    fake.write_text(textwrap.dedent("""\
+    fake.write_text(
+        textwrap.dedent("""\
         #!/usr/bin/env python3
         import json, os, sys
         with open(os.environ["FAKE_PY_LOG"], "a") as f:
             f.write(json.dumps(sys.argv[1:]) + "\\n")
         if sys.argv[1:] and sys.argv[1].endswith(("lerobot_relative_pose.py", "train_absolute_next_pose.py")):
             sys.exit(int(os.environ.get("FAKE_TRAIN_EXIT", "0")))
-    """))
+    """)
+    )
     fake.chmod(0o755)
-    return {"work": work, "ds": ds, "bin": fake_bin, "log": tmp_path / "py_calls.jsonl", "tmp": tmp_path}
+    return {
+        "work": work,
+        "ds": ds,
+        "bin": fake_bin,
+        "log": tmp_path / "py_calls.jsonl",
+        "tmp": tmp_path,
+    }
 
 
 def _run(layout, env=None, args=()):
     full_env = dict(os.environ)
-    full_env.update({
-        "PATH": f"{layout['bin']}{os.pathsep}{os.environ['PATH']}",
-        "FAKE_PY_LOG": str(layout["log"]),
-        "DATASET": str(layout["ds"]),
-        "OUT": str(layout["tmp"] / "runs" / "run1"),
-        "SKIP_HUB_CHECK": "1",
-    })
+    full_env.update(
+        {
+            "PATH": f"{layout['bin']}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_PY_LOG": str(layout["log"]),
+            "DATASET": str(layout["ds"]),
+            "OUT": str(layout["tmp"] / "runs" / "run1"),
+            "SKIP_HUB_CHECK": "1",
+        }
+    )
     full_env.update(env or {})
     proc = subprocess.run(
         ["bash", str(layout["work"] / SCRIPT.name), *args],
-        capture_output=True, text=True, cwd=layout["tmp"], env=full_env, timeout=60,
+        capture_output=True,
+        text=True,
+        cwd=layout["tmp"],
+        env=full_env,
+        timeout=60,
     )
     calls = []
     if layout["log"].exists():
@@ -78,7 +92,11 @@ def _run(layout, env=None, args=()):
 
 
 def _train_argv(calls):
-    train = [c for c in calls if c and c[0].endswith(("lerobot_relative_pose.py", "train_absolute_next_pose.py"))]
+    train = [
+        c
+        for c in calls
+        if c and c[0].endswith(("lerobot_relative_pose.py", "train_absolute_next_pose.py"))
+    ]
     assert len(train) == 1, calls
     return train[0]
 
@@ -92,12 +110,15 @@ def _flag(argv, name):
 
 # ── the default command ───────────────────────────────────────────────────────
 
+
 def test_default_is_relative_16d_with_the_pinned_settings(layout):
     proc, calls = _run(layout)
     assert proc.returncode == 0, proc.stderr
     argv = _train_argv(calls)
 
-    assert argv[0] == str(layout["work"] / "crisp_gym" / "crisp_gym" / "scripts" / "lerobot_relative_pose.py")
+    assert argv[0] == str(
+        layout["work"] / "crisp_gym" / "crisp_gym" / "scripts" / "lerobot_relative_pose.py"
+    )
     assert argv[1] == "--wrt-start"
     assert "--epochs" not in argv
     expected = {
@@ -105,7 +126,7 @@ def test_default_is_relative_16d_with_the_pinned_settings(layout):
         "--policy.device": "cuda",
         "--policy.push_to_hub": "false",
         "--policy.horizon": "16",
-        "--policy.n_action_steps": "12",                   # ~0.8 s at 15 fps (lerobot's guide)
+        "--policy.n_action_steps": "12",  # ~0.8 s at 15 fps (lerobot's guide)
         "--policy.objective": "diffusion",
         "--policy.image_resize_shape": "[236,236]",
         "--policy.image_crop_shape": "[224,224]",
@@ -113,7 +134,7 @@ def test_default_is_relative_16d_with_the_pinned_settings(layout):
         "--policy.num_inference_steps": "10",
         "--dataset.image_transforms.enable": "true",
         "--dataset.root": str(layout["ds"]),
-        "--batch_size": "320",                             # lerobot's suggested config
+        "--batch_size": "320",  # lerobot's suggested config
         "--steps": "100000",
         "--save_freq": "20000",
         "--num_workers": "8",
@@ -130,7 +151,7 @@ def test_default_augmentation_is_lerobots_set_without_affine(layout):
     proc, calls = _run(layout)
     assert proc.returncode == 0, proc.stderr
     tfs = json.loads(_flag(_train_argv(calls), "--dataset.image_transforms.tfs"))
-    assert set(tfs) == set(DEFAULT_TFS_NO_AFFINE)          # complete list, no affine
+    assert set(tfs) == set(DEFAULT_TFS_NO_AFFINE)  # complete list, no affine
     for name, (typ, kwargs) in DEFAULT_TFS_NO_AFFINE.items():
         assert tfs[name] == {"weight": 1.0, "type": typ, "kwargs": kwargs}, name
 
@@ -139,15 +160,23 @@ def test_preflight_runs_without_gripper_exclusion(layout):
     proc, calls = _run(layout, {"N_ACTION_STEPS": "6"})
     assert proc.returncode == 0, proc.stderr
     pre = [c for c in calls if c and c[0].endswith("groot_preflight.py")]
-    assert pre == [[
-        str(layout["work"] / "crisp_gym" / "crisp_gym" / "scripts" / "groot_preflight.py"),
-        str(layout["ds"]), "--exclude", "--chunk-size", "6",
-    ]]
+    assert pre == [
+        [
+            str(layout["work"] / "crisp_gym" / "crisp_gym" / "scripts" / "groot_preflight.py"),
+            str(layout["ds"]),
+            "--exclude",
+            "--chunk-size",
+            "6",
+        ]
+    ]
 
 
 def test_preflight_failure_stops_before_training(layout):
     fake = layout["bin"] / "python"
-    fake.write_text(fake.read_text() + "if sys.argv[1:] and sys.argv[1].endswith('groot_preflight.py'):\n    sys.exit(1)\n")
+    fake.write_text(
+        fake.read_text()
+        + "if sys.argv[1:] and sys.argv[1].endswith('groot_preflight.py'):\n    sys.exit(1)\n"
+    )
     proc, calls = _run(layout)
     assert proc.returncode == 1
     assert "Preflight FAILED" in proc.stderr
@@ -163,10 +192,11 @@ def test_skip_preflight(layout):
 def test_hub_check_runs_unless_skipped(layout):
     proc, calls = _run(layout, {"SKIP_HUB_CHECK": "0"})
     assert proc.returncode == 0, proc.stderr
-    assert ["-"] in calls                                  # the heredoc hub probe
+    assert ["-"] in calls  # the heredoc hub probe
 
 
 # ── modes and knobs ───────────────────────────────────────────────────────────
+
 
 def test_wrt_start_0_gives_the_10d_state(layout):
     argv = _train_argv(_run(layout, {"WRT_START": "0"})[1])
@@ -184,7 +214,7 @@ def test_epochs_is_passed_to_the_launcher(layout):
     for env, flag_at in (({}, 2), ({"ABSOLUTE": "1"}, 1)):
         layout["log"].unlink(missing_ok=True)
         argv = _train_argv(_run(layout, {**env, "EPOCHS": "120"})[1])
-        assert argv[flag_at:flag_at + 2] == ["--epochs", "120"]
+        assert argv[flag_at : flag_at + 2] == ["--epochs", "120"]
         # Still passed: with EPOCHS they set the checkpoint count.
         assert _flag(argv, "--steps") == "100000" and _flag(argv, "--save_freq") == "20000"
 
@@ -200,7 +230,7 @@ def test_flow_matching_sets_integration_steps_not_ddim(layout):
 def test_augment_all_and_off(layout):
     argv = _train_argv(_run(layout, {"AUGMENT": "all"})[1])
     assert _flag(argv, "--dataset.image_transforms.enable") == "true"
-    assert _flag(argv, "--dataset.image_transforms.tfs") is None     # lerobot's full default set
+    assert _flag(argv, "--dataset.image_transforms.tfs") is None  # lerobot's full default set
     layout["log"].unlink()
     argv = _train_argv(_run(layout, {"AUGMENT": "0"})[1])
     assert not any(a.startswith("--dataset.image_transforms") for a in argv)
@@ -208,13 +238,22 @@ def test_augment_all_and_off(layout):
 
 def test_warmup_resize_and_sizes_are_forwarded(layout):
     # Every value differs from its default, so each assertion proves forwarding.
-    argv = _train_argv(_run(layout, {
-        "WARMUP_STEPS": "500", "IMAGE_RESIZE": "256", "HORIZON": "24", "N_ACTION_STEPS": "10",
-        "BATCH_SIZE": "32", "NUM_WORKERS": "4",
-    })[1])
+    argv = _train_argv(
+        _run(
+            layout,
+            {
+                "WARMUP_STEPS": "500",
+                "IMAGE_RESIZE": "256",
+                "HORIZON": "24",
+                "N_ACTION_STEPS": "10",
+                "BATCH_SIZE": "32",
+                "NUM_WORKERS": "4",
+            },
+        )[1]
+    )
     assert _flag(argv, "--policy.scheduler_warmup_steps") == "500"
     assert _flag(argv, "--policy.image_resize_shape") == "[256,256]"
-    assert _flag(argv, "--policy.image_crop_shape") == "[224,224]"    # CLIP's input size
+    assert _flag(argv, "--policy.image_crop_shape") == "[224,224]"  # CLIP's input size
     assert _flag(argv, "--policy.horizon") == "24"
     assert _flag(argv, "--policy.n_action_steps") == "10"
     assert _flag(argv, "--batch_size") == "32" and _flag(argv, "--num_workers") == "4"
@@ -226,6 +265,7 @@ def test_extra_arguments_are_appended_last(layout):
 
 
 # ── refusals: all before the preflight, the hub check or training ────────────
+
 
 @pytest.mark.parametrize(
     ("env", "args", "message"),
@@ -249,7 +289,7 @@ def test_bad_settings_exit_2_before_anything_runs(layout, env, args, message):
     proc, calls = _run(layout, {**env, "SKIP_HUB_CHECK": "0"}, args)
     assert proc.returncode == 2
     assert message in proc.stderr
-    assert calls == []                                     # no preflight, no hub check, no training
+    assert calls == []  # no preflight, no hub check, no training
 
 
 def test_missing_dataset_exits_2(layout):
@@ -267,7 +307,7 @@ def test_nested_lerobot_dataset_dir_is_found(layout):
 
 
 def test_missing_launcher_exits_2(layout):
-    (layout["work"] / "crisp_gym").unlink()                # no clone beside the script
+    (layout["work"] / "crisp_gym").unlink()  # no clone beside the script
     proc, calls = _run(layout)
     assert proc.returncode == 2
     assert "Training launcher missing" in proc.stderr
@@ -275,6 +315,7 @@ def test_missing_launcher_exits_2(layout):
 
 
 # ── dry run, logs and exit status ─────────────────────────────────────────────
+
 
 def test_dry_run_launches_nothing(layout):
     proc, calls = _run(layout, {"DRY_RUN": "1", "SKIP_PREFLIGHT": "1"})
@@ -288,7 +329,7 @@ def test_logs_are_kept_beside_a_run_that_never_wrote_a_checkpoint(layout):
     proc, _ = _run(layout, {"SKIP_PREFLIGHT": "1"})
     assert proc.returncode == 0, proc.stderr
     out = layout["tmp"] / "runs" / "run1"
-    assert not out.exists()                                # the fake never creates it
+    assert not out.exists()  # the fake never creates it
     launch = Path(f"{out}.launch_command.txt").read_text()
     assert "lerobot_relative_pose.py" in launch and "multi_task_dit" in launch
     assert Path(f"{out}.log").exists()
@@ -305,6 +346,8 @@ def test_success_message_matches_the_mode(layout):
     assert 'state_input: "relative_wrt_start"' in proc.stdout
     assert "SAME task string" in proc.stdout
     layout["log"].unlink()
-    proc, _ = _run(layout, {"SKIP_PREFLIGHT": "1", "ABSOLUTE": "1",
-                            "OUT": str(layout["tmp"] / "runs" / "run2")})
+    proc, _ = _run(
+        layout,
+        {"SKIP_PREFLIGHT": "1", "ABSOLUTE": "1", "OUT": str(layout["tmp"] / "runs" / "run2")},
+    )
     assert "absolute_lerobot_policy.yaml" in proc.stdout

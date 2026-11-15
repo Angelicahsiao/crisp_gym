@@ -53,7 +53,7 @@ def _item(n_obs=2):
     return {
         "observation.state": np.arange(n_obs * 16, dtype=float).reshape(n_obs, 16),
         CAM: np.ones((n_obs, 3, 8, 8)),
-        "action": np.zeros((16, 10)),          # the recorded chunk: never a policy input
+        "action": np.zeros((16, 10)),  # the recorded chunk: never a policy input
         "task": TASK,
         "task_index": np.array(0),
         "episode_index": np.array(3),
@@ -82,6 +82,7 @@ class _RecordingPre:
 
 # ── task_for_frame ───────────────────────────────────────────────────────────
 
+
 def test_task_string_becomes_a_batch_of_one():
     assert ol.task_for_frame({"task": TASK}) == [TASK]
 
@@ -100,14 +101,15 @@ def test_missing_or_non_string_task_gives_none(value):
 
 # ── which policies get queues / stacked images ──────────────────────────────
 
-class _Diffusion:          # and multi_task_dit: queues built in reset()
+
+class _Diffusion:  # and multi_task_dit: queues built in reset()
     def __init__(self, with_images=True):
         self._queues = {"observation.state": deque(), "action": deque()}
         if with_images:
             self._queues[OBS_IMAGES] = deque()
 
 
-class _Groot:              # only an internal action queue
+class _Groot:  # only an internal action queue
     def __init__(self):
         self._action_queue = deque()
 
@@ -132,6 +134,7 @@ def test_images_are_stacked_only_for_policies_with_an_image_queue():
 
 # ── build_batch_frame ────────────────────────────────────────────────────────
 
+
 def test_task_reaches_the_preprocessor():
     """The fix itself: tokenizers read `task` from the preprocessor input."""
     pre = _RecordingPre()
@@ -143,7 +146,7 @@ def test_task_reaches_the_preprocessor():
 def test_recorded_action_and_metadata_are_not_inputs():
     pre = _RecordingPre()
     ol.build_batch_frame(_item(), 0, 2, skip_key="action", to_batch_tensor=_to_batch, pre=pre)
-    assert "action" not in pre.seen                     # the recorded chunk
+    assert "action" not in pre.seen  # the recorded chunk
     assert "task_index" not in pre.seen and "episode_index" not in pre.seen
 
 
@@ -151,7 +154,7 @@ def test_injected_action_is_dropped_and_tokens_survive():
     frame = ol.build_batch_frame(
         _item(), 0, 2, skip_key="action", to_batch_tensor=_to_batch, pre=_RecordingPre()
     )
-    assert "action" not in frame                       # would pollute the ACTION queue
+    assert "action" not in frame  # would pollute the ACTION queue
     assert "observation.language.tokens" in frame
 
 
@@ -172,16 +175,27 @@ def test_single_frame_policies_take_values_as_they_are():
 
 def test_cameras_are_stacked_only_when_asked():
     stacked = ol.build_batch_frame(
-        _item(), 0, 2, skip_key="action", to_batch_tensor=_to_batch,
-        image_keys=[CAM], obs_images_key=OBS_IMAGES,
+        _item(),
+        0,
+        2,
+        skip_key="action",
+        to_batch_tensor=_to_batch,
+        image_keys=[CAM],
+        obs_images_key=OBS_IMAGES,
         stack_images=lambda imgs: np.stack(imgs, axis=-4),
     )
     assert stacked[OBS_IMAGES].shape == (1, 1, 3, 8, 8)
     plain = ol.build_batch_frame(
-        _item(), 0, 2, skip_key="action", to_batch_tensor=_to_batch,
-        image_keys=[CAM], obs_images_key=OBS_IMAGES, stack_images=None,
+        _item(),
+        0,
+        2,
+        skip_key="action",
+        to_batch_tensor=_to_batch,
+        image_keys=[CAM],
+        obs_images_key=OBS_IMAGES,
+        stack_images=None,
     )
-    assert OBS_IMAGES not in plain                     # GR00T reads per-camera keys
+    assert OBS_IMAGES not in plain  # GR00T reads per-camera keys
 
 
 # lerobot >= 0.5 builds datasets with return_uint8=True and its TRAINING LOOP
@@ -189,37 +203,52 @@ def test_cameras_are_stacked_only_when_asked():
 # policy itself, so it must do the same: without it every image-conditioned
 # policy saw frames 255x too bright and looked as if it ignored its input.
 
+
 def _uint8_item():
     item = _item()
-    item[CAM] = np.full((2, 3, 8, 8), 255, dtype=np.uint8)       # two obs steps, all white
-    item[CAM][0] = 51                                             # older step: 0.2
+    item[CAM] = np.full((2, 3, 8, 8), 255, dtype=np.uint8)  # two obs steps, all white
+    item[CAM][0] = 51  # older step: 0.2
     return item
 
 
 def test_uint8_camera_frames_are_scaled_to_unit_range():
-    frames = [ol.build_batch_frame(_uint8_item(), t, 2, skip_key="action", to_batch_tensor=_to_batch,
-                                   camera_keys=[CAM]) for t in (0, 1)]
+    frames = [
+        ol.build_batch_frame(
+            _uint8_item(), t, 2, skip_key="action", to_batch_tensor=_to_batch, camera_keys=[CAM]
+        )
+        for t in (0, 1)
+    ]
     assert frames[0][CAM].max() == pytest.approx(0.2) and frames[0][CAM].min() == pytest.approx(0.2)
     assert frames[1][CAM].max() == pytest.approx(1.0)
 
 
 def test_the_stacked_tensor_carries_the_scaled_frames():
     frame = ol.build_batch_frame(
-        _uint8_item(), 1, 2, skip_key="action", to_batch_tensor=_to_batch,
-        image_keys=[CAM], obs_images_key=OBS_IMAGES,
-        stack_images=lambda imgs: np.stack(imgs, axis=-4), camera_keys=[CAM],
+        _uint8_item(),
+        1,
+        2,
+        skip_key="action",
+        to_batch_tensor=_to_batch,
+        image_keys=[CAM],
+        obs_images_key=OBS_IMAGES,
+        stack_images=lambda imgs: np.stack(imgs, axis=-4),
+        camera_keys=[CAM],
     )
     assert frame[OBS_IMAGES].max() == pytest.approx(1.0)
 
 
 def test_float_frames_and_other_uint8_values_are_left_alone():
-    item = _item()                                                # float camera frames (lerobot 0.4)
+    item = _item()  # float camera frames (lerobot 0.4)
     before = np.asarray(item[CAM][1], dtype=float)
-    frame = ol.build_batch_frame(item, 1, 2, skip_key="action", to_batch_tensor=_to_batch, camera_keys=[CAM])
+    frame = ol.build_batch_frame(
+        item, 1, 2, skip_key="action", to_batch_tensor=_to_batch, camera_keys=[CAM]
+    )
     assert np.array_equal(np.asarray(frame[CAM])[0], before)
     item = _uint8_item()
-    item["observation.flags"] = np.array([[7], [9]], dtype=np.uint8)   # uint8, but not a camera
-    frame = ol.build_batch_frame(item, 1, 2, skip_key="action", to_batch_tensor=_to_batch, camera_keys=[CAM])
+    item["observation.flags"] = np.array([[7], [9]], dtype=np.uint8)  # uint8, but not a camera
+    frame = ol.build_batch_frame(
+        item, 1, 2, skip_key="action", to_batch_tensor=_to_batch, camera_keys=[CAM]
+    )
     assert float(np.asarray(frame["observation.flags"]).ravel()[0]) == 9.0
     # ... and a camera the caller did not name is not touched either
     frame = ol.build_batch_frame(_uint8_item(), 1, 2, skip_key="action", to_batch_tensor=_to_batch)
@@ -228,8 +257,10 @@ def test_float_frames_and_other_uint8_values_are_left_alone():
 
 def test_is_uint8_reads_numpy_and_torch_style_dtypes():
     assert ol.is_uint8(np.zeros(2, np.uint8))
-    assert not ol.is_uint8(np.zeros(2, np.float32)) and not ol.is_uint8("x") and not ol.is_uint8(None)
-    assert ol.is_uint8(types.SimpleNamespace(dtype="torch.uint8"))        # how torch prints it
+    assert (
+        not ol.is_uint8(np.zeros(2, np.float32)) and not ol.is_uint8("x") and not ol.is_uint8(None)
+    )
+    assert ol.is_uint8(types.SimpleNamespace(dtype="torch.uint8"))  # how torch prints it
     assert not ol.is_uint8(types.SimpleNamespace(dtype="torch.float32"))
 
 
@@ -270,7 +301,7 @@ def _pose(x=0.0, yaw_deg=0.0, grip=1.0):
     return np.array([x, 0.0, 0.0, c, -s, 0.0, s, c, 0.0, grip])
 
 
-STEP = 0.005   # 5 mm per step, like a slow 15 Hz demo
+STEP = 0.005  # 5 mm per step, like a slow 15 Hz demo
 
 
 def _window(first_delta, n):
@@ -279,22 +310,22 @@ def _window(first_delta, n):
 
 
 def test_current_step_offset_matches_each_policy_family():
-    assert ol.current_step_offset(range(-1, 63)) == 1     # diffusion / multi_task_dit, n_obs 2
-    assert ol.current_step_offset(range(-2, 14)) == 2     # n_obs 3
-    assert ol.current_step_offset(range(0, 40)) == 0      # GR00T
-    assert ol.current_step_offset(range(1, 10)) is None   # no current step: cannot align
+    assert ol.current_step_offset(range(-1, 63)) == 1  # diffusion / multi_task_dit, n_obs 2
+    assert ol.current_step_offset(range(-2, 14)) == 2  # n_obs 3
+    assert ol.current_step_offset(range(0, 40)) == 0  # GR00T
+    assert ol.current_step_offset(range(1, 10)) is None  # no current step: cannot align
     assert ol.current_step_offset(None) is None
 
 
 def test_misalignment_reads_one_step_of_motion_as_error():
     """The bug this fixes, reproduced with a perfect predictor."""
-    rec_window = _window(-1, 17)                          # starts at t-1, as diffusion loads it
-    pred = _window(0, 8)                                  # perfect prediction from t
+    rec_window = _window(-1, 17)  # starts at t-1, as diffusion loads it
+    pred = _window(0, 8)  # perfect prediction from t
     unaligned = ol.chunk_metrics(pred, rec_window, _to_mat)
-    assert np.allclose(unaligned["pos_err"], STEP)        # every step "wrong" by 5 mm
+    assert np.allclose(unaligned["pos_err"], STEP)  # every step "wrong" by 5 mm
     offset = ol.current_step_offset(range(-1, 16))
     aligned = ol.chunk_metrics(pred, rec_window[offset:], _to_mat)
-    assert np.allclose(aligned["pos_err"], 0.0)           # actually perfect
+    assert np.allclose(aligned["pos_err"], 0.0)  # actually perfect
 
 
 def test_standing_still_has_err_over_motion_of_one():
@@ -323,7 +354,7 @@ def test_rotation_motion_and_error():
 
 
 def test_absolute_mode_measures_motion_from_the_current_pose():
-    current = _pose(1.0)                                  # robot is at x = 1 m
+    current = _pose(1.0)  # robot is at x = 1 m
     rec = np.stack([_pose(1.0 + STEP * (k + 1)) for k in range(4)])
     m = ol.chunk_metrics(rec, rec, _to_mat, current_mat=_to_mat(current[:9]))
     assert np.allclose(m["pos_err"], 0.0)
@@ -341,7 +372,7 @@ def test_motion_verdict_bands():
     assert ol.motion_verdict(ol.ERR_OVER_MOTION_GOOD) == "GOOD"
     assert ol.motion_verdict(0.5) == "PARTIAL"
     assert ol.motion_verdict(0.71) == "POOR"
-    assert ol.motion_verdict(float("inf")) == "UNKNOWN"   # demo did not move
+    assert ol.motion_verdict(float("inf")) == "UNKNOWN"  # demo did not move
 
 
 def test_ratio_of_means_with_no_motion_is_inf():
@@ -353,7 +384,7 @@ def test_eval_augmentation_is_switched_off():
     cfg = SimpleNamespace(dataset=SimpleNamespace(image_transforms=SimpleNamespace(enable=True)))
     assert ol.disable_eval_augmentation(cfg) is True
     assert cfg.dataset.image_transforms.enable is False
-    assert ol.disable_eval_augmentation(cfg) is False     # already off: nothing to do
+    assert ol.disable_eval_augmentation(cfg) is False  # already off: nothing to do
     assert ol.disable_eval_augmentation(SimpleNamespace()) is False
 
 
@@ -371,6 +402,7 @@ def test_current_pose_prefers_cartesian_and_takes_the_latest_obs_step():
 # failed silently and evaluated the whole dataset from row 0, whatever
 # --episodes said. Episodes are now located from the episode_index column.
 
+
 def test_episode_rows_come_from_the_episode_column():
     column = np.repeat([0, 1, 2], [4, 3, 5])
     assert ol.episode_row_range(column, 0) == (0, 4)
@@ -385,7 +417,9 @@ def test_episode_rows_are_positions_in_a_filtered_dataset():
 
 
 def test_a_missing_episode_is_an_error_that_names_what_exists():
-    with pytest.raises(ValueError, match=r"episode 5 is not in this dataset \(it has episodes 0\.\.2\)"):
+    with pytest.raises(
+        ValueError, match=r"episode 5 is not in this dataset \(it has episodes 0\.\.2\)"
+    ):
         ol.episode_row_range(np.repeat([0, 1, 2], 3), 5)
     with pytest.raises(ValueError, match=r"it has 2 episodes: 3, 7"):
         ol.episode_row_range(np.array([3, 3, 7]), 0)
@@ -397,23 +431,31 @@ def test_an_episode_split_into_two_blocks_is_an_error():
 
 
 class _ArrowColumn:
-    def __init__(self, values): self.values = np.asarray(values)
-    def to_numpy(self): return self.values
+    def __init__(self, values):
+        self.values = np.asarray(values)
+
+    def to_numpy(self):
+        return self.values
 
 
 class _HF:
     """Stands in for datasets.Dataset: an Arrow table plus an optional row selection."""
+
     def __init__(self, table_column, selected=None):
         self.data = types.SimpleNamespace(column=lambda name: _ArrowColumn(table_column))
         self._selected = table_column if selected is None else selected
+
     def with_format(self, fmt):
         assert fmt is None
         return {"episode_index": list(self._selected)}
 
 
 class _DS:
-    def __init__(self, hf, n): self.hf_dataset, self._n = hf, n
-    def __len__(self): return self._n
+    def __init__(self, hf, n):
+        self.hf_dataset, self._n = hf, n
+
+    def __len__(self):
+        return self._n
 
 
 def test_episode_column_is_read_from_the_arrow_table():
@@ -590,36 +632,49 @@ print("AUG_AFTER", json.dumps(cfg.dataset.image_transforms.enable))
 @pytest.mark.parametrize("mode", ["nobs2", "nobs1"])
 def test_main_end_to_end_perfect_policy_reads_zero_error(tmp_path, mode):
     import subprocess
+
     driver = tmp_path / "driver.py"
     driver.write_text(DRIVER)
-    proc = subprocess.run([sys.executable, str(driver), str(SCRIPT), mode],
-                          capture_output=True, text=True, timeout=120)
+    proc = subprocess.run(
+        [sys.executable, str(driver), str(SCRIPT), mode],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
     out = proc.stdout + proc.stderr
     assert proc.returncode == 0, out[-3000:]
-    assert "AUG_AFTER false" in out                             # augmentation switched off
+    assert "AUG_AFTER false" in out  # augmentation switched off
     assert "switched OFF for evaluation" in out
-    assert ("comparing from recorded row 1" if mode == "nobs2" else "comparing from recorded row 0") in out
-    assert "verdict: GOOD" in out and "err/move 0.00" in out    # a perfect policy reads perfect
+    assert (
+        "comparing from recorded row 1" if mode == "nobs2" else "comparing from recorded row 0"
+    ) in out
+    assert "verdict: GOOD" in out and "err/move 0.00" in out  # a perfect policy reads perfect
     assert "predicted motion = 1.00x the demo's" in out
-    assert "<- re-observe" in out                               # row for the 8th executed step
+    assert "<- re-observe" in out  # row for the 8th executed step
     assert "task string fed to the policy: 'open the electrical box'" in out
     assert "episode 0: dataset rows 0..59 (60 frames)" in out
-    assert _rows(out) == [0, 5, 10, 15, 20, 25]                 # episode 0 only, --max-frames 6
+    assert _rows(out) == [0, 5, 10, 15, 20, 25]  # episode 0 only, --max-frames 6
 
 
 def _run_driver(tmp_path, mode, *episodes):
     import subprocess
+
     driver = tmp_path / "driver.py"
     driver.write_text(DRIVER)
-    proc = subprocess.run([sys.executable, str(driver), str(SCRIPT), mode, *episodes],
-                          capture_output=True, text=True, timeout=120)
+    proc = subprocess.run(
+        [sys.executable, str(driver), str(SCRIPT), mode, *episodes],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
     return proc, proc.stdout + proc.stderr
 
 
 def _rows(out):
     import json
+
     line = [ln for ln in out.splitlines() if ln.startswith("ROWS ")][-1]
-    return json.loads(line[len("ROWS "):])
+    return json.loads(line[len("ROWS ") :])
 
 
 def test_main_evaluates_the_requested_episode_not_the_first(tmp_path):
@@ -644,12 +699,15 @@ def test_main_stops_on_an_episode_that_is_not_in_the_dataset(tmp_path):
     """No fallback to other frames: a missing episode is an error, before any inference."""
     proc, out = _run_driver(tmp_path, "nobs2", "0", "7")
     assert proc.returncode != 0
-    assert "cannot select --episodes: episode 7 is not in this dataset (it has episodes 0..1)" in out
-    assert _rows(out) == []                                     # nothing was evaluated
+    assert (
+        "cannot select --episodes: episode 7 is not in this dataset (it has episodes 0..1)" in out
+    )
+    assert _rows(out) == []  # nothing was evaluated
     assert "verdict" not in out
 
 
 # ── --diagnose ───────────────────────────────────────────────────────────────
+
 
 def test_sampling_diagnostics_separates_noise_from_a_wrong_mean():
     rec = np.zeros((4, 10))
@@ -673,9 +731,9 @@ def test_sampling_diagnostics_separates_noise_from_a_wrong_mean():
 def test_sampling_diagnostics_measures_what_a_swapped_input_changes():
     rec = np.zeros((3, 10))
     samples = np.zeros((2, 3, 10))
-    ignored = samples[0].copy()                       # model ignores the swapped input
+    ignored = samples[0].copy()  # model ignores the swapped input
     used = samples[0].copy()
-    used[:, 2] += 0.02      # model follows it: 20 mm away
+    used[:, 2] += 0.02  # model follows it: 20 mm away
     d = ol.sampling_diagnostics(samples, rec, swapped_image=ignored, swapped_state=used)
     assert d["image_swap"] == pytest.approx([0.0] * 3, abs=1e-12)
     assert d["state_swap"] == pytest.approx([0.02] * 3)
@@ -683,7 +741,9 @@ def test_sampling_diagnostics_measures_what_a_swapped_input_changes():
 
 
 def test_sampling_diagnostics_uses_the_steps_both_chunks_have():
-    d = ol.sampling_diagnostics(np.zeros((2, 8, 10)), np.zeros((5, 10)), swapped_state=np.zeros((8, 10)))
+    d = ol.sampling_diagnostics(
+        np.zeros((2, 8, 10)), np.zeros((5, 10)), swapped_state=np.zeros((8, 10))
+    )
     assert all(len(v) == 5 for v in d.values())
 
 
@@ -696,15 +756,16 @@ def test_spread_evenly_covers_the_whole_list():
 def _section(out, number):
     start = out.index(f"[diagnose] {number})")
     nxt = out.find("[diagnose] ", start + 5)
-    return out[start: nxt if nxt > 0 else len(out)]
+    return out[start : nxt if nxt > 0 else len(out)]
 
 
 @pytest.mark.parametrize("mode", ["nobs2", "nobs1"])
 def test_diagnose_on_a_perfect_policy(tmp_path, mode):
     """Inputs identical, loss zero for the right observations and not for the wrong
     ones, no sampling noise, and the output follows the state when it is swapped."""
-    proc, out = _run_driver(tmp_path, mode, "0", "--diagnose", "--diagnose-frames", "4",
-                            "--diagnose-samples", "3")
+    proc, out = _run_driver(
+        tmp_path, mode, "0", "--diagnose", "--diagnose-frames", "4", "--diagnose-samples", "3"
+    )
     assert proc.returncode == 0, out[-4000:]
     assert "[diagnose] 4 frames, spread evenly over the 6 evaluated ones" in out
 
@@ -717,21 +778,28 @@ def test_diagnose_on_a_perfect_policy(tmp_path, mode):
     swapped = [ln for ln in two.splitlines() if "state from another frame" in ln][0]
     assert float(own.split()[4]) == 0.0
     assert float(swapped.split()[4]) > 0.0
-    assert "images from another frame" not in two      # this policy has no cameras
+    assert "images from another frame" not in two  # this policy has no cameras
 
     three = _section(out, 3)
+
     def row(label):
         line = [ln for ln in three.splitlines() if label in ln][0]
         return [float(x) for x in line.split()[-2:]]
-    assert row("demo motion from the current pose") == [5.0, 40.0]      # 1 and 8 steps of 5 mm
+
+    assert row("demo motion from the current pose") == [5.0, 40.0]  # 1 and 8 steps of 5 mm
     assert row("error of one sample") == [0.0, 0.0]
     assert row("spread between samples") == [0.0, 0.0]
     assert row("change when state comes from another frame")[0] > 0.0
-    assert [ln for ln in three.splitlines() if "change when images" in ln][0].split()[-2:] == ["-", "-"]
+    assert [ln for ln in three.splitlines() if "change when images" in ln][0].split()[-2:] == [
+        "-",
+        "-",
+    ]
 
 
 def test_diagnose_catches_a_batch_path_that_differs_from_the_frame_path(tmp_path):
-    proc, out = _run_driver(tmp_path, "nobs2", "0", "--diagnose", "--diagnose-frames", "4", "--bad-pre")
+    proc, out = _run_driver(
+        tmp_path, "nobs2", "0", "--diagnose", "--diagnose-frames", "4", "--bad-pre"
+    )
     assert proc.returncode == 0, out[-4000:]
     one = _section(out, 1)
     assert "2.500e-01" in one

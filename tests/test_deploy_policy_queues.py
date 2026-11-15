@@ -46,14 +46,14 @@ worker_source = pytest.mark.parametrize("source", list(SOURCES.values()), ids=li
 def _worker(source: Path) -> ast.FunctionDef:
     tree = ast.parse(source.read_text())
     return next(
-        fn for fn in tree.body
-        if isinstance(fn, ast.FunctionDef) and fn.name == "inference_worker"
+        fn for fn in tree.body if isinstance(fn, ast.FunctionDef) and fn.name == "inference_worker"
     )
 
 
 def _populate_calls(node: ast.AST) -> list[ast.Call]:
     return [
-        n for n in ast.walk(node)
+        n
+        for n in ast.walk(node)
         if isinstance(n, ast.Call)
         and isinstance(n.func, ast.Name)
         and n.func.id == "populate_queues"
@@ -62,6 +62,7 @@ def _populate_calls(node: ast.AST) -> list[ast.Call]:
 
 # ── the regression ────────────────────────────────────────────────────────────
 
+
 @worker_source
 def test_populate_queues_is_guarded(source):
     """An unguarded push is the GR00T crash."""
@@ -69,8 +70,10 @@ def test_populate_queues_is_guarded(source):
     calls = _populate_calls(worker)
     assert calls, "populate_queues vanished from inference_worker"
     guarded = [
-        node for node in ast.walk(worker)
-        if isinstance(node, ast.If) and _populate_calls(node.test) == []
+        node
+        for node in ast.walk(worker)
+        if isinstance(node, ast.If)
+        and _populate_calls(node.test) == []
         and _populate_calls(ast.Module(body=node.body, type_ignores=[]))
     ]
     assert guarded, (
@@ -89,7 +92,8 @@ def test_prediction_is_not_inside_the_queue_guard(source):
     otherwise GR00T would return no chunk instead of crashing."""
     worker = _worker(source)
     guards = [
-        node for node in ast.walk(worker)
+        node
+        for node in ast.walk(worker)
         if isinstance(node, ast.If)
         and "_queues" in ast.dump(node.test)
         and "hasattr" in ast.dump(node.test)
@@ -97,19 +101,23 @@ def test_prediction_is_not_inside_the_queue_guard(source):
     assert guards, "no hasattr(_queues) guard found"
     for guard in guards:
         inside = [
-            n for n in ast.walk(ast.Module(body=guard.body, type_ignores=[]))
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            n
+            for n in ast.walk(ast.Module(body=guard.body, type_ignores=[]))
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
             and n.func.attr == "predict_action_chunk"
         ]
         assert not inside, "predict_action_chunk must run for queueless policies too"
     called = {
-        n.func.attr for n in ast.walk(worker)
+        n.func.attr
+        for n in ast.walk(worker)
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
     }
     assert "predict_action_chunk" in called
 
 
 # ── hasattr really is the right discriminator ─────────────────────────────────
+
 
 class _ModuleLike:
     """torch.nn.Module raises AttributeError from __getattr__ for an unknown

@@ -308,7 +308,9 @@ def chunk_metrics(pred, rec, to_mat, current_mat=None) -> dict[str, list[float]]
     moves), rec_rot (recorded rotation from the current pose).
     """
     current = np.eye(4) if current_mat is None else np.asarray(current_mat, dtype=float)
-    out = {k: [] for k in ("pos_err", "rot_err", "grip_err", "rec_motion", "pred_motion", "rec_rot")}
+    out = {
+        k: [] for k in ("pos_err", "rot_err", "grip_err", "rec_motion", "pred_motion", "rec_rot")
+    }
     for k in range(min(len(pred), len(rec))):
         Tp = to_mat(np.asarray(pred[k][:9], dtype=float))
         Tr = to_mat(np.asarray(rec[k][:9], dtype=float))
@@ -321,7 +323,9 @@ def chunk_metrics(pred, rec, to_mat, current_mat=None) -> dict[str, list[float]]
     return out
 
 
-def sampling_diagnostics(samples, rec, swapped_image=None, swapped_state=None) -> dict[str, list[float]]:
+def sampling_diagnostics(
+    samples, rec, swapped_image=None, swapped_state=None
+) -> dict[str, list[float]]:
     """Per-step position statistics (metres) of K sampled chunks of ONE frame.
 
     ``samples`` is ``[K, H, D]``: K chunks sampled for the same observation with
@@ -426,13 +430,17 @@ def main():
     p.add_argument("--max-frames", type=int, default=200)
     p.add_argument("--num-inference-steps", type=int, default=None)
     p.add_argument(
-        "--exec-steps", type=int, default=None,
+        "--exec-steps",
+        type=int,
+        default=None,
         help="Steps the robot executes per chunk before re-observing (your "
         "deploy n_action_steps). The verdict reads err/move at this step. "
         "Default: the checkpoint's own n_action_steps.",
     )
     p.add_argument(
-        "--action-repr", choices=["auto", "relative", "absolute"], default="auto",
+        "--action-repr",
+        choices=["auto", "relative", "absolute"],
+        default="auto",
         help="How the checkpoint's action is expressed. 'auto' reads "
         "action_repr.json next to --path (absolute marker => absolute, else "
         "relative). RELATIVE wraps the dataset with RelativePoseDataset (obs + "
@@ -441,7 +449,8 @@ def main():
         "checkpoints.",
     )
     p.add_argument(
-        "--diagnose", action="store_true",
+        "--diagnose",
+        action="store_true",
         help="After the report, find out WHY the numbers are what they are: (1) "
         "whether this script feeds the model exactly what a training batch does, "
         "(2) the model's training loss on these frames, with its own observations "
@@ -449,10 +458,15 @@ def main():
         "per frame: sampling noise vs systematic error, and how much the output "
         "changes when an input is swapped.",
     )
-    p.add_argument("--diagnose-frames", type=int, default=32,
-                   help="frames used by --diagnose, spread over the evaluated ones")
-    p.add_argument("--diagnose-samples", type=int, default=4,
-                   help="chunks sampled per frame by --diagnose")
+    p.add_argument(
+        "--diagnose-frames",
+        type=int,
+        default=32,
+        help="frames used by --diagnose, spread over the evaluated ones",
+    )
+    p.add_argument(
+        "--diagnose-samples", type=int, default=4, help="chunks sampled per frame by --diagnose"
+    )
     args = p.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -491,6 +505,7 @@ def main():
     pre = post = None
     try:
         from lerobot.policies.factory import make_pre_post_processors
+
         pre, post = make_pre_post_processors(policy_cfg=policy.config, pretrained_path=args.path)
     except ImportError:
         pass
@@ -499,8 +514,11 @@ def main():
     # then wrap with the training relative-pose conversion. Augmentation off:
     # the dataset comes from the TRAINING config, which may have it enabled.
     if disable_eval_augmentation(train_config):
-        logger.info("[openloop] the training run used image augmentation; switched OFF for evaluation")
+        logger.info(
+            "[openloop] the training run used image augmentation; switched OFF for evaluation"
+        )
     from lerobot.datasets.factory import make_dataset
+
     base_ds = make_dataset(train_config)
     ds = base_ds if not hasattr(base_ds, "datasets") else base_ds  # single dataset expected
 
@@ -515,7 +533,8 @@ def main():
         is_absolute = bool(ar and ar.get("action", {}).get("pose_repr") == "absolute")
     logger.info(
         "[openloop] action_repr=%s -> %s comparison",
-        args.action_repr, "ABSOLUTE (no relative wrap)" if is_absolute else "RELATIVE",
+        args.action_repr,
+        "ABSOLUTE (no relative wrap)" if is_absolute else "RELATIVE",
     )
     wrapped = ds if is_absolute else lrp.RelativePoseDataset(ds)
 
@@ -523,9 +542,11 @@ def main():
     n_obs = int(getattr(policy.config, "n_obs_steps", 1))
     # Cameras as the dataset names them (what lerobot's training loop iterates
     # over when it rescales uint8 frames), plus the ones the policy consumes.
-    camera_keys = list(dict.fromkeys(
-        [*(getattr(getattr(ds, "meta", None), "camera_keys", None) or []), *image_features]
-    ))
+    camera_keys = list(
+        dict.fromkeys(
+            [*(getattr(getattr(ds, "meta", None), "camera_keys", None) or []), *image_features]
+        )
+    )
 
     # Align the recorded window with the prediction (see the module docstring).
     delta_indices = getattr(policy.config, "action_delta_indices", None)
@@ -540,7 +561,8 @@ def main():
         logger.info(
             "[openloop] recorded actions start at delta %+d; predictions start at the "
             "current step -> comparing from recorded row %d",
-            int(list(delta_indices)[0]), offset,
+            int(list(delta_indices)[0]),
+            offset,
         )
 
     def _to_tensor(vt):
@@ -583,7 +605,9 @@ def main():
         last = None
         for t in range(n_obs):
             last = build_batch_frame(
-                item, t, n_obs,
+                item,
+                t,
+                n_obs,
                 skip_key=lrp.POSE_ACTION_KEY,
                 to_batch_tensor=_to_tensor,
                 pre=pre,
@@ -678,7 +702,9 @@ def main():
     exec_steps = args.exec_steps or int(getattr(policy.config, "n_action_steps", 0) or 0) or H
     exec_steps = max(1, min(exec_steps, H))
 
-    logger.info(f"\n[openloop] evaluated {len(rows['pos_err'])} frames  (1 chunk inferred per frame)")
+    logger.info(
+        f"\n[openloop] evaluated {len(rows['pos_err'])} frames  (1 chunk inferred per frame)"
+    )
     logger.info(
         "  recorded motion over the chunk (from the current pose): mean %.1f mm, %.2f deg"
         % (_col("rec_motion", H - 1).mean() * 1000, _col("rec_rot", H - 1).mean())
@@ -704,8 +730,8 @@ def main():
         err, move, pmove = _col("pos_err", k), _col("rec_motion", k), _col("pred_motion", k)
         mark = "  <- re-observe" if k == exec_steps - 1 else ""
         logger.info(
-            f"    {k:>4} | {err.mean()*1000:>8.2f} | {move.mean()*1000:>8.2f} | "
-            f"{pmove.mean()*1000:>9.2f} | {ratio_of_means(err, move):>8.2f} | "
+            f"    {k:>4} | {err.mean() * 1000:>8.2f} | {move.mean() * 1000:>8.2f} | "
+            f"{pmove.mean() * 1000:>9.2f} | {ratio_of_means(err, move):>8.2f} | "
             f"{_col('rot_err', k).mean():>7.3f} | {_col('rec_rot', k).mean():>7.3f} | "
             f"{_col('grip_err', k).mean():>8.4f}{mark}"
         )
@@ -717,7 +743,7 @@ def main():
     verdict = motion_verdict(ratio)
     logger.info(
         f"\n[openloop] at step {k} (re-observe after {exec_steps} executed steps): "
-        f"error {err.mean()*1000:.1f} mm vs demo motion {move.mean()*1000:.1f} mm "
+        f"error {err.mean() * 1000:.1f} mm vs demo motion {move.mean() * 1000:.1f} mm "
         f"-> err/move {ratio:.2f}; predicted motion = {speed:.2f}x the demo's"
     )
     logger.info(
@@ -759,9 +785,15 @@ def main():
         batches = [items[j::n_batches] for j in range(n_batches)]
         max_diff: dict[str, float] = {}
         # Every input the policy declares (state, cameras, environment state, ...).
-        compared_keys = list(dict.fromkeys(
-            [OBS_STATE, *image_features, *(getattr(policy.config, "input_features", None) or [])]
-        ))
+        compared_keys = list(
+            dict.fromkeys(
+                [
+                    OBS_STATE,
+                    *image_features,
+                    *(getattr(policy.config, "input_features", None) or []),
+                ]
+            )
+        )
         variants = [("the frame's own observations", [])]
         if image_features:
             variants.append(("images from another frame", list(image_features)))
@@ -782,9 +814,15 @@ def main():
                 for t in range(n_obs):
                     pre.reset()
                     frame = build_batch_frame(
-                        item, t, n_obs,
-                        skip_key=lrp.POSE_ACTION_KEY, to_batch_tensor=_to_tensor, pre=pre,
-                        action_key=ACTION, image_keys=image_features, obs_images_key=OBS_IMAGES,
+                        item,
+                        t,
+                        n_obs,
+                        skip_key=lrp.POSE_ACTION_KEY,
+                        to_batch_tensor=_to_tensor,
+                        pre=pre,
+                        action_key=ACTION,
+                        image_keys=image_features,
+                        obs_images_key=OBS_IMAGES,
                         camera_keys=camera_keys,
                     )
                     for key in compared_keys:
@@ -837,15 +875,22 @@ def main():
         if loss_error is not None:
             logger.warning(f"    could not compute it for this policy: {loss_error}")
         else:
-            base = float(np.mean(losses[variants[0][0]])) if losses[variants[0][0]] else float("nan")
+            base = (
+                float(np.mean(losses[variants[0][0]])) if losses[variants[0][0]] else float("nan")
+            )
             for name, _ in variants:
                 if not losses[name]:
                     continue
                 value = float(np.mean(losses[name]))
-                note = "   <- compare with the loss in the training log" if name == variants[0][0] else (
-                    f"   ({value / base:.1f}x)" if base > 0 else "")
+                note = (
+                    "   <- compare with the loss in the training log"
+                    if name == variants[0][0]
+                    else (f"   ({value / base:.1f}x)" if base > 0 else "")
+                )
                 logger.info(f"      {name:<38} {value:.5f}{note}")
-            logger.info("    Near 1.0x: the loss does not depend on that input, so the model is not")
+            logger.info(
+                "    Near 1.0x: the loss does not depend on that input, so the model is not"
+            )
             logger.info("    using it. Clearly above 1.0x: the model relies on it.")
 
     # 3) several samples per frame, and the same sample with one input swapped
@@ -860,14 +905,18 @@ def main():
         swapped_image = swapped_state = None
         if other is not item:
             if image_features:
-                swapped_image = _predict_item({**item, **{k: other[k] for k in image_features}}, seed=0)
+                swapped_image = _predict_item(
+                    {**item, **{k: other[k] for k in image_features}}, seed=0
+                )
             swapped_state = _predict_item({**item, **{k: other[k] for k in state_keys}}, seed=0)
         one = sampling_diagnostics(samples, rec, swapped_image, swapped_state)
         current_mat = None
         if is_absolute:
             pose = current_pose9(item, n_obs)
             current_mat = lrp.pose9d_to_mat(pose) if pose is not None else None
-        one["demo_motion"] = chunk_metrics(samples[0], rec, lrp.pose9d_to_mat, current_mat)["rec_motion"]
+        one["demo_motion"] = chunk_metrics(samples[0], rec, lrp.pose9d_to_mat, current_mat)[
+            "rec_motion"
+        ]
         for name, values in one.items():
             stats.setdefault(name, []).append(values)
 

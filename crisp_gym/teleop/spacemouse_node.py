@@ -31,7 +31,7 @@ except ImportError:
 
 def _euler_to_quat(roll: float, pitch: float, yaw: float) -> Tuple[float, float, float, float]:
     """Convert Euler angles (roll, pitch, yaw) to quaternion (w, x, y, z).
-    
+
     Uses ZYX convention (yaw-pitch-roll).
     """
     cy = math.cos(yaw * 0.5)
@@ -84,13 +84,17 @@ class SpaceMouseStreamer:
         self._pose_topic = f"/{self._prefix}phone_pose"
         self._gripper_topic = f"/{self._prefix}phone_gripper"
 
-        self._pub_pose = self.node.create_publisher(PoseStamped, self._pose_topic, qos_profile_sensor_data)
-        self._pub_gripper = self.node.create_publisher(Float32, self._gripper_topic, qos_profile_sensor_data)
+        self._pub_pose = self.node.create_publisher(
+            PoseStamped, self._pose_topic, qos_profile_sensor_data
+        )
+        self._pub_gripper = self.node.create_publisher(
+            Float32, self._gripper_topic, qos_profile_sensor_data
+        )
 
         self._trans_scale = trans_scale
         self._rot_scale = rot_scale
         self._publish_rate = publish_rate
-        
+
         # axis_signs controls sign for x,y,z,roll,pitch,yaw respectively
         if axis_signs is None:
             self._axis_signs = (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)
@@ -119,7 +123,7 @@ class SpaceMouseStreamer:
         msg.pose.position.x = float(self._pos[0])
         msg.pose.position.y = float(self._pos[1])
         msg.pose.position.z = float(self._pos[2])
-        
+
         # Convert Euler angles to quaternion
         w, x, y, z = _euler_to_quat(self._euler[0], self._euler[1], self._euler[2])
         msg.pose.orientation.w = float(w)
@@ -173,15 +177,21 @@ class SpaceMouseStreamer:
                         dx = state.x * self._trans_scale * self._axis_signs[0]
                         dy = state.y * self._trans_scale * self._axis_signs[1]
                         dz = state.z * self._trans_scale * self._axis_signs[2]
-                        
+
                         # Debug: log motion events
-                        if abs(state.x) > 50 or abs(state.y) > 50 or abs(state.z) > 50 or \
-                           abs(state.roll) > 50 or abs(state.pitch) > 50 or abs(state.yaw) > 50:
+                        if (
+                            abs(state.x) > 50
+                            or abs(state.y) > 50
+                            or abs(state.z) > 50
+                            or abs(state.roll) > 50
+                            or abs(state.pitch) > 50
+                            or abs(state.yaw) > 50
+                        ):
                             self.node.get_logger().info(
                                 f"SpaceMouse motion: x={state.x}, y={state.y}, z={state.z}, "
                                 f"roll={state.roll}, pitch={state.pitch}, yaw={state.yaw}"
                             )
-                        
+
                         self._pos[0] += dx
                         self._pos[1] += dy
                         self._pos[2] += dz
@@ -222,8 +232,12 @@ if __name__ == "__main__":
     # CLI for running the streamer with customization
     parser = argparse.ArgumentParser(description="Run SpaceMouse streamer for teleoperation")
     parser.add_argument("--namespace", type=str, default="", help="ROS namespace/prefix for topics")
-    parser.add_argument("--trans-scale", type=float, default=0.001, help="Translation scale (m per device unit)")
-    parser.add_argument("--rot-scale", type=float, default=0.002, help="Rotation scale (rad per device unit)")
+    parser.add_argument(
+        "--trans-scale", type=float, default=0.001, help="Translation scale (m per device unit)"
+    )
+    parser.add_argument(
+        "--rot-scale", type=float, default=0.002, help="Rotation scale (rad per device unit)"
+    )
     parser.add_argument("--publish-rate", type=float, default=50.0, help="Publish rate in Hz")
     parser.add_argument(
         "--axis-signs",

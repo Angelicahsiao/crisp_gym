@@ -74,6 +74,7 @@ def _build_frame(obs, action, features):
 
 def _add_frame_compat(dataset, frame, task):
     from inspect import signature
+
     if "task" in signature(dataset.add_frame).parameters:
         dataset.add_frame(frame, task=task)
     else:
@@ -122,8 +123,10 @@ def _test_fake_teleop(env, duration_s=1.0, dx_per_step=0.001):
     n_steps = int(duration_s * fps)
     action_dim = env.action_space.shape[0]
 
-    print(f">> Streaming {n_steps} fake teleop deltas at {fps} Hz "
-          f"(+{dx_per_step * 1000:.1f} mm per step)...")
+    print(
+        f">> Streaming {n_steps} fake teleop deltas at {fps} Hz "
+        f"(+{dx_per_step * 1000:.1f} mm per step)..."
+    )
 
     obs_start = env.get_obs()
     pos_start = np.asarray(obs_start["observation.state.cartesian"][:3], dtype=np.float64)
@@ -230,8 +233,10 @@ def _test_record_via_manager(env):
     else:
         parquet_files = list(Path(rm.dataset_directory).rglob("*.parquet"))
         assert parquet_files, f"No parquet under {rm.dataset_directory}"
-        print(f"   {rm.episode_count} episode(s) saved, "
-              f"{len(parquet_files)} parquet file(s) under {rm.dataset_directory}")
+        print(
+            f"   {rm.episode_count} episode(s) saved, "
+            f"{len(parquet_files)} parquet file(s) under {rm.dataset_directory}"
+        )
 
 
 def main():
@@ -280,11 +285,13 @@ def main():
 
         print(">> Building dataset features...")
         from crisp_gym.util.lerobot_features import get_features
+
         features = get_features(env, use_video=False)
         print(f"   feature keys: {sorted(features.keys())}")
 
         print(">> Creating LeRobotDataset...")
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
         repo_id = "test_user/ur_live_smoke"
         ds_root = tmp / "ds"
         dataset = LeRobotDataset.create(

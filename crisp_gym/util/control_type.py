@@ -27,4 +27,3 @@ class ControlType(Enum):
             raise ValueError(
                 f"Invalid control type: {ctrl_type}. Supported types: {[e.value for e in cls]}"
             )
-

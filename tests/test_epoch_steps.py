@@ -42,6 +42,7 @@ def _cfg(steps=100_000, batch_size=64, save_freq=20_000, **extra):
 
 # ── argv flag popping ─────────────────────────────────────────────────────────
 
+
 def test_pop_epochs_absent_leaves_argv_untouched():
     argv = ["--policy.type=diffusion", "--steps=1000"]
     epochs, remaining = pop_epochs_flag(argv)
@@ -69,7 +70,9 @@ def test_pop_epochs_preserves_order_of_other_args():
     assert remaining == ["--a=1", "--b=2", "--c=3"]
 
 
-@pytest.mark.parametrize("bad", [["--epochs"], ["--epochs", "abc"], ["--epochs=0"], ["--epochs=-5"]])
+@pytest.mark.parametrize(
+    "bad", [["--epochs"], ["--epochs", "abc"], ["--epochs=0"], ["--epochs=-5"]]
+)
 def test_pop_epochs_rejects_bad_values(bad):
     # Loud failure matters: a silently-dropped --epochs trains on the default
     # step schedule and looks entirely normal.
@@ -79,11 +82,12 @@ def test_pop_epochs_rejects_bad_values(bad):
 
 # ── arithmetic ────────────────────────────────────────────────────────────────
 
+
 def test_epochs_for_steps_matches_the_handheld_vs_robot_example():
     """The motivating case from the module docstring."""
     # 50 episodes @ 15 Hz, batch 64, 100k steps.
-    handheld = epochs_for_steps(100_000, 64, 50 * 12 * 15)   # 9,000 samples
-    robot = epochs_for_steps(100_000, 64, 50 * 30 * 15)      # 22,500 samples
+    handheld = epochs_for_steps(100_000, 64, 50 * 12 * 15)  # 9,000 samples
+    robot = epochs_for_steps(100_000, 64, 50 * 30 * 15)  # 22,500 samples
     assert handheld == pytest.approx(711.1, abs=0.1)
     assert robot == pytest.approx(284.4, abs=0.1)
     # The handheld run is 2.5x longer in epochs at identical --steps.
@@ -113,6 +117,7 @@ def test_steps_for_epochs_rejects_empty_dataset():
 
 # ── effective batch size ──────────────────────────────────────────────────────
 
+
 def test_effective_batch_defaults_grad_accum_to_one():
     assert effective_batch_size(_cfg(batch_size=64)) == (64, 1)
 
@@ -134,6 +139,7 @@ def test_effective_batch_raises_on_unusable_batch_size(bad):
 
 # ── checkpoint_schedule (pure) ────────────────────────────────────────────────
 
+
 def test_checkpoint_schedule_exact_division():
     save, target, total, n = checkpoint_schedule(16_875, 5, 2)
     assert (save, target, total, n) == (3_375, 16_875, 23_625, 5)
@@ -141,8 +147,8 @@ def test_checkpoint_schedule_exact_division():
 
 def test_checkpoint_schedule_rounds_target_up_by_less_than_n():
     save, target, total, n = checkpoint_schedule(16_876, 5, 2)
-    assert target % save == 0                 # lands ON a checkpoint
-    assert 16_876 <= target < 16_876 + n      # covers the epochs; overshoot < n
+    assert target % save == 0  # lands ON a checkpoint
+    assert 16_876 <= target < 16_876 + n  # covers the epochs; overshoot < n
     assert total == target + 2 * save
 
 
@@ -184,23 +190,24 @@ def test_checkpoint_schedule_never_exceeds_the_cap(target, n):
     save, target_step, total, n_used = checkpoint_schedule(target, n, 2, 20_000)
     assert 1 <= save <= 20_000
     assert target_step == n_used * save
-    assert target <= target_step < target + n_used     # covers epochs; overshoot < n
+    assert target <= target_step < target + n_used  # covers epochs; overshoot < n
     assert total == target_step + 2 * save
-    assert n_used >= min(n, target)                     # the cap only ADDS checkpoints
+    assert n_used >= min(n, target)  # the cap only ADDS checkpoints
 
 
 # ── resolve_epoch_steps: without --epochs ─────────────────────────────────────
+
 
 def test_resolve_without_epochs_changes_nothing_but_reports():
     cfg = _cfg(steps=100_000, batch_size=64, save_freq=10_000, eval_freq=5_000)
     plan = resolve_epoch_steps(cfg, _Dataset(9_000), None)
 
-    assert cfg.steps == 100_000          # untouched
-    assert cfg.save_freq == 10_000       # untouched
-    assert cfg.eval_freq == 5_000        # untouched
+    assert cfg.steps == 100_000  # untouched
+    assert cfg.save_freq == 10_000  # untouched
+    assert cfg.eval_freq == 5_000  # untouched
     assert plan.changed is False
     assert plan.rescaled == {}
-    assert plan.extra_checkpoints == 0   # no epoch target to extend past
+    assert plan.extra_checkpoints == 0  # no epoch target to extend past
     assert plan.checkpoint_steps == []
     # ...but the epoch equivalent is still computed and reported.
     assert plan.epochs_after == pytest.approx(711.1, abs=0.1)
@@ -223,15 +230,16 @@ def test_cap_does_not_apply_without_epochs():
 
 # ── resolve_epoch_steps: the checkpoint schedule ──────────────────────────────
 
+
 def test_worked_example_lands_on_target_then_two_more_intervals():
     """The example from the module docstring / the agreed design."""
-    cfg = _cfg()                                      # 100k steps, save 20k -> 5 ckpts
+    cfg = _cfg()  # 100k steps, save 20k -> 5 ckpts
     plan = resolve_epoch_steps(cfg, _Dataset(9_000), 120)
 
-    assert plan.target_steps_min == 16_875            # ceil(120 x 9000 / 64)
-    assert cfg.save_freq == 3_375                     # 24 epochs per checkpoint
-    assert plan.target_step == 16_875                 # a checkpoint ON the target
-    assert cfg.steps == 23_625                        # target + 2 x 3,375
+    assert plan.target_steps_min == 16_875  # ceil(120 x 9000 / 64)
+    assert cfg.save_freq == 3_375  # 24 epochs per checkpoint
+    assert plan.target_step == 16_875  # a checkpoint ON the target
+    assert cfg.steps == 23_625  # target + 2 x 3,375
     assert plan.checkpoint_steps == [3_375 * i for i in range(1, 8)]
     assert plan.epochs_target == pytest.approx(120.0)
     assert plan.epochs_after == pytest.approx(168.0)
@@ -248,16 +256,16 @@ def test_two_more_checkpoints_than_the_incoming_schedule():
 
 def test_cap_worked_example():
     """The agreed example: 60,000 samples, batch 64, --epochs 120."""
-    cfg = _cfg()                                      # 100k / 20k -> 5 checkpoints
+    cfg = _cfg()  # 100k / 20k -> 5 checkpoints
     plan = resolve_epoch_steps(cfg, _Dataset(60_000), 120)
 
     assert plan.target_steps_min == 112_500
-    assert plan.save_freq_uncapped == 22_500          # what 5 checkpoints would need
+    assert plan.save_freq_uncapped == 22_500  # what 5 checkpoints would need
     assert plan.save_freq_capped is True
-    assert cfg.save_freq == 18_750                    # 20 epochs per checkpoint
+    assert cfg.save_freq == 18_750  # 20 epochs per checkpoint
     assert plan.n_target_checkpoints == 6
-    assert plan.target_step == 112_500                # exactly on target
-    assert cfg.steps == 150_000                       # target + 2 x 18,750
+    assert plan.target_step == 112_500  # exactly on target
+    assert cfg.steps == 150_000  # target + 2 x 18,750
     assert plan.checkpoint_steps == [18_750 * i for i in range(1, 9)]
     assert plan.epochs_target == pytest.approx(120.0)
     assert plan.epochs_after == pytest.approx(160.0)
@@ -284,22 +292,27 @@ def test_save_freq_never_exceeds_cap_with_epochs(n_samples, incoming_save):
 def test_incoming_save_freq_above_cap_is_tightened_with_epochs():
     # An explicit --save_freq 50000 with --epochs: the cap fires even though the
     # incoming spacing, not the epoch target, is what made it sparse.
-    cfg = _cfg(steps=100_000, save_freq=50_000)       # 2 checkpoints incoming
+    cfg = _cfg(steps=100_000, save_freq=50_000)  # 2 checkpoints incoming
     plan = resolve_epoch_steps(cfg, _Dataset(60_000), 120)
     assert cfg.save_freq <= 20_000
     assert plan.save_freq_capped is True
-    assert plan.n_target_checkpoints == 6             # ceil(112,500 / 20,000)
+    assert plan.n_target_checkpoints == 6  # ceil(112,500 / 20,000)
 
 
 def test_exactly_two_checkpoints_land_after_the_target():
-    for epochs, n, batch in [(120, 9_000, 64), (284.4, 22_500, 32), (1, 100, 64), (37.3, 5_000, 16)]:
+    for epochs, n, batch in [
+        (120, 9_000, 64),
+        (284.4, 22_500, 32),
+        (1, 100, 64),
+        (37.3, 5_000, 16),
+    ]:
         cfg = _cfg(batch_size=batch)
         plan = resolve_epoch_steps(cfg, _Dataset(n), epochs)
         after = [s for s in plan.checkpoint_steps if s > plan.target_step]
         assert len(after) == EXTRA_CHECKPOINTS == 2
         assert plan.target_step in plan.checkpoint_steps
         assert cfg.steps == plan.target_step + 2 * cfg.save_freq
-        assert cfg.steps % cfg.save_freq == 0          # final step is a checkpoint
+        assert cfg.steps % cfg.save_freq == 0  # final step is a checkpoint
         # The requested epochs are always covered by the target checkpoint.
         assert plan.epochs_target >= epochs
 
@@ -332,21 +345,21 @@ def test_eval_follows_save_and_log_is_untouched():
     cfg = _cfg(save_freq=20_000, eval_freq=20_000, log_freq=200)
     plan = resolve_epoch_steps(cfg, _Dataset(9_000), 120)
 
-    assert cfg.eval_freq == cfg.save_freq == 3_375   # evals still align with ckpts
-    assert cfg.log_freq == 200                       # deliberately untouched
+    assert cfg.eval_freq == cfg.save_freq == 3_375  # evals still align with ckpts
+    assert cfg.log_freq == 200  # deliberately untouched
     assert set(plan.rescaled) == {"save_freq", "eval_freq"}
 
 
 def test_eval_scales_by_the_save_factor():
-    cfg = _cfg(save_freq=20_000, eval_freq=10_000)    # two evals per checkpoint
+    cfg = _cfg(save_freq=20_000, eval_freq=10_000)  # two evals per checkpoint
     resolve_epoch_steps(cfg, _Dataset(9_000), 120)
     assert cfg.eval_freq == round(10_000 * 3_375 / 20_000)
 
 
 def test_disabled_eval_stays_disabled():
-    cfg = _cfg(eval_freq=0)                           # 0 = disabled
+    cfg = _cfg(eval_freq=0)  # 0 = disabled
     plan = resolve_epoch_steps(cfg, _Dataset(9_000), 100)
-    assert cfg.eval_freq == 0                         # not scaled to 1
+    assert cfg.eval_freq == 0  # not scaled to 1
     assert "eval_freq" not in plan.rescaled
 
 
@@ -361,6 +374,7 @@ def test_rescaled_freqs_stay_within_bounds():
 
 
 # ── resolve_epoch_steps: refusals ─────────────────────────────────────────────
+
 
 def test_resolve_raises_on_empty_dataset():
     with pytest.raises(RuntimeError, match="0 samples"):
@@ -387,11 +401,12 @@ def test_epochs_refuses_when_checkpointing_is_disabled():
 
 # ── provenance + logging ──────────────────────────────────────────────────────
 
+
 def test_plan_as_dict_is_json_serializable_and_records_the_schedule():
     cfg = _cfg(save_freq=20_000)
     d = resolve_epoch_steps(cfg, _Dataset(9_000), 120).as_dict()
 
-    json.dumps(d)   # must not raise — it is stamped into pose_repr.json
+    json.dumps(d)  # must not raise — it is stamped into pose_repr.json
     assert d["epochs_requested"] == 120
     assert d["steps"] == cfg.steps == 23_625
     assert d["target_step"] == 16_875

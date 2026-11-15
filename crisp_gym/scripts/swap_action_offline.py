@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 
 ACTION_KEY = "action"
 TARGET_KEY = "extra.target_cartesian"
-ARM_DIMS = 9          # pos(3) + rot6d(6); action dim 9 is the gripper, kept as-is
+ARM_DIMS = 9  # pos(3) + rot6d(6); action dim 9 is the gripper, kept as-is
 
 
 def swap_arm(act: np.ndarray, tc: np.ndarray, arm_dims: int = ARM_DIMS) -> np.ndarray:
@@ -173,17 +173,22 @@ def run(args) -> int:
 
     # Provenance: the action column's arm dims are now the COMMANDED pose. Schema
     # is unchanged, so info.json is untouched; this marks the semantics.
-    (out / "meta" / "action_repr.json").write_text(json.dumps({
-        "action": {
-            "source": TARGET_KEY,
-            "pose_repr": "absolute",
-            "layout": "[x, y, z, rot6d(6), gripper]",
-            "note": "ARM dims (0-8) are extra.target_cartesian (pose COMMANDED to "
+    (out / "meta" / "action_repr.json").write_text(
+        json.dumps(
+            {
+                "action": {
+                    "source": TARGET_KEY,
+                    "pose_repr": "absolute",
+                    "layout": "[x, y, z, rot6d(6), gripper]",
+                    "note": "ARM dims (0-8) are extra.target_cartesian (pose COMMANDED to "
                     "the CIC); gripper (dim 9) is the recorded next_tcp_pose "
                     "gripper. Same-frame swap. Observations unchanged.",
-        },
-        "derived_from": str(src),
-    }, indent=2))
+                },
+                "derived_from": str(src),
+            },
+            indent=2,
+        )
+    )
 
     logger.info("Done: %d frames, %d episodes. New dataset: %s", total, len(per_ep_arrays), out)
     logger.info("Train it with train_absolute_next_pose.py (--dataset.root=%s).", out)
@@ -198,8 +203,12 @@ def main():
     )
     p.add_argument("--input", required=True, help="Source dataset root (has data/ and meta/).")
     p.add_argument("--output", required=True, help="Destination dataset root (must not exist).")
-    p.add_argument("--atol", type=float, default=1e-4,
-                   help="Per-episode spread below which target_cartesian is 'constant' (refuse).")
+    p.add_argument(
+        "--atol",
+        type=float,
+        default=1e-4,
+        help="Per-episode spread below which target_cartesian is 'constant' (refuse).",
+    )
     p.add_argument("--dry-run", action="store_true", help="Validate only; write nothing.")
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args()

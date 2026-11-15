@@ -50,6 +50,7 @@ def _write(tmp_path, extra: str = "") -> Path:
 
 # ── parsing ──────────────────────────────────────────────────────────────────
 
+
 def test_robot_type_is_none_when_absent(tmp_path):
     rc = _load_record_config()
     cfg = rc.RecordConfig.from_yaml(_write(tmp_path))
@@ -63,6 +64,7 @@ def test_robot_type_is_read_from_yaml(tmp_path):
 
 
 # ── precedence ───────────────────────────────────────────────────────────────
+
 
 def test_cli_wins_over_the_contract(tmp_path):
     rc = _load_record_config()
@@ -98,6 +100,7 @@ def test_empty_strings_do_not_win(tmp_path):
 
 # ── stamping ─────────────────────────────────────────────────────────────────
 
+
 def test_metadata_omits_robot_type_when_unset(tmp_path):
     """A dataset recorded without it stays byte-identical to a pre-field one."""
     rc = _load_record_config()
@@ -112,6 +115,7 @@ def test_metadata_stamps_robot_type_when_set(tmp_path):
 
 
 # ── mixability must be unaffected ────────────────────────────────────────────
+
 
 def test_robot_type_does_not_break_contract_compatibility(tmp_path):
     """A UR and a Franka on the same contract still train together."""

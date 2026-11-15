@@ -37,5 +37,6 @@ try:
 except ImportError as exc:  # torch / lerobot / ROS not installed on this machine
     logging.getLogger(__name__).info(
         "lerobot_policy and async_lerobot_policy are not available here (%s); "
-        "relative_lerobot_policy and remote_policy still are.", exc,
+        "relative_lerobot_policy and remote_policy still are.",
+        exc,
     )

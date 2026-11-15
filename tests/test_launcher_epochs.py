@@ -49,7 +49,7 @@ BLOCK_END = "# ── end --epochs support"
 EXPECTED_STEPS = 23_625
 EXPECTED_SAVE = 3_375
 
-_FAKE_TRAIN = '''
+_FAKE_TRAIN = """
 import json, os, sys
 from types import SimpleNamespace
 
@@ -72,7 +72,7 @@ def main():
         "steps": cfg.steps, "save_freq": cfg.save_freq,
         "argv": sys.argv[1:], "sys_path": [os.path.abspath(p or os.curdir) for p in sys.path],
     }}))
-'''
+"""
 
 _LAYOUTS = {
     # lerobot >= 0.5
@@ -121,16 +121,21 @@ def _run(script: Path, args, pythonpath, tmp_path):
     env["FAKE_OUTPUT_DIR"] = str(tmp_path / "out")
     proc = subprocess.run(
         [sys.executable, str(script), *args],
-        capture_output=True, text=True, cwd=tmp_path, env=env, timeout=120,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+        timeout=120,
     )
     result = None
     for line in proc.stdout.splitlines():
         if line.startswith("RESULT "):
-            result = json.loads(line[len("RESULT "):])
+            result = json.loads(line[len("RESULT ") :])
     return proc, result
 
 
 # ── epoch_steps.py as plain lerobot-train ─────────────────────────────────────
+
 
 @pytest.mark.parametrize("layout", ["0.6", "0.4"])
 def test_epoch_steps_runs_as_plain_lerobot_train(tmp_path, layout):
@@ -154,7 +159,7 @@ def test_epoch_steps_refuses_epochs_when_there_is_no_factory_to_hook(tmp_path):
     fake = _fake_lerobot(tmp_path, "none")
     proc, res = _run(EPOCH_STEPS, ["--epochs", "120"], [fake], tmp_path)
     assert proc.returncode != 0
-    assert res is None                       # never reached training
+    assert res is None  # never reached training
     assert "neither" in proc.stderr
 
 
@@ -174,6 +179,7 @@ def test_epoch_steps_needs_no_crisp_gym(tmp_path, fake06, no_crisp_gym):
 
 # ── launchers: finding epoch_steps.py without crisp_gym ───────────────────────
 
+
 def test_launcher_uses_the_package_when_crisp_gym_is_importable(tmp_path, fake06):
     proc, res = _run(ABS_LAUNCHER, ["--epochs", "120"], [fake06, REPO], tmp_path)
     assert proc.returncode == 0, proc.stderr
@@ -188,7 +194,7 @@ def test_launcher_in_an_uninstalled_repo_clone(tmp_path, fake06, no_crisp_gym):
     assert proc.returncode == 0, proc.stderr
     assert res["steps"] == EXPECTED_STEPS
     assert res["save_freq"] == EXPECTED_SAVE
-    assert "crisp_gym_epoch_steps:[epochs]" in proc.stderr   # loaded by path
+    assert "crisp_gym_epoch_steps:[epochs]" in proc.stderr  # loaded by path
 
 
 def test_launcher_copied_with_epoch_steps_beside_it(tmp_path, fake06, no_crisp_gym):
@@ -197,7 +203,9 @@ def test_launcher_copied_with_epoch_steps_beside_it(tmp_path, fake06, no_crisp_g
     pair.mkdir()
     shutil.copy(ABS_LAUNCHER, pair)
     shutil.copy(EPOCH_STEPS, pair)
-    proc, res = _run(pair / ABS_LAUNCHER.name, ["--epochs", "120"], [no_crisp_gym, fake06], tmp_path)
+    proc, res = _run(
+        pair / ABS_LAUNCHER.name, ["--epochs", "120"], [no_crisp_gym, fake06], tmp_path
+    )
     assert proc.returncode == 0, proc.stderr
     assert res["steps"] == EXPECTED_STEPS
 
@@ -206,9 +214,11 @@ def test_launcher_copied_alone_refuses_epochs(tmp_path, fake06, no_crisp_gym):
     solo = tmp_path / "solo"
     solo.mkdir()
     shutil.copy(ABS_LAUNCHER, solo)
-    proc, res = _run(solo / ABS_LAUNCHER.name, ["--epochs", "120"], [no_crisp_gym, fake06], tmp_path)
+    proc, res = _run(
+        solo / ABS_LAUNCHER.name, ["--epochs", "120"], [no_crisp_gym, fake06], tmp_path
+    )
     assert proc.returncode != 0
-    assert res is None                       # never fell back to --steps
+    assert res is None  # never fell back to --steps
     assert "--epochs needs epoch_steps.py" in proc.stderr
 
 
@@ -218,7 +228,9 @@ def test_launcher_copied_alone_still_trains_without_epochs(tmp_path, fake06, no_
     solo = tmp_path / "solo"
     solo.mkdir()
     shutil.copy(ABS_LAUNCHER, solo)
-    proc, res = _run(solo / ABS_LAUNCHER.name, ["--policy.type=diffusion"], [no_crisp_gym, fake06], tmp_path)
+    proc, res = _run(
+        solo / ABS_LAUNCHER.name, ["--policy.type=diffusion"], [no_crisp_gym, fake06], tmp_path
+    )
     assert proc.returncode == 0, proc.stderr
     assert res["steps"] == 100_000
     assert res["argv"] == ["--policy.type=diffusion"]
@@ -226,6 +238,7 @@ def test_launcher_copied_alone_still_trains_without_epochs(tmp_path, fake06, no_
 
 
 # ── the duplicated helper ─────────────────────────────────────────────────────
+
 
 def _split(path: Path):
     text = path.read_text()
@@ -236,7 +249,7 @@ def _split(path: Path):
 
 def test_epoch_helper_block_is_identical_in_all_launchers():
     blocks = {p.name: _split(p)[0] for p in LAUNCHERS}
-    reference = blocks[ABS_LAUNCHER.name]          # the copy tested end to end
+    reference = blocks[ABS_LAUNCHER.name]  # the copy tested end to end
     assert "def _setup_epochs" in reference
     for name, block in blocks.items():
         assert block == reference, f"{name}: --epochs helper drifted from {ABS_LAUNCHER.name}"
@@ -246,21 +259,27 @@ def test_epoch_helper_block_is_identical_in_all_launchers():
 def test_launchers_import_crisp_gym_only_inside_the_helper(path):
     _, outside = _split(path)
     hard = [
-        line for line in outside.splitlines()
-        if not line.strip().startswith("#")
-        and re.match(r"\s*(from|import)\s+crisp_gym\b", line)
+        line
+        for line in outside.splitlines()
+        if not line.strip().startswith("#") and re.match(r"\s*(from|import)\s+crisp_gym\b", line)
     ]
     assert hard == [], f"{path.name}: hard crisp_gym import outside the helper: {hard}"
 
 
 # ── the GR00T shell scripts (dry run: composed command only) ──────────────────
 
+
 def _bash(args, env_extra, cwd):
     env = dict(os.environ)
     env.update({"SKIP_HUB_CHECK": "1"})
     env.update(env_extra)
     return subprocess.run(
-        ["bash", *args], capture_output=True, text=True, cwd=cwd, env=env, timeout=120,
+        ["bash", *args],
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+        env=env,
+        timeout=120,
     )
 
 
@@ -274,9 +293,18 @@ def _dataset(tmp_path) -> Path:
 def _groot(tmp_path, *extra):
     ds = _dataset(tmp_path)
     return _bash(
-        [str(REPO / "scripts" / "train_groot.sh"), "--dataset", str(ds),
-         "--output", str(tmp_path / "out" / "run"), "--skip-preflight", "--dry-run", *extra],
-        {}, tmp_path,
+        [
+            str(REPO / "scripts" / "train_groot.sh"),
+            "--dataset",
+            str(ds),
+            "--output",
+            str(tmp_path / "out" / "run"),
+            "--skip-preflight",
+            "--dry-run",
+            *extra,
+        ],
+        {},
+        tmp_path,
     )
 
 
@@ -315,8 +343,15 @@ def test_train_groot_rejects_bad_epochs_before_doing_anything(tmp_path, bad):
 
 
 _VALUE_FLAGS = [
-    "--dataset", "--output", "--repo-id", "--batch-size", "--steps",
-    "--epochs", "--job-name", "--save-freq", "--num-workers",
+    "--dataset",
+    "--output",
+    "--repo-id",
+    "--batch-size",
+    "--steps",
+    "--epochs",
+    "--job-name",
+    "--save-freq",
+    "--num-workers",
 ]
 
 
@@ -325,7 +360,10 @@ def _groot_raw(tmp_path, *args):
     # which must fail the test, not stall the suite.
     return subprocess.run(
         ["bash", str(REPO / "scripts" / "train_groot.sh"), *args],
-        capture_output=True, text=True, cwd=tmp_path, timeout=15,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        timeout=15,
         env={**os.environ, "SKIP_HUB_CHECK": "1"},
     )
 
@@ -333,8 +371,16 @@ def _groot_raw(tmp_path, *args):
 @pytest.mark.parametrize("flag", _VALUE_FLAGS)
 def test_train_groot_flag_without_value_exits_instead_of_hanging(tmp_path, flag):
     ds = _dataset(tmp_path)
-    proc = _groot_raw(tmp_path, "--dataset", str(ds), "--output", str(tmp_path / "o"),
-                      "--skip-preflight", "--dry-run", flag)
+    proc = _groot_raw(
+        tmp_path,
+        "--dataset",
+        str(ds),
+        "--output",
+        str(tmp_path / "o"),
+        "--skip-preflight",
+        "--dry-run",
+        flag,
+    )
     assert proc.returncode == 2
     assert f"{flag} needs a value" in proc.stderr
 
@@ -348,21 +394,45 @@ def test_train_groot_refuses_a_flag_taken_as_the_value(tmp_path, flag):
 
 def test_train_groot_refuses_an_empty_value(tmp_path):
     ds = _dataset(tmp_path)
-    proc = _groot_raw(tmp_path, "--dataset", str(ds), "--output", str(tmp_path / "o"),
-                      "--steps", "", "--dry-run")
+    proc = _groot_raw(
+        tmp_path, "--dataset", str(ds), "--output", str(tmp_path / "o"), "--steps", "", "--dry-run"
+    )
     assert proc.returncode == 2
     assert "--steps needs a value" in proc.stderr
 
 
 def test_train_groot_values_still_parse(tmp_path):
     ds = _dataset(tmp_path)
-    proc = _groot_raw(tmp_path, "--dataset", str(ds), "--output", str(tmp_path / "out" / "run"),
-                      "--repo-id", "me/toy", "--batch-size", "8", "--steps", "500",
-                      "--job-name", "j", "--save-freq", "100", "--num-workers", "2",
-                      "--skip-preflight", "--dry-run")
+    proc = _groot_raw(
+        tmp_path,
+        "--dataset",
+        str(ds),
+        "--output",
+        str(tmp_path / "out" / "run"),
+        "--repo-id",
+        "me/toy",
+        "--batch-size",
+        "8",
+        "--steps",
+        "500",
+        "--job-name",
+        "j",
+        "--save-freq",
+        "100",
+        "--num-workers",
+        "2",
+        "--skip-preflight",
+        "--dry-run",
+    )
     assert proc.returncode == 0, proc.stderr
-    for expected in ("--dataset.repo_id=me/toy", "--batch_size=8", "--steps=500",
-                     "--job_name=j", "--save_freq=100", "--num_workers=2"):
+    for expected in (
+        "--dataset.repo_id=me/toy",
+        "--batch_size=8",
+        "--steps=500",
+        "--job_name=j",
+        "--save_freq=100",
+        "--num_workers=2",
+    ):
         assert expected in proc.stdout
 
 

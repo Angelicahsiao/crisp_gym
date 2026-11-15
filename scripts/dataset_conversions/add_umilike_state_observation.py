@@ -112,9 +112,8 @@ def main() -> None:
     cart_names: list[str] = list(dataset.features["observation.state.cartesian"]["names"])
     grip_names: list[str] = list(dataset.features["observation.state.gripper"]["names"])
     umilike_names = cart_names + grip_names
-    umilike_dim = (
-        int(dataset.features["observation.state.cartesian"]["shape"][0])
-        + int(dataset.features["observation.state.gripper"]["shape"][0])
+    umilike_dim = int(dataset.features["observation.state.cartesian"]["shape"][0]) + int(
+        dataset.features["observation.state.gripper"]["shape"][0]
     )
 
     old_state_dim = int(dataset.features["observation.state"]["shape"][0])

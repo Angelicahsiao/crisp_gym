@@ -71,12 +71,8 @@ class UmiHandheldEnvConfig:
     gripper_width_topic: str = "/umi/gripper_width"
     max_gripper_width: float = 0.09
     camera_configs: List[CameraConfig] = field(default_factory=list)
-    tx_world_correction: List[List[float]] = field(
-        default_factory=lambda: np.eye(4).tolist()
-    )
-    tx_body_tcp: List[List[float]] = field(
-        default_factory=lambda: np.eye(4).tolist()
-    )
+    tx_world_correction: List[List[float]] = field(default_factory=lambda: np.eye(4).tolist())
+    tx_body_tcp: List[List[float]] = field(default_factory=lambda: np.eye(4).tolist())
     orientation_representation: OrientationRepresentation = OrientationRepresentation.ROTATION_6D
     observations_to_include_to_state: List[str] = field(
         default_factory=lambda: [
@@ -87,9 +83,7 @@ class UmiHandheldEnvConfig:
     log_status_every_n_frames: int = 15
 
     # Stub satisfying get_features() which calls env.config.robot_config.num_joints()
-    robot_config: _HandheldRobotStub = field(
-        default_factory=_HandheldRobotStub, repr=False
-    )
+    robot_config: _HandheldRobotStub = field(default_factory=_HandheldRobotStub, repr=False)
 
     def __post_init__(self):
         if isinstance(self.orientation_representation, str):
@@ -181,8 +175,7 @@ class UmiHandheldEnv(gym.Env):
         self._spin_thread.start()
 
         self.cameras = [
-            Camera(namespace=namespace, config=cam_cfg)
-            for cam_cfg in config.camera_configs
+            Camera(namespace=namespace, config=cam_cfg) for cam_cfg in config.camera_configs
         ]
 
         # Pre-compute transform matrices
@@ -289,9 +282,7 @@ class UmiHandheldEnv(gym.Env):
         """Gripper width in meters normalized to [0, 1]."""
         if self._last_gripper_width is None:
             return 0.0
-        return float(
-            np.clip(self._last_gripper_width / self.config.max_gripper_width, 0.0, 1.0)
-        )
+        return float(np.clip(self._last_gripper_width / self.config.max_gripper_width, 0.0, 1.0))
 
     # ── Gym interface ─────────────────────────────────────────────────────────
 
@@ -318,9 +309,7 @@ class UmiHandheldEnv(gym.Env):
             )
 
         for camera in self.cameras:
-            obs[f"{ObservationKeys.IMAGE_OBS}.{camera.config.camera_name}"] = (
-                camera.current_image
-            )
+            obs[f"{ObservationKeys.IMAGE_OBS}.{camera.config.camera_name}"] = camera.current_image
 
         return obs
 
@@ -329,9 +318,7 @@ class UmiHandheldEnv(gym.Env):
         with self._lock:
             pose_msg = self._last_pose_msg
         if pose_msg is None:
-            raise RuntimeError(
-                f"No pose received yet. Check topic: {self.config.pose_topic}"
-            )
+            raise RuntimeError(f"No pose received yet. Check topic: {self.config.pose_topic}")
         pose_array = self._pose_msg_to_array(pose_msg)
         gripper = np.array([self._gripper_normalized], dtype=np.float32)
         return np.concatenate([pose_array, gripper])
@@ -360,9 +347,7 @@ class UmiHandheldEnv(gym.Env):
 
         return self._get_obs(), 0.0, False, False, {}
 
-    def reset(
-        self, *, seed: int | None = None, options: dict | None = None
-    ) -> Tuple[dict, dict]:
+    def reset(self, *, seed: int | None = None, options: dict | None = None) -> Tuple[dict, dict]:
         super().reset(seed=seed, options=options)
         self.timestep = 0
         return self._get_obs(), {}

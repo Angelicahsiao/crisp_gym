@@ -45,6 +45,7 @@ from crisp_gym.envs.manipulator_env import ManipulatorBaseEnv
 #     else:
 #         raise ValueError(f"Space {space} is not supported.")
 
+
 def stack_gym_space(space: gym.Space, repeat: int) -> gym.Space:
     if isinstance(space, gym.spaces.Box):
         dtype = np.dtype(space.dtype).type
@@ -55,10 +56,7 @@ def stack_gym_space(space: gym.Space, repeat: int) -> gym.Space:
         )
 
     elif isinstance(space, gym.spaces.Dict):
-        return gym.spaces.Dict({
-            k: stack_gym_space(v, repeat)
-            for k, v in space.spaces.items()
-        })
+        return gym.spaces.Dict({k: stack_gym_space(v, repeat) for k, v in space.spaces.items()})
 
     elif isinstance(space, gym.spaces.Text):
         # 🚫 Text cannot be stacked — keep it unchanged
@@ -66,7 +64,6 @@ def stack_gym_space(space: gym.Space, repeat: int) -> gym.Space:
 
     else:
         raise ValueError(f"Space {space} is not supported.")
-
 
 
 class WindowWrapper(gym.Wrapper):

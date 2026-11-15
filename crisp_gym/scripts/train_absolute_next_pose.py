@@ -76,8 +76,8 @@ def stamp_action_repr(cfg, dataset) -> None:
                 "layout": "[x, y, z, rot6d(6), gripper]",
                 "names": action_feat.get("names"),
                 "note": "policy predicts the ABSOLUTE next TCP pose; no relative "
-                        "conversion. Do NOT deploy with RelativeLerobotPolicy, "
-                        "which expects a relative-pose checkpoint.",
+                "conversion. Do NOT deploy with RelativeLerobotPolicy, "
+                "which expects a relative-pose checkpoint.",
             },
             "observation": {
                 "pose_repr": "absolute",

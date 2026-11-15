@@ -53,6 +53,7 @@ def _assert_same_rotation(a: Rotation, b: Rotation, atol: float = 1e-9) -> None:
 
 # ── encode side: ROS-free replicas of crisp_py Pose.to_array orientation parts ──
 
+
 def _encode_euler(R: Rotation) -> np.ndarray:
     return R.as_euler("xyz", degrees=False)
 
@@ -63,6 +64,7 @@ def _encode_rot6d(R: Rotation) -> np.ndarray:
 
 
 # ── decode side: replicas of crisp_gym action_to_rotation branches ─────────────
+
 
 def _decode_euler(v: np.ndarray) -> Rotation:
     return Rotation.from_euler("xyz", v)
@@ -106,6 +108,7 @@ def _load_script_copy():
 
 # ── 1. EULER round-trip ────────────────────────────────────────────────────────
 
+
 def test_euler_roundtrip():
     for _ in range(200):
         R = _rand_R()
@@ -115,6 +118,7 @@ def test_euler_roundtrip():
 
 
 # ── 2. ROTATION_6D round-trip (canonical module + inline env copy) ─────────────
+
 
 def test_rot6d_roundtrip_canonical():
     for _ in range(200):
@@ -133,6 +137,7 @@ def test_rot6d_roundtrip_inline_action_path():
 
 # ── 3. Convention guard: first two ROWS, row-major (HANDOFF §1.1) ──────────────
 
+
 def test_rot6d_is_first_two_rows_not_columns():
     # A deliberately asymmetric rotation so rows != columns.
     R = Rotation.from_euler("xyz", [0.1, 0.2, 0.3]).as_matrix()
@@ -143,6 +148,7 @@ def test_rot6d_is_first_two_rows_not_columns():
 
 
 # ── 4. Full pose-array round-trip in the [pos, *rot] action layout ────────────
+
 
 def test_pose_array_roundtrip_euler():
     for _ in range(100):
@@ -164,6 +170,7 @@ def test_pose_array_roundtrip_rot6d():
 
 # ── 5. The three rot6d implementations must agree (anti-drift regression) ─────
 
+
 def test_rot6d_implementations_agree():
     lrp = _load_script_copy()
     for _ in range(100):
@@ -180,6 +187,7 @@ def test_rot6d_implementations_agree():
 
 
 # ── 6. Decoded rot6d is always a valid rotation, even from noisy input ────────
+
 
 def test_rot6d_decode_is_valid_SO3():
     for _ in range(200):

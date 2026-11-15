@@ -35,8 +35,12 @@ class _FakeEnv:
 
 def test_robot_sensor_source_returns_named_sensor_value():
     rc = _load_record_config()
-    env = _FakeEnv([_FakeSensor("ft_sensor", [1, 2, 3, 4, 5, 6]),
-                    _FakeSensor("ext_effort", [0.1, -0.2, 0.3, 0, 0, 0])])
+    env = _FakeEnv(
+        [
+            _FakeSensor("ft_sensor", [1, 2, 3, 4, 5, 6]),
+            _FakeSensor("ext_effort", [0.1, -0.2, 0.3, 0, 0, 0]),
+        ]
+    )
     src = rc.SOURCE_REGISTRY["robot.sensor"]
     out = src(env, name="ext_effort")
     np.testing.assert_allclose(out, [0.1, -0.2, 0.3, 0, 0, 0], atol=1e-6)

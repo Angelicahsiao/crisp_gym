@@ -59,7 +59,6 @@ parser.add_argument(
 )
 
 
-
 args = parser.parse_args()
 
 # Set up logging
@@ -82,22 +81,14 @@ logger.info("Setting up environment...")
 # env = make_env("right_no_cam_franka", control_type="cartesian", namespace="right")
 CTRL_FREQ = 50
 BASE_DIR = Path(crisp_gym.__file__).parent
-gripper_config = (
-    str(BASE_DIR / args.gripper_config)
-    if args.gripper_config is not None
-    else None
-)
+gripper_config = str(BASE_DIR / args.gripper_config) if args.gripper_config is not None else None
 
-camera_config = (
-    str(BASE_DIR / args.camera_config)
-    if args.camera_config is not None
-    else None
-)
+camera_config = str(BASE_DIR / args.camera_config) if args.camera_config is not None else None
 # gripper = make_gripper("gripper_robotiq_2f85")
 
 # env_config = FrankaEnvConfig(
 #     control_frequency=CTRL_FREQ,
-#     gripper_mode=GripperMode.ABSOLUTE_BINARY, 
+#     gripper_mode=GripperMode.ABSOLUTE_BINARY,
 #     gripper_config= gripper.config,
 #     camera_configs=[],
 #     gripper_threshold=0.5
@@ -106,17 +97,15 @@ camera_config = (
 
 env_config = FrankaEnvConfig(
     control_frequency=CTRL_FREQ,
-    gripper_mode=GripperMode.ABSOLUTE_BINARY, 
-    gripper_config= GripperConfig.from_yaml(gripper_config),
+    gripper_mode=GripperMode.ABSOLUTE_BINARY,
+    gripper_config=GripperConfig.from_yaml(gripper_config),
     camera_configs=[],
-    gripper_threshold=0.1
+    gripper_threshold=0.1,
 )
 
-print("Cartesian config:",
-      env_config.cartesian_control_param_config.resolve())
+print("Cartesian config:", env_config.cartesian_control_param_config.resolve())
 
-print("Joint config:",
-      env_config.joint_control_param_config.resolve())
+print("Joint config:", env_config.joint_control_param_config.resolve())
 print(env_config.gripper_mode)
 print(env_config.gripper_config)
 print(f"Gripper command action: {env_config.gripper_config.use_gripper_command_action}")
@@ -124,14 +113,10 @@ env_config.cartesian_control_param_config = str(
     BASE_DIR / "config/control/default_cartesian_impedance.yaml"
 )
 
-env_config.joint_control_param_config = str(
-    BASE_DIR / "config/control/fr3_joint_control.yaml"
-)
-print("Cartesian config:",
-      env_config.cartesian_control_param_config)
+env_config.joint_control_param_config = str(BASE_DIR / "config/control/fr3_joint_control.yaml")
+print("Cartesian config:", env_config.cartesian_control_param_config)
 
-print("Joint config:",
-      env_config.joint_control_param_config)
+print("Joint config:", env_config.joint_control_param_config)
 # env_config.cartesian_control_param_config = "./config/control/default_cartesian_impedance.yaml"
 # env_config.joint_control_param_config = "./config/control/fr3_joint_control.yaml"
 env = ManipulatorCartesianEnv(namespace="", config=env_config)
@@ -157,27 +142,18 @@ if not args.use_streamed_teleop:
         leader.robot.cartesian_controller_parameters_client.load_param_config(
             file_path=leader.config.gravity_compensation_controller
         )
-        leader.robot.controller_switcher_client.switch_controller(
-            "cartesian_impedance_controller"
-        )
-
+        leader.robot.controller_switcher_client.switch_controller("cartesian_impedance_controller")
 
 
 # previous_pose = leader.robot.end_effector_pose
-previous_pose = (
-    leader.robot.end_effector_pose
-    if not args.use_streamed_teleop
-    else leader.last_pose
-)
+previous_pose = leader.robot.end_effector_pose if not args.use_streamed_teleop else leader.last_pose
 
 
 while True:
     # NOTE: the leader pose and follower pose will drift apart over time but this is
     #       fine assuming that we are just recording the leader's actions and not absolute positions.
     current_pose = (
-        leader.robot.end_effector_pose
-        if not args.use_streamed_teleop
-        else leader.last_pose
+        leader.robot.end_effector_pose if not args.use_streamed_teleop else leader.last_pose
     )
 
     action_pose = current_pose - previous_pose
@@ -186,7 +162,9 @@ while True:
     gripper_value = (
         leader.gripper.value
         if not args.use_streamed_teleop and leader.gripper
-        else leader.last_gripper if args.use_streamed_teleop else 0.0
+        else leader.last_gripper
+        if args.use_streamed_teleop
+        else 0.0
     )
     # print(gripper_value)
 
@@ -199,7 +177,6 @@ while True:
             action_pose.orientation.as_euler("xyz"),
             # np.array([leader.gripper.value if leader.gripper else 0.0]),
             np.array([gripper_value]),
-
         ]
     )
     # logger.info(f"Action: {action}")

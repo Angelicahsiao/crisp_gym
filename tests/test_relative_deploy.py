@@ -75,15 +75,14 @@ def _load_policy_module():
     polpol.Action = object
     polpol.Observation = dict
     polpol.register_policy = lambda name: (lambda cls: cls)
-    saved = {k: sys.modules.get(k) for k in
-             ("crisp_gym", "crisp_gym.policy", "crisp_gym.policy.policy")}
+    saved = {
+        k: sys.modules.get(k) for k in ("crisp_gym", "crisp_gym.policy", "crisp_gym.policy.policy")
+    }
     sys.modules.update(
         {"crisp_gym": pkg, "crisp_gym.policy": pol, "crisp_gym.policy.policy": polpol}
     )
     try:
-        return _load(
-            "rlp_test", REPO / "crisp_gym" / "policy" / "relative_lerobot_policy.py"
-        )
+        return _load("rlp_test", REPO / "crisp_gym" / "policy" / "relative_lerobot_policy.py")
     finally:
         for k, v in saved.items():
             if v is not None:
@@ -111,11 +110,11 @@ def _random_traj(n: int, seed: int) -> np.ndarray:
 
 
 def _pose9(T: np.ndarray) -> np.ndarray:
-    return np.concatenate([T[..., :3, 3], T[..., :2, :3].reshape(*T.shape[:-2], 6)],
-                          axis=-1)
+    return np.concatenate([T[..., :3, 3], T[..., :2, :3].reshape(*T.shape[:-2], 6)], axis=-1)
 
 
 # ── 1. deploy composition inverts the training conversion ────────────────────
+
 
 def test_compose_inverts_training_relative():
     for seed in range(5):
@@ -129,24 +128,22 @@ def test_compose_inverts_training_relative():
 
 # ── 2. whole chunk composes against the ONE obs-time base ────────────────────
 
+
 def test_chunk_uses_obs_time_base():
     T = _random_traj(9, seed=42)
     base = T[0]  # obs-time pose; the "robot" then moves through T[1..]
     rel_chunk = lrp.make_relative(_pose9(base), _pose9(T[1:]))
     for k, rel in enumerate(rel_chunk):
         # correct: obs-time base reproduces ground truth
-        np.testing.assert_allclose(
-            rlp.compose_relative_pose(rel, base), T[k + 1], atol=1e-9
-        )
+        np.testing.assert_allclose(rlp.compose_relative_pose(rel, base), T[k + 1], atol=1e-9)
     # wrong: composing step k against the live pose T[k] does NOT reproduce
     # ground truth (this is the compounding bug the invariant prevents)
-    live_err = np.linalg.norm(
-        rlp.compose_relative_pose(rel_chunk[3], T[3])[:3, 3] - T[4][:3, 3]
-    )
+    live_err = np.linalg.norm(rlp.compose_relative_pose(rel_chunk[3], T[3])[:3, 3] - T[4][:3, 3])
     assert live_err > 1e-4, "live-base composition should be measurably wrong"
 
 
 # ── 3. gripper unit conversions ───────────────────────────────────────────────
+
 
 def test_gripper_scaling_matches_recording():
     ref, dev_max = 0.09, 0.140  # Robotiq 2F-140
@@ -167,20 +164,20 @@ def test_gripper_scaling_matches_recording():
 
 # ── 4. observation frame layout ───────────────────────────────────────────────
 
+
 def test_build_obs_frame_layout_and_guards():
     ref, dev_max = 0.09, 0.140
     cart = _pose9(_random_traj(1, seed=7)[0]).astype(np.float32)
     # env obs gripper is the device value directly (0=closed/1=open); no
     # inversion, so build_obs_frame only reference-rescales it.
-    g_env = 0.3   # device value 0.3 -> ref-scaled by dev/ref
+    g_env = 0.3  # device value 0.3 -> ref-scaled by dev/ref
     obs = {
         "observation.state.cartesian": cart,
         "observation.state.gripper": np.array([g_env], dtype=np.float32),
         "observation.images.primary": np.zeros((224, 224, 3), np.uint8),
         "observation.images.wrist": np.zeros((224, 224, 3), np.uint8),
     }
-    frame = rlp.build_obs_frame(obs, ref, dev_max,
-                                image_keys=["observation.images.primary"])
+    frame = rlp.build_obs_frame(obs, ref, dev_max, image_keys=["observation.images.primary"])
     # training layout: [cartesian9 ABSOLUTE, gripper_ref1]
     assert frame["observation.state"].shape == (10,)
     np.testing.assert_allclose(frame["observation.state"][:9], cart, atol=0)
@@ -237,15 +234,20 @@ def test_build_obs_frame_without_task_is_unchanged():
 
 # ── 4b. rename / pad adapter — MUST be inert for checkpoints that need neither ──
 
+
 def _obs(cam: str = "observation.images.oakw_cam") -> tuple:
     """A minimal env observation with one camera, in env (HWC uint8) layout."""
     ref, dev = 0.09, 0.140
     cart = _pose9(_random_traj(1, seed=21)[0]).astype(np.float32)
-    return ({
-        "observation.state.cartesian": cart,
-        "observation.state.gripper": np.array([0.3], dtype=np.float32),
-        cam: np.zeros((800, 1280, 3), np.uint8),
-    }, ref, dev)
+    return (
+        {
+            "observation.state.cartesian": cart,
+            "observation.state.gripper": np.array([0.3], dtype=np.float32),
+            cam: np.zeros((800, 1280, 3), np.uint8),
+        },
+        ref,
+        dev,
+    )
 
 
 def test_diffusion_shaped_frame_is_byte_identical_without_rename_or_pad():
@@ -257,8 +259,7 @@ def test_diffusion_shaped_frame_is_byte_identical_without_rename_or_pad():
     obs, ref, dev = _obs()
     keys = ["observation.images.oakw_cam"]
     before = rlp.build_obs_frame(obs, ref, dev, image_keys=keys)
-    after = rlp.build_obs_frame(obs, ref, dev, image_keys=keys,
-                                rename_map={}, pad_image_shapes={})
+    after = rlp.build_obs_frame(obs, ref, dev, image_keys=keys, rename_map={}, pad_image_shapes={})
     assert set(before) == set(after)
     for k in before:
         np.testing.assert_array_equal(np.asarray(before[k]), np.asarray(after[k]))
@@ -267,9 +268,7 @@ def test_diffusion_shaped_frame_is_byte_identical_without_rename_or_pad():
 def test_padding_off_still_omits_a_key_the_robot_cannot_produce():
     """A missing camera must NOT become silent zeros unless explicitly asked."""
     obs, ref, dev = _obs()
-    frame = rlp.build_obs_frame(
-        obs, ref, dev, image_keys=["observation.images.camera1"]
-    )
+    frame = rlp.build_obs_frame(obs, ref, dev, image_keys=["observation.images.camera1"])
     # oakw_cam does not match camera1 and no rename was given, so nothing lands
     assert not [k for k in frame if k.startswith("observation.images")]
 
@@ -278,7 +277,9 @@ def test_rename_map_routes_the_camera_into_the_checkpoint_slot():
     """The robot's camera must land under the name the checkpoint knows."""
     obs, ref, dev = _obs()
     frame = rlp.build_obs_frame(
-        obs, ref, dev,
+        obs,
+        ref,
+        dev,
         image_keys=["observation.images.camera1"],
         rename_map={"observation.images.oakw_cam": "observation.images.camera1"},
     )
@@ -296,7 +297,9 @@ def test_pad_matches_the_real_camera_not_the_declared_shape():
     """
     obs, ref, dev = _obs()
     frame = rlp.build_obs_frame(
-        obs, ref, dev,
+        obs,
+        ref,
+        dev,
         image_keys=["observation.images.camera1", "observation.images.camera2"],
         rename_map={"observation.images.oakw_cam": "observation.images.camera1"},
         pad_image_shapes={"observation.images.camera2": (3, 256, 256)},
@@ -311,7 +314,9 @@ def test_pad_falls_back_to_the_declared_shape_with_no_real_image():
     obs, ref, dev = _obs()
     obs.pop("observation.images.oakw_cam")
     frame = rlp.build_obs_frame(
-        obs, ref, dev,
+        obs,
+        ref,
+        dev,
         image_keys=["observation.images.camera2"],
         pad_image_shapes={"observation.images.camera2": (3, 256, 256)},
     )
@@ -324,7 +329,9 @@ def test_pad_never_overwrites_a_real_image():
     real = obs["observation.images.oakw_cam"]
     real[0, 0, 0] = 255
     frame = rlp.build_obs_frame(
-        obs, ref, dev,
+        obs,
+        ref,
+        dev,
         image_keys=["observation.images.oakw_cam"],
         pad_image_shapes={"observation.images.oakw_cam": (3, 256, 256)},
     )
@@ -357,18 +364,19 @@ def test_find_rename_map_survives_corrupt_json(tmp_path: Path):
 
 # ── 5. training wrapper converts observation.state (the model input) ─────────
 
+
 def test_training_converts_observation_state_10d():
     """Old relative generation (append_wrt_start_to_state=False): 10-D state."""
     T = _random_traj(2, seed=11)  # n_obs_steps = 2 window
-    cart = _pose9(T).astype(np.float32)                      # (2, 9) absolute
+    cart = _pose9(T).astype(np.float32)  # (2, 9) absolute
     state = np.concatenate([cart, [[0.4], [0.5]]], axis=-1)  # (2, 10) + gripper
-    ds = lrp.RelativePoseDataset(
-        None, start_pose_noise_scale=0.0, append_wrt_start_to_state=False
+    ds = lrp.RelativePoseDataset(None, start_pose_noise_scale=0.0, append_wrt_start_to_state=False)
+    item = ds.convert_item(
+        {
+            "observation.state.cartesian": cart.copy(),
+            "observation.state": state.copy(),
+        }
     )
-    item = ds.convert_item({
-        "observation.state.cartesian": cart.copy(),
-        "observation.state": state.copy(),
-    })
     out = np.asarray(item["observation.state"].numpy(), dtype=np.float64)
     assert out.shape == (2, 10)
     # current frame -> identity pose, gripper untouched
@@ -376,14 +384,13 @@ def test_training_converts_observation_state_10d():
     np.testing.assert_allclose(out[:, 9], [0.4, 0.5], atol=1e-7)
     # pose dims match the sub-key conversion exactly
     np.testing.assert_allclose(
-        out[:, :9], np.asarray(item["observation.state.cartesian"].numpy()),
+        out[:, :9],
+        np.asarray(item["observation.state.cartesian"].numpy()),
         atol=1e-6,
     )
     # round-trip: T_base @ T_rel recovers the absolute window (as matrices)
     for k in range(2):
-        np.testing.assert_allclose(
-            rlp.compose_relative_pose(out[k, :9], T[-1]), T[k], atol=1e-5
-        )
+        np.testing.assert_allclose(rlp.compose_relative_pose(out[k, :9], T[-1]), T[k], atol=1e-5)
 
 
 def test_training_state_is_16d_umi_parity():
@@ -424,13 +431,12 @@ def test_training_state_is_16d_umi_parity():
 
 # ── 6. deploy-side window conversion matches the training wrapper ────────────
 
+
 def _client_frames(cart):
     return [
         {
             "observation.state.cartesian": cart[k],
-            "observation.state": np.concatenate([cart[k], [0.3 + 0.1 * k]]).astype(
-                np.float32
-            ),
+            "observation.state": np.concatenate([cart[k], [0.3 + 0.1 * k]]).astype(np.float32),
             "observation.images.primary": np.zeros((4, 4, 3), np.uint8),
         }
         for k in range(len(cart))
@@ -444,15 +450,13 @@ def test_worker_window_conversion_matches_training_10d():
     converted = rlp.convert_window_state_to_relative(frames)
 
     # training reference on the same window (old relative generation)
-    ds = lrp.RelativePoseDataset(
-        None, start_pose_noise_scale=0.0, append_wrt_start_to_state=False
+    ds = lrp.RelativePoseDataset(None, start_pose_noise_scale=0.0, append_wrt_start_to_state=False)
+    ref = ds.convert_item(
+        {
+            "observation.state.cartesian": cart.copy(),
+            "observation.state": np.stack([f["observation.state"] for f in frames]).copy(),
+        }
     )
-    ref = ds.convert_item({
-        "observation.state.cartesian": cart.copy(),
-        "observation.state": np.stack(
-            [f["observation.state"] for f in frames]
-        ).copy(),
-    })
     for k in range(2):
         np.testing.assert_allclose(
             converted[k]["observation.state"],
@@ -465,9 +469,7 @@ def test_worker_window_conversion_matches_training_10d():
             atol=1e-6,
         )
     # images pass through untouched; inputs not mutated
-    assert converted[0]["observation.images.primary"] is frames[0][
-        "observation.images.primary"
-    ]
+    assert converted[0]["observation.images.primary"] is frames[0]["observation.images.primary"]
     np.testing.assert_allclose(frames[1]["observation.state"][:9], cart[1], atol=0)
 
 
@@ -486,9 +488,7 @@ def test_worker_16d_pipeline_matches_training():
     ref = ds.convert_item(
         {
             "observation.state.cartesian": cart.copy(),
-            "observation.state": np.stack(
-                [f["observation.state"] for f in frames]
-            ).copy(),
+            "observation.state": np.stack([f["observation.state"] for f in frames]).copy(),
         },
         start_pose=start_pose.copy(),
     )
@@ -496,9 +496,7 @@ def test_worker_16d_pipeline_matches_training():
     assert ref_state.shape == (2, 16)
     for k in range(2):
         assert converted[k]["observation.state"].shape == (16,)
-        np.testing.assert_allclose(
-            converted[k]["observation.state"], ref_state[k], atol=1e-6
-        )
+        np.testing.assert_allclose(converted[k]["observation.state"], ref_state[k], atol=1e-6)
     # frame 0 == episode start -> wrt dims identity rot6d
     np.testing.assert_allclose(
         converted[0]["observation.state"][10:16], [1, 0, 0, 0, 1, 0], atol=1e-6
@@ -509,6 +507,7 @@ def test_worker_16d_pipeline_matches_training():
 
 
 # ── 7. promoted-state frame build (legacy migrated layout) ───────────────────
+
 
 def test_build_obs_frame_promoted_state_with_euler_target():
     """Legacy migrated layout: state = [cart9, grip1, joints7, target6-euler]
@@ -529,9 +528,9 @@ def test_build_obs_frame_promoted_state_with_euler_target():
     frame = rlp.build_obs_frame(obs, ref, dev, target_to_euler=True)
     s = frame["observation.state"]
     assert s.shape == (23,)
-    np.testing.assert_allclose(s[:9], cart, atol=0)          # cartesian first
-    assert abs(s[9] - 0.6) < 1e-6            # device value as-is, identity scale
-    np.testing.assert_allclose(s[10:17], joints, atol=0)     # joints untouched
+    np.testing.assert_allclose(s[:9], cart, atol=0)  # cartesian first
+    assert abs(s[9] - 0.6) < 1e-6  # device value as-is, identity scale
+    np.testing.assert_allclose(s[10:17], joints, atol=0)  # joints untouched
     # target: 9-D rot6d -> 6-D euler, matching scipy on the same rotation
     np.testing.assert_allclose(s[17:20], target9[:3], atol=1e-6)
     expected_euler = Rotation.from_matrix(Tt[:3, :3]).as_euler("xyz")
@@ -542,6 +541,7 @@ def test_build_obs_frame_promoted_state_with_euler_target():
 
 
 # ── 7b. pose_repr stamp: machine-readable state composition ──────────────────
+
 
 def test_stamp_state_components():
     import json
@@ -567,8 +567,10 @@ def test_stamp_state_components():
 
     comps = stamp["observation"]["state_components"]
     assert [c.get("key", c.get("generated")) for c in comps] == [
-        "observation.state.cartesian", "observation.state.gripper",
-        "observation.state.joints", "rot_wrt_start",
+        "observation.state.cartesian",
+        "observation.state.gripper",
+        "observation.state.joints",
+        "rot_wrt_start",
     ]
     assert [c["dims"] for c in comps] == [9, 1, 7, 6]
     assert comps[0]["transform"] == "relative_to_last_obs_frame"
@@ -591,6 +593,7 @@ def test_stamp_state_components():
 
 # ── 8. END-TO-END client loop: obs -> frame -> window -> chunk -> env.step ───
 
+
 def test_client_loop_end_to_end():
     """Drive the REAL RelativeLerobotPolicy data_fn with a scripted env and a
     ground-truth 'server': every commanded pose must reproduce the ground-truth
@@ -601,8 +604,8 @@ def test_client_loop_end_to_end():
 
     class _FakeEnv:
         def __init__(self):
-            self.k = 0                       # current pose index (perfect tracking)
-            self.commands = []               # (t_index, action) received by step
+            self.k = 0  # current pose index (perfect tracking)
+            self.commands = []  # (t_index, action) received by step
             self.config = types.SimpleNamespace(
                 orientation_representation="rotation_6d",
                 use_relative_actions=False,
@@ -629,7 +632,7 @@ def test_client_loop_end_to_end():
         def step(self, action, block=False):
             assert action.shape == (10,), f"action dim {action.shape} != 10"
             self.commands.append((self.k, np.asarray(action, np.float64).copy()))
-            self.k += 1                      # perfect tracking of the command
+            self.k += 1  # perfect tracking of the command
             self._sync_robot()
 
     class _FakeConn:
@@ -651,8 +654,7 @@ def test_client_loop_end_to_end():
             chunk = []
             for j in range(8):
                 T_rel = T_base_inv @ GT[self.env.k + 1 + j]
-                chunk.append(np.concatenate(
-                    [_pose9(T_rel), [0.7]]).astype(np.float32))
+                chunk.append(np.concatenate([_pose9(T_rel), [0.7]]).astype(np.float32))
             self._chunk = np.stack(chunk)
 
         def recv(self):
@@ -682,9 +684,13 @@ def test_client_loop_end_to_end():
     pol._log_actions = False
     pol._log_actions_n = 0
     pol._action_log_left = 0
-    pol.meta = {"n_obs_steps": 2, "n_action_steps": 8, "state_input":
-                "relative_wrt_start", "state_dim": 29 + 3,  # 26 disk (target 9D) + 6
-                "image_keys": ["observation.images.primary"]}
+    pol.meta = {
+        "n_obs_steps": 2,
+        "n_action_steps": 8,
+        "state_input": "relative_wrt_start",
+        "state_dim": 29 + 3,  # 26 disk (target 9D) + 6
+        "image_keys": ["observation.images.primary"],
+    }
     pol.n_obs_steps = 2
     pol.n_action_steps = 8
     pol._history = deque(maxlen=2)
@@ -692,7 +698,7 @@ def test_client_loop_end_to_end():
     pol._chunk = None
     pol._chunk_idx = 0
     pol._chunk_base = None
-    pol._async = False            # exercise the synchronous path
+    pol._async = False  # exercise the synchronous path
     pol._pending = False
     pol._pending_base = None
     pol._pending_t0 = None
@@ -704,7 +710,7 @@ def test_client_loop_end_to_end():
     pol.parent_conn = _FakeConn(env)
 
     fn = pol.make_data_fn()
-    for _ in range(16):                      # two full chunks
+    for _ in range(16):  # two full chunks
         obs, act = fn()
         assert act is not None
 
@@ -713,7 +719,7 @@ def test_client_loop_end_to_end():
     for k, action in env.commands:
         T_cmd = _mat(np.asarray(action[:9]))
         np.testing.assert_allclose(T_cmd, GT[k + 1], atol=1e-6)
-        assert abs(action[9] - 0.7) < 1e-6   # identity gripper scaling
+        assert abs(action[9] - 0.7) < 1e-6  # identity gripper scaling
     # exactly two inferences (chunking works), window capped at n_obs_steps
     assert len(pol.parent_conn.windows) == 2
     assert len(pol.parent_conn.windows[1]) == 2
@@ -728,6 +734,7 @@ def test_client_loop_end_to_end():
 
 
 # ── 9. decoupled composition = UMI 'rel' backward (base-frame position) ───────
+
 
 def test_decoupled_composition_matches_umi_rel():
     """compose_mode='decoupled' must equal UMI 'rel' eval transform:
@@ -747,6 +754,7 @@ def test_decoupled_composition_matches_umi_rel():
 
     class _Cfg:
         orientation_representation = "rotation_6d"
+
     pol.env = types.SimpleNamespace(config=_Cfg())
 
     # coupled: position rotated by base -> EE frame
@@ -774,6 +782,7 @@ def test_decoupled_composition_matches_umi_rel():
 
 # ── 10. absolute action = model pose sent directly (no compose) ───────────────
 
+
 def test_absolute_action_sends_pose_directly():
     """action_repr='absolute' must send the model's [pos3,rot6d6] pose straight
     through as the command, ignoring the obs-time base (no T_base@T_rel), with
@@ -783,22 +792,24 @@ def test_absolute_action_sends_pose_directly():
     action = np.concatenate([_pose9(T_target), [0.3]]).astype(np.float64)
 
     pol = object.__new__(rlp.RelativeLerobotPolicy)
-    pol._chunk_base = T_base          # deliberately NON-identity: must be ignored
-    pol.reference_width = pol.device_max_width = 0.085   # identity gripper scaling
+    pol._chunk_base = T_base  # deliberately NON-identity: must be ignored
+    pol.reference_width = pol.device_max_width = 0.085  # identity gripper scaling
     pol.invert_gripper = False
     pol.action_repr = "absolute"
-    pol.compose_mode = "coupled"      # must be ignored in absolute mode
+    pol.compose_mode = "coupled"  # must be ignored in absolute mode
     pol._log_actions = False
     pol._log_actions_n = 0
     pol._action_log_left = 0
 
     class _Cfg:
         orientation_representation = "rotation_6d"
+
     pol.env = types.SimpleNamespace(config=_Cfg())
 
     out = pol._to_env_action(action)
     # position is the model's, NOT composed with the base
     np.testing.assert_allclose(out[:3], action[:3], atol=1e-9)
+
     # full pose (pos + rot6d) reconstructs the target matrix, base-independent
     def _mat9(p9):
         T = np.eye(4)
@@ -809,14 +820,16 @@ def test_absolute_action_sends_pose_directly():
         T[:3, :3] = np.stack([b1, b2, np.cross(b1, b2)])
         T[:3, 3] = p9[:3]
         return T
+
     np.testing.assert_allclose(_mat9(out[:9]), T_target, atol=1e-6)
-    assert abs(out[-1] - 0.3) < 1e-6            # gripper passes through (ref==dev)
+    assert abs(out[-1] - 0.3) < 1e-6  # gripper passes through (ref==dev)
     # composing against the base would have moved the position — confirm it didn't
     composed = rlp.compose_relative_pose(action[:9], T_base)[:3, 3]
     assert np.linalg.norm(out[:3] - composed) > 1e-3
 
 
 # ── 11b. async prefetch reproduces ground truth (no backward commands) ────────
+
 
 def test_async_loop_reproduces_ground_truth():
     """With async_inference and instant inference, the overlapped loop must
@@ -843,14 +856,16 @@ def test_async_loop_reproduces_ground_truth():
             self.k = 0
             self.commands = []
             self.config = types.SimpleNamespace(
-                orientation_representation="rotation_6d", use_relative_actions=False)
+                orientation_representation="rotation_6d", use_relative_actions=False
+            )
             self.robot = types.SimpleNamespace()
             self._sync()
 
         def _sync(self):
             T = GT[self.k]
             self.robot.end_effector_pose = types.SimpleNamespace(
-                position=T[:3, 3].copy(), orientation=Rotation.from_matrix(T[:3, :3]))
+                position=T[:3, 3].copy(), orientation=Rotation.from_matrix(T[:3, :3])
+            )
 
         def get_obs(self):
             return {
@@ -866,6 +881,7 @@ def test_async_loop_reproduces_ground_truth():
 
     class _Conn:
         """Instant worker: chunk of CHUNK relative poses wrt the sent window's base."""
+
         CHUNK = 8
 
         def __init__(self, env):
@@ -876,10 +892,12 @@ def test_async_loop_reproduces_ground_truth():
             _, window = msg
             base9 = np.asarray(window[-1]["observation.state"][:9], np.float64)
             Tbi = np.linalg.inv(_mat(base9))
-            chunk = np.stack([
-                np.concatenate([_pose9(Tbi @ GT[self.env.k + 1 + j]), [0.7]]).astype(np.float32)
-                for j in range(self.CHUNK)
-            ])
+            chunk = np.stack(
+                [
+                    np.concatenate([_pose9(Tbi @ GT[self.env.k + 1 + j]), [0.7]]).astype(np.float32)
+                    for j in range(self.CHUNK)
+                ]
+            )
             self._buf.append(chunk)
 
         def poll(self, timeout=0):
@@ -900,8 +918,13 @@ def test_async_loop_reproduces_ground_truth():
     pol._log_actions = False
     pol._log_actions_n = 0
     pol._action_log_left = 0
-    pol.meta = {"n_obs_steps": 2, "n_action_steps": 8, "state_input": "relative",
-                "state_dim": 10, "image_keys": ["observation.images.primary"]}
+    pol.meta = {
+        "n_obs_steps": 2,
+        "n_action_steps": 8,
+        "state_input": "relative",
+        "state_dim": 10,
+        "image_keys": ["observation.images.primary"],
+    }
     pol.n_obs_steps = 2
     pol.n_action_steps = 8
     pol._history = deque(maxlen=2)
@@ -936,6 +959,7 @@ def test_async_loop_reproduces_ground_truth():
 
 
 # ── 11. __getattr__ must not recurse when unpickled (spawn DataLoader) ─────────
+
 
 def test_relative_dataset_getattr_guarded_against_unpickle_recursion():
     """Under a 'spawn' DataLoader RelativePoseDataset is pickled; during

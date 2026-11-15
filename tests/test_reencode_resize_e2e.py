@@ -174,16 +174,20 @@ DRIVER = textwrap.dedent(r'''
 def _run(tmp_path):
     driver = tmp_path / "driver.py"
     driver.write_text(DRIVER)
-    probe = subprocess.run([sys.executable, "-c", "import av, numpy, pandas, pyarrow"], capture_output=True)
+    probe = subprocess.run(
+        [sys.executable, "-c", "import av, numpy, pandas, pyarrow"], capture_output=True
+    )
     if probe.returncode != 0:
         pytest.skip("PyAV / numpy / pandas / pyarrow not installed for this interpreter")
     proc = subprocess.run(
         [sys.executable, str(driver), str(SCRIPT), str(tmp_path)],
-        capture_output=True, text=True, timeout=600,
+        capture_output=True,
+        text=True,
+        timeout=600,
     )
     lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT ")]
     assert lines, f"driver failed:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr[-4000:]}"
-    return json.loads(lines[-1][len("RESULT "):]), proc
+    return json.loads(lines[-1][len("RESULT ") :]), proc
 
 
 def test_resize_end_to_end_on_real_video(tmp_path):

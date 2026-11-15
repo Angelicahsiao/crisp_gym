@@ -112,8 +112,7 @@ def check_b2(ckpt: Path) -> str:
         obs_stamp = (pose or {}).get("observation", {})
         stamped = obs_stamp.get("observation.state", "")
         if str(stamped).startswith("relative"):
-            mode = ("relative_wrt_start"
-                    if obs_stamp.get("state_includes_wrt_start") else "relative")
+            mode = "relative_wrt_start" if obs_stamp.get("state_includes_wrt_start") else "relative"
         else:
             mode = "absolute"
         print(f"  observation stamp     : {stamped!r}")
@@ -125,7 +124,6 @@ def check_b2(ckpt: Path) -> str:
     else:
         print(f"  found {act_path}: {act}")
     return mode
-
 
 
 # ── state width discovery ─────────────────────────────────────────────────────
@@ -152,8 +150,7 @@ def probe_state_width(policy, preprocessor) -> int | None:  # noqa: ANN001
         preprocessor(build_batch(policy, declared, "probe"))
         return declared
     except RuntimeError as exc:
-        m = re.search(r"tensor a \((\d+)\) must match the size of tensor b \((\d+)\)",
-                      str(exc))
+        m = re.search(r"tensor a \((\d+)\) must match the size of tensor b \((\d+)\)", str(exc))
         if m and int(m.group(1)) == declared:
             return int(m.group(2))
         return declared
@@ -209,8 +206,10 @@ def check_b1(policy, dataset: Path | None, state_mode: str, true_width: int | No
     if missing:
         FAIL.append(f"B1: checkpoint expects image keys the dataset lacks: {missing}")
         print(f"  ** checkpoint expects, dataset lacks: {missing}")
-        print("     (empty_cameras padding shows up here — the robot must fill "
-              "these or the policy sees blanks)")
+        print(
+            "     (empty_cameras padding shows up here — the robot must fill "
+            "these or the policy sees blanks)"
+        )
     if extra:
         print(f"  -- dataset has, checkpoint ignores: {extra}")
     if not missing and not extra:
@@ -229,8 +228,10 @@ def check_b1(policy, dataset: Path | None, state_mode: str, true_width: int | No
                 f"{true_width}. The stats win at runtime, so {int(ck[-1])} is stale "
                 "metadata (typical when a finetune keeps the base model's features)."
             )
-            print(f"  ** declared {int(ck[-1])} but the NORMALIZER wants {true_width}"
-                  " — the checkpoint disagrees with itself; stats win at runtime")
+            print(
+                f"  ** declared {int(ck[-1])} but the NORMALIZER wants {true_width}"
+                " — the checkpoint disagrees with itself; stats win at runtime"
+            )
         elif true_width is not None:
             print(f"  normalizer wants      : {true_width}")
         if expected is not None:
@@ -259,16 +260,18 @@ def check_a5(policy, preprocessor, state_width: int | None) -> None:  # noqa: AN
         print("  (no preprocessor; skipping)")
         return
 
-
     results = {}
     shapes: dict[str, dict] = {}
     tensors: dict[str, dict] = {}
-    for label, value in (("bare str", "open the power switch"),
-                         ("list[str]", ["open the power switch"])):
+    for label, value in (
+        ("bare str", "open the power switch"),
+        ("list[str]", ["open the power switch"]),
+    ):
         try:
             out = preprocessor(build_batch(policy, state_width, value))
             lang = {
-                k: v for k, v in out.items()
+                k: v
+                for k, v in out.items()
                 if any(t in k.lower() for t in ("lang", "token", "input_ids", "attention"))
             }
             shapes[label] = {k: tuple(getattr(v, "shape", ())) for k, v in sorted(lang.items())}
@@ -329,7 +332,7 @@ def check_a5(policy, preprocessor, state_width: int | None) -> None:  # noqa: AN
             print("     numpy_obs_to_torch must emit [task], not task")
     elif list_ok and not bare_ok:
         FAIL.append(
-            'A5: preprocessor needs list[str]; numpy_obs_to_torch passes a bare str. '
+            "A5: preprocessor needs list[str]; numpy_obs_to_torch passes a bare str. "
             "Wrap it (lerobot_features.py:326-327)."
         )
         print("  ** WRAP REQUIRED: numpy_obs_to_torch must emit [task], not task")
@@ -342,11 +345,16 @@ def check_a5(policy, preprocessor, state_width: int | None) -> None:  # noqa: AN
 
 def main() -> None:
     """CLI entry point."""
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("checkpoint", type=Path, help="Path passed to --path at deploy time")
-    ap.add_argument("--dataset", type=Path, default=None,
-                    help="Dataset root (holding meta/) the checkpoint was trained on")
+    ap.add_argument(
+        "--dataset",
+        type=Path,
+        default=None,
+        help="Dataset root (holding meta/) the checkpoint was trained on",
+    )
     args = ap.parse_args()
 
     check_b3()
@@ -384,8 +392,7 @@ def main() -> None:
     for f in FAIL:
         print(f"  FAIL  {f}")
     if not FAIL:
-        print("  All checks that could run, passed."
-              + ("  (see warnings above)" if WARN else ""))
+        print("  All checks that could run, passed." + ("  (see warnings above)" if WARN else ""))
     sys.exit(1 if FAIL else 0)
 
 

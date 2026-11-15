@@ -234,7 +234,9 @@ def main():
         CTRL_FREQ = 50
         # NOTE: CTRL_FREQ is decoupled from --fps by design here (control loop
         # vs record rate); see HANDOFF known issues before changing.
-        env_config = FrankaEnvConfig(control_frequency=CTRL_FREQ, gripper_config=None, camera_configs=[])
+        env_config = FrankaEnvConfig(
+            control_frequency=CTRL_FREQ, gripper_config=None, camera_configs=[]
+        )
         ctrl_type = "cartesian" if not args.joint_control else "joint"
         # Choose the environment based on joint or cartesian control
         if args.joint_control:  # If joint control is enabled
@@ -258,7 +260,6 @@ def main():
         )
 
     try:
-
         leader: TeleopRobot | TeleopStreamedPose | FACTRStreamedJoints | None = None
         if args.use_factr:
             if not args.joint_control:
@@ -309,9 +310,7 @@ def main():
             features = record_config.to_features(
                 joint_count=env.config.robot_config.num_joints(),
                 command_names=(
-                    env_action_names(env)
-                    if record_config.action.definition == "command"
-                    else None
+                    env_action_names(env) if record_config.action.definition == "command" else None
                 ),
             )
         else:
@@ -338,9 +337,7 @@ def main():
             push_to_hub=args.push_to_hub,
             timing_csv_dir=args.timing_csv_dir,
             **(
-                {}
-                if args.reduce_gc_pauses is None
-                else {"reduce_gc_pauses": args.reduce_gc_pauses}
+                {} if args.reduce_gc_pauses is None else {"reduce_gc_pauses": args.reduce_gc_pauses}
             ),
         )
         recording_manager.wait_until_ready()
@@ -392,11 +389,9 @@ def main():
 
         env.wait_until_ready()
         logger.debug("[DEBUG] env.wait_until_ready() done")
-        env.home(home_config=home_for_env(
-            env, "close_to_table", noise=args.home_config_noise))
+        env.home(home_config=home_for_env(env, "close_to_table", noise=args.home_config_noise))
         logger.debug("[DEBUG] env.home() done")
-        env.home(home_config=home_for_env(
-            env, "open_pose", noise=args.home_config_noise))
+        env.home(home_config=home_for_env(env, "open_pose", noise=args.home_config_noise))
         env.reset()
         logger.debug("[DEBUG] env.reset() done")
 

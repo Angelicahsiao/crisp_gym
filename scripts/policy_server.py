@@ -105,9 +105,7 @@ class Worker:
             # in RelativeLerobotPolicy.__init__).
             ctx = mp.get_context("spawn")
             self.conn, child = ctx.Pipe()
-            self.proc = ctx.Process(
-                target=target, kwargs={"conn": child, **kwargs}, daemon=True
-            )
+            self.proc = ctx.Process(target=target, kwargs={"conn": child, **kwargs}, daemon=True)
         self.proc.start()
         self._lock = threading.Lock()
         self.dead = False
@@ -134,7 +132,7 @@ class Worker:
                 if self.conn.poll(0.25):
                     return self.conn.recv()
                 if not self.proc.is_alive():
-                    if self.conn.poll(0):   # it answered just before exiting
+                    if self.conn.poll(0):  # it answered just before exiting
                         return self.conn.recv()
                     raise EOFError("it exited without answering")
             except (EOFError, OSError) as exc:
@@ -177,6 +175,7 @@ def _is_error(message: Any) -> bool:  # noqa: ANN401
 
 # ── what the checkpoint requires, for the handshake ──────────────────────────
 
+
 def client_state_dim(meta: dict) -> int | None:
     """Width of the `observation.state` the CLIENT sends.
 
@@ -208,8 +207,14 @@ def checkpoint_spec(pretrained_path: str, meta: dict) -> dict:
     keys = []
     state_dim = client_state_dim(meta)
     if state_dim:
-        keys.append({"name": "observation.state", "shape": [state_dim],
-                     "dtype": "float32", "layout": pose_repr.get("pose_layout")})
+        keys.append(
+            {
+                "name": "observation.state",
+                "shape": [state_dim],
+                "dtype": "float32",
+                "layout": pose_repr.get("pose_layout"),
+            }
+        )
     for key, shape in (meta.get("image_shapes") or {}).items():
         chw = [int(d) for d in shape]
         hwc = [chw[1], chw[2], chw[0]] if len(chw) == 3 else chw
@@ -258,6 +263,7 @@ def warmup_window(meta: dict) -> list[dict] | None:
 
 # ── the server ───────────────────────────────────────────────────────────────
 
+
 class PolicyServer:
     """Protocol v1 in front of one inference worker. One robot at a time.
 
@@ -269,8 +275,14 @@ class PolicyServer:
             holds the checkpoint, so it decides what the client sends.
     """
 
-    def __init__(self, worker: Worker, pretrained_path: str, host: str = "0.0.0.0",  # noqa: S104
-                 port: int = DEFAULT_PORT, image_spec: dict | None = None):
+    def __init__(
+        self,
+        worker: Worker,
+        pretrained_path: str,
+        host: str = "0.0.0.0",  # noqa: S104
+        port: int = DEFAULT_PORT,
+        image_spec: dict | None = None,
+    ):
         """Derive the handshake from the checkpoint. Does not listen yet."""
         self.worker = worker
         self.pretrained_path = str(pretrained_path)
@@ -299,8 +311,9 @@ class PolicyServer:
 
         kwargs = dict(max_size=None, compression=None)
         try:
-            return serve(self._handle, self.host, self._port,
-                         process_request=_health_check, **kwargs)
+            return serve(
+                self._handle, self.host, self._port, process_request=_health_check, **kwargs
+            )
         except TypeError:  # an older websockets without process_request here
             return serve(self._handle, self.host, self._port, **kwargs)
 
@@ -314,8 +327,12 @@ class PolicyServer:
     def serve_forever(self) -> None:
         """Listen in this thread until stop() or KeyboardInterrupt."""
         self._server = self._make_server()
-        logger.info("listening on ws://%s:%s  (images: %s)", self.host, self.port,
-                    self.image_spec.get("encoding"))
+        logger.info(
+            "listening on ws://%s:%s  (images: %s)",
+            self.host,
+            self.port,
+            self.image_spec.get("encoding"),
+        )
         self._server.serve_forever()
 
     def stop(self) -> None:
@@ -361,9 +378,14 @@ class PolicyServer:
             logger.warning("refusing %s: another client is connected", peer)
             try:
                 first = self._read(ws, timeout=5.0)
-                self._send(ws, proto.error(
-                    first["id"] if first else None, proto.E_NOT_READY,
-                    "this server is already serving another client"))
+                self._send(
+                    ws,
+                    proto.error(
+                        first["id"] if first else None,
+                        proto.E_NOT_READY,
+                        "this server is already serving another client",
+                    ),
+                )
             except Exception:  # noqa: BLE001, S110
                 pass
             return
@@ -395,7 +417,7 @@ class PolicyServer:
     def _serve(self, ws) -> None:  # noqa: ANN001
         greeted = reset_acked = False
         last_obs_t: float | None = None
-        waiting: collections.deque = collections.deque()   # frames read ahead
+        waiting: collections.deque = collections.deque()  # frames read ahead
         while True:
             frame = waiting.popleft() if waiting else self._read(ws)
             kind, rid = frame["t"], frame["id"]
@@ -417,8 +439,9 @@ class PolicyServer:
 
             # ── infer ────────────────────────────────────────────────────
             if not reset_acked:
-                self._send(ws, proto.error(rid, proto.E_NOT_READY,
-                                           "infer before reset was acknowledged"))
+                self._send(
+                    ws, proto.error(rid, proto.E_NOT_READY, "infer before reset was acknowledged")
+                )
                 continue
             # The client keeps ONE request outstanding, so a frame already
             # waiting behind this one means the client gave up on it (timeout).
@@ -426,17 +449,27 @@ class PolicyServer:
             newer = self._read(ws, timeout=0)
             if newer is not None:
                 waiting.append(newer)
-                self._send(ws, proto.error(
-                    rid, proto.E_STALE_OBS,
-                    f"superseded by request {newer['id']} before it was served"))
+                self._send(
+                    ws,
+                    proto.error(
+                        rid,
+                        proto.E_STALE_OBS,
+                        f"superseded by request {newer['id']} before it was served",
+                    ),
+                )
                 continue
             obs_t = frame.get("obs_t")
             if obs_t is not None and last_obs_t is not None and obs_t < last_obs_t:
                 # Compared on the CLIENT's clock only (rule 5): an observation
                 # older than one already served is out of order.
-                self._send(ws, proto.error(
-                    rid, proto.E_STALE_OBS,
-                    f"obs_t {obs_t:.3f} is older than the last served {last_obs_t:.3f}"))
+                self._send(
+                    ws,
+                    proto.error(
+                        rid,
+                        proto.E_STALE_OBS,
+                        f"obs_t {obs_t:.3f} is older than the last served {last_obs_t:.3f}",
+                    ),
+                )
                 continue
 
             t0 = time.perf_counter()
@@ -465,8 +498,11 @@ class PolicyServer:
             logger.info(
                 "request %d: decode %.1f ms, inference %.1f ms; last %d requests "
                 "took %.1f ms on average (decode + inference + send)",
-                self.requests, timing["decode_ms"], timing["infer_ms"],
-                len(self._infer_ms), float(np.mean(self._infer_ms)),
+                self.requests,
+                timing["decode_ms"],
+                timing["infer_ms"],
+                len(self._infer_ms),
+                float(np.mean(self._infer_ms)),
             )
 
 
@@ -485,8 +521,13 @@ def _health_check(connection, request):  # noqa: ANN001, ANN202
 #: crisp_gym itself is NOT installed here (a clone is enough), so its own
 #: dependencies that the worker touches have to be named: `rich` is one.
 REQUIREMENTS = {
-    "torch": "torch", "lerobot": "lerobot", "websockets": "websockets",
-    "msgpack": "msgpack", "rich": "rich", "yaml": "pyyaml", "gymnasium": "gymnasium",
+    "torch": "torch",
+    "lerobot": "lerobot",
+    "websockets": "websockets",
+    "msgpack": "msgpack",
+    "rich": "rich",
+    "yaml": "pyyaml",
+    "gymnasium": "gymnasium",
 }
 
 
@@ -503,7 +544,7 @@ def missing_requirements() -> list[str]:
             return True
         try:
             return importlib.util.find_spec(module) is not None
-        except (ImportError, ValueError):   # a broken or half-installed package
+        except (ImportError, ValueError):  # a broken or half-installed package
             return False
 
     return [pip for module, pip in REQUIREMENTS.items() if not importable(module)]
@@ -521,25 +562,52 @@ def _parse_override(text: str) -> tuple[str, object]:
 
 def build_parser() -> argparse.ArgumentParser:
     """Command-line options (see REMOTE_INFERENCE.md, section 4)."""
-    p = argparse.ArgumentParser(description="Serve a lerobot checkpoint to a crisp_gym robot machine")
+    p = argparse.ArgumentParser(
+        description="Serve a lerobot checkpoint to a crisp_gym robot machine"
+    )
     p.add_argument("--path", required=True, help="checkpoint pretrained_model directory")
     p.add_argument("--host", default="0.0.0.0", help="interface to listen on")  # noqa: S104
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
-    p.add_argument("--image-encoding", choices=["raw", "jpeg"], default="raw",
-                   help="what the client sends. raw is exactly what the policy would see "
-                        "in-process; jpeg is ~10x smaller and lossy")
+    p.add_argument(
+        "--image-encoding",
+        choices=["raw", "jpeg"],
+        default="raw",
+        help="what the client sends. raw is exactly what the policy would see "
+        "in-process; jpeg is ~10x smaller and lossy",
+    )
     p.add_argument("--jpeg-quality", type=int, default=90)
-    p.add_argument("--state-input", default="auto",
-                   choices=["auto", "absolute", "relative", "relative_wrt_start"],
-                   help="observation.state mode; auto reads pose_repr.json")
-    p.add_argument("--num-inference-steps", type=int, default=None,
-                   help="denoising steps (diffusion policies only)")
-    p.add_argument("--scheduler", choices=["ddim", "ddpm"], default=None,
-                   help="sampler (diffusion policies only)")
-    p.add_argument("--set", dest="overrides", action="append", type=_parse_override, default=[],
-                   metavar="KEY=VALUE", help="policy config override, repeatable")
-    p.add_argument("--no-warmup", action="store_true",
-                   help="skip the neutral first inference done before listening")
+    p.add_argument(
+        "--state-input",
+        default="auto",
+        choices=["auto", "absolute", "relative", "relative_wrt_start"],
+        help="observation.state mode; auto reads pose_repr.json",
+    )
+    p.add_argument(
+        "--num-inference-steps",
+        type=int,
+        default=None,
+        help="denoising steps (diffusion policies only)",
+    )
+    p.add_argument(
+        "--scheduler",
+        choices=["ddim", "ddpm"],
+        default=None,
+        help="sampler (diffusion policies only)",
+    )
+    p.add_argument(
+        "--set",
+        dest="overrides",
+        action="append",
+        type=_parse_override,
+        default=[],
+        metavar="KEY=VALUE",
+        help="policy config override, repeatable",
+    )
+    p.add_argument(
+        "--no-warmup",
+        action="store_true",
+        help="skip the neutral first inference done before listening",
+    )
     p.add_argument("--log-level", default="INFO")
     return p
 
@@ -548,27 +616,38 @@ def main(argv: list[str] | None = None) -> int:
     """Load the checkpoint, warm up, serve. Returns the process exit status."""
     args = build_parser().parse_args(argv)
     # force: an imported module may already have configured the root logger.
-    logging.basicConfig(level=args.log_level.upper(), force=True,
-                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=args.log_level.upper(),
+        force=True,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     path = str(Path(args.path).expanduser())
     if not (Path(path) / "config.json").exists():
-        logger.error("%s has no config.json — pass the checkpoint's pretrained_model directory", path)
+        logger.error(
+            "%s has no config.json — pass the checkpoint's pretrained_model directory", path
+        )
         return 2
 
     missing = missing_requirements()
     if missing:
-        logger.error("this Python is missing: %s. Install with:  pip install %s",
-                     ", ".join(missing), " ".join(missing))
+        logger.error(
+            "this Python is missing: %s. Install with:  pip install %s",
+            ", ".join(missing),
+            " ".join(missing),
+        )
         return 2
 
     logger.info("loading %s (this starts the inference worker) ...", path)
-    worker = Worker(rlp.inference_worker, {
-        "pretrained_path": path,
-        "overrides": dict(args.overrides),
-        "state_input": args.state_input,
-        "num_inference_steps": args.num_inference_steps,
-        "scheduler": args.scheduler,
-    })
+    worker = Worker(
+        rlp.inference_worker,
+        {
+            "pretrained_path": path,
+            "overrides": dict(args.overrides),
+            "state_input": args.state_input,
+            "num_inference_steps": args.num_inference_steps,
+            "scheduler": args.scheduler,
+        },
+    )
     logger.info("worker ready: %s", worker.meta)
 
     if not args.no_warmup:
@@ -581,9 +660,12 @@ def main(argv: list[str] | None = None) -> int:
                 worker.infer(window)
                 t1 = time.perf_counter()
                 worker.infer(window)
-                logger.info("warm-up done: first inference %.0f ms, second %.0f ms "
-                            "(the second is what a robot will wait for)",
-                            (t1 - t0) * 1e3, (time.perf_counter() - t1) * 1e3)
+                logger.info(
+                    "warm-up done: first inference %.0f ms, second %.0f ms "
+                    "(the second is what a robot will wait for)",
+                    (t1 - t0) * 1e3,
+                    (time.perf_counter() - t1) * 1e3,
+                )
             except InferenceFailed as exc:
                 logger.warning("warm-up inference failed (serving anyway): %s", exc)
             worker.reset()
@@ -600,7 +682,7 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         logger.info("interrupted — shutting down")
     finally:
-        server.stop()      # closes the client's socket: the robot side holds pose
+        server.stop()  # closes the client's socket: the robot side holds pose
         worker.stop()
     return 1 if server.worker_died else 0
 

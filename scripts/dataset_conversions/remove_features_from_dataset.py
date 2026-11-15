@@ -99,7 +99,6 @@ with Progress() as progress:
     for frame in dataset:
         new_frame = {}
 
-
         for key in features.keys():
             if key == "action":
                 new_frame[key] = frame[key]

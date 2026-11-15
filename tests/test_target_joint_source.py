@@ -70,7 +70,7 @@ def test_umi_robot_full_records_both_commanded_targets():
     by_key = {o.key: o for o in cfg.observations}
     tj = by_key["extra.target_joints"]
     assert tj.source == "robot.target_joint"
-    assert tuple(tj.resolved_shape()) == (7,)          # FR3
+    assert tuple(tj.resolved_shape()) == (7,)  # FR3
     assert tj.include_in_state is False
     # The Cartesian target stays alongside it — one config, both rigs.
     assert by_key["extra.target_cartesian"].source == "robot.target_pose"

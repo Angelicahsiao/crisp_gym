@@ -91,6 +91,7 @@ def _rand_T() -> np.ndarray:
 
 # ── 1. rot6d round-trip ───────────────────────────────────────────────────────
 
+
 def test_rot6d_matrix_roundtrip():
     for _ in range(100):
         R = _rand_R().as_matrix()
@@ -110,6 +111,7 @@ def test_pose9d_mat_roundtrip():
 
 
 # ── 2-4. relative-pose invariants ─────────────────────────────────────────────
+
 
 def test_relative_to_self_is_identity():
     identity = np.array([0, 0, 0, 1, 0, 0, 0, 1, 0], dtype=np.float64)
@@ -140,17 +142,22 @@ def test_world_frame_invariance():
 
 # ── 5-6. convert_item (dataset wrapper semantics) ─────────────────────────────
 
+
 def _fake_item(n_obs=2, horizon=4, grip=0.7):
     obs = np.stack([_rand_pose9d() for _ in range(n_obs)]).astype(np.float32)
-    act = np.stack(
-        [np.concatenate([_rand_pose9d(), [grip]]) for _ in range(horizon)]
-    ).astype(np.float32)
+    act = np.stack([np.concatenate([_rand_pose9d(), [grip]]) for _ in range(horizon)]).astype(
+        np.float32
+    )
     import torch as _t
 
-    return {
-        "observation.state.cartesian": _t.from_numpy(obs),
-        "action": _t.from_numpy(act),
-    }, obs, act
+    return (
+        {
+            "observation.state.cartesian": _t.from_numpy(obs),
+            "action": _t.from_numpy(act),
+        },
+        obs,
+        act,
+    )
 
 
 def test_convert_item_semantics():
@@ -190,6 +197,7 @@ def test_convert_item_semantics():
 
 # ── 7. RemotePolicy obs-time chunk base (regression) ──────────────────────────
 
+
 def test_remote_policy_chunk_base_is_obs_time():
     # stub the package import chain used by remote_policy
     pkg = types.ModuleType("crisp_gym")
@@ -203,12 +211,22 @@ def test_remote_policy_chunk_base_is_obs_time():
     # carry it or the import resolves against an empty namespace.
     proto = _load("rproto_test", REPO / "crisp_gym" / "policy" / "remote_protocol.py")
     pol.remote_protocol = proto
-    saved = {k: sys.modules.get(k) for k in
-             ("crisp_gym", "crisp_gym.policy", "crisp_gym.policy.policy",
-              "crisp_gym.policy.remote_protocol")}
+    saved = {
+        k: sys.modules.get(k)
+        for k in (
+            "crisp_gym",
+            "crisp_gym.policy",
+            "crisp_gym.policy.policy",
+            "crisp_gym.policy.remote_protocol",
+        )
+    }
     sys.modules.update(
-        {"crisp_gym": pkg, "crisp_gym.policy": pol, "crisp_gym.policy.policy": polpol,
-         "crisp_gym.policy.remote_protocol": proto}
+        {
+            "crisp_gym": pkg,
+            "crisp_gym.policy": pol,
+            "crisp_gym.policy.policy": polpol,
+            "crisp_gym.policy.remote_protocol": proto,
+        }
     )
     try:
         rp = _load("rp_test", REPO / "crisp_gym" / "policy" / "remote_policy.py")

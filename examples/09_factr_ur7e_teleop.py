@@ -32,12 +32,18 @@ from crisp_gym.util.setup_logger import setup_logging
 
 # ── args ──────────────────────────────────────────────────────────────────────
 parser = argparse.ArgumentParser(description="FACTR → UR7e + Robotiq joint teleop")
-parser.add_argument("--factr-name", type=str, default="right",
-                    help="FACTR arm name used in topic prefix (default: right)")
-parser.add_argument("--freq", type=float, default=50.0,
-                    help="Control loop frequency in Hz (default: 50)")
-parser.add_argument("--log-level", type=str, default="INFO",
-                    choices=["DEBUG", "INFO", "WARNING", "ERROR"])
+parser.add_argument(
+    "--factr-name",
+    type=str,
+    default="right",
+    help="FACTR arm name used in topic prefix (default: right)",
+)
+parser.add_argument(
+    "--freq", type=float, default=50.0, help="Control loop frequency in Hz (default: 50)"
+)
+parser.add_argument(
+    "--log-level", type=str, default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"]
+)
 args = parser.parse_args()
 
 setup_logging(level=args.log_level)

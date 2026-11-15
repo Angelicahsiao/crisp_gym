@@ -31,9 +31,18 @@ ACTION_NAMES = POSE_NAMES + ["gripper"]
 IDENTITY6 = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
 
 
-def make_dataset(root: Path, *, episodes=4, length=120, relative=False,
-                 names=ACTION_NAMES, fps=15, task="open the power switch",
-                 nan=False, rot_names=None) -> Path:
+def make_dataset(
+    root: Path,
+    *,
+    episodes=4,
+    length=120,
+    relative=False,
+    names=ACTION_NAMES,
+    fps=15,
+    task="open the power switch",
+    nan=False,
+    rot_names=None,
+) -> Path:
     """A v3.0-shaped dataset mirroring umi_robot_full_record.yaml's contract."""
     (root / "data" / "chunk-000").mkdir(parents=True, exist_ok=True)
     (root / "meta" / "episodes" / "chunk-000").mkdir(parents=True, exist_ok=True)
@@ -49,36 +58,61 @@ def make_dataset(root: Path, *, episodes=4, length=120, relative=False,
             rot = np.array(IDENTITY6) + rng.normal(0, 0.25, 6)
             grip = float(rng.random())
             state = np.concatenate([pos, rot, [grip]])
-            action = (np.concatenate([nxt - pos, np.array(IDENTITY6) + rng.normal(0, 5e-3, 6), [grip]])
-                      if relative else np.concatenate([nxt, rot + rng.normal(0, 1e-3, 6), [grip]]))
+            action = (
+                np.concatenate([nxt - pos, np.array(IDENTITY6) + rng.normal(0, 5e-3, 6), [grip]])
+                if relative
+                else np.concatenate([nxt, rot + rng.normal(0, 1e-3, 6), [grip]])
+            )
             if nan and ep == 0 and t == 3:
                 action = action.copy()
                 action[0] = np.nan
-            rows.append({"episode_index": ep, "frame_index": t,
-                         "index": ep * length + t, "task_index": 0,
-                         "observation.state": state.tolist(), "action": action.tolist()})
+            rows.append(
+                {
+                    "episode_index": ep,
+                    "frame_index": t,
+                    "index": ep * length + t,
+                    "task_index": 0,
+                    "observation.state": state.tolist(),
+                    "action": action.tolist(),
+                }
+            )
     pd.DataFrame(rows).to_parquet(root / "data/chunk-000/file-000.parquet", index=False)
-    pd.DataFrame([{"episode_index": e, "tasks": [task], "length": length}
-                  for e in range(episodes)]).to_parquet(
-        root / "meta/episodes/chunk-000/file-000.parquet", index=False)
+    pd.DataFrame(
+        [{"episode_index": e, "tasks": [task], "length": length} for e in range(episodes)]
+    ).to_parquet(root / "meta/episodes/chunk-000/file-000.parquet", index=False)
     pd.DataFrame({"task": [task], "task_index": [0]}).set_index("task").to_parquet(
-        root / "meta/tasks.parquet")
+        root / "meta/tasks.parquet"
+    )
 
     pose_names = rot_names or POSE_NAMES
     action_feat = {"dtype": "float32", "shape": [len(names or ACTION_NAMES)]}
     if names is not None:
         action_feat["names"] = names
-    json.dump({
-        "robot_type": "franka", "codebase_version": "v3.0", "fps": fps,
-        "total_episodes": episodes, "total_frames": episodes * length, "total_tasks": 1,
-        "features": {
-            "action": action_feat,
-            "observation.state": {"dtype": "float32", "shape": [10],
-                                  "names": pose_names + ["gripper"]},
-            "observation.images.oakw_cam": {"dtype": "video", "shape": [800, 1280, 3],
-                                            "names": ["height", "width", "channels"]},
+    json.dump(
+        {
+            "robot_type": "franka",
+            "codebase_version": "v3.0",
+            "fps": fps,
+            "total_episodes": episodes,
+            "total_frames": episodes * length,
+            "total_tasks": 1,
+            "features": {
+                "action": action_feat,
+                "observation.state": {
+                    "dtype": "float32",
+                    "shape": [10],
+                    "names": pose_names + ["gripper"],
+                },
+                "observation.images.oakw_cam": {
+                    "dtype": "video",
+                    "shape": [800, 1280, 3],
+                    "names": ["height", "width", "channels"],
+                },
+            },
         },
-    }, open(root / "meta/info.json", "w"), indent=4)
+        open(root / "meta/info.json", "w"),
+        indent=4,
+    )
     return root
 
 
