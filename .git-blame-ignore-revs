@@ -1,0 +1,6 @@
+# Commits that only change layout. `git blame` skips them with
+#     git config blame.ignoreRevsFile .git-blame-ignore-revs
+# (GitHub's blame view reads this file by itself.)
+
+# style: format the repository once with ruff 0.12.0
+8c4d224a1f0e7d7ebded4df8a1d610f034058dd0
