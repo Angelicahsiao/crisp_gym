@@ -1,8 +1,9 @@
-# Local (in-process) deployment of a relative-pose rot6d checkpoint trained
-# with scripts/lerobot_relative_pose.py — for VERIFYING the model without the
-# websocket server. Requires the robot machine's lerobot version to match the
-# training version (0.4.4). Canonical long-term path: remote_policy
-# (REMOTE_INFERENCE.md).
+# Deployment of a relative-pose rot6d checkpoint trained with
+# scripts/lerobot_relative_pose.py. The model runs either
+#   - in a subprocess on THIS machine (default; needs torch, the checkpoint and
+#     the lerobot version it was trained with here), or
+#   - on a GPU machine running scripts/policy_server.py — set `server` below.
+# Everything else in this file means the same in both modes.
 #
 # Use with a deploy env config (rotation_6d + use_relative_actions: false),
 # e.g. config/envs/ur7e_robotiq_deploy_umi.yaml:
@@ -10,6 +11,33 @@
 #       --env-config ur7e_robotiq_deploy_umi \
 #       --policy-config relative_lerobot_policy --path <.../pretrained_model>
 name: "relative_lerobot_policy"
+
+# ── where the model runs ─────────────────────────────────────────────────────
+# null  -> a subprocess on this machine (as always).
+# A websocket address, or a mapping, -> the policy server on a GPU machine
+# (REMOTE_INFERENCE.md §4). Start it there first:
+#   python scripts/policy_server.py --path .../pretrained_model --port 8765
+# Then, here:
+#   server: "ws://192.168.1.50:8765"
+# or, with the timeouts spelled out:
+#   server:
+#     host: "192.168.1.50"
+#     port: 8765
+#     infer_timeout_s: 5.0      # must exceed the slowest inference + transfer;
+#                               # on timeout the robot holds pose and asks again
+#     connect_timeout_s: 10.0
+#     reconnect_attempts: 3
+# With a server:
+#   * this machine needs only `pip install websockets msgpack` — no torch, no
+#     lerobot, no checkpoint. deploy_policy still wants a --path; it is only a
+#     label then (e.g. --path remote). The log names what the server serves.
+#   * state_input / num_inference_steps / scheduler / overrides belong to the
+#     server's command line. Left at auto / null here they are simply the
+#     server's; a state_input that contradicts the server refuses to start,
+#     and the others are logged as NOT APPLIED.
+#   * async_inference: true is worth turning on: the round trip then overlaps
+#     with the chunk being executed instead of pausing the arm.
+server: null
 
 # Physical gripper width in meters at Gripper.value = 1.0 — REQUIRED, must
 # match the record config's device_max_width:

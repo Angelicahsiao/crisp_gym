@@ -15,7 +15,7 @@
 # wrongly instead of crashing.
 # ═══════════════════════════════════════════════════════════════════════════
 
-name: "remote"                # policy registry name (crisp_gym make_policy)
+name: "remote_policy"         # policy registry name (crisp_gym make_policy)
 
 # ── connection ───────────────────────────────────────────────────────────────
 server:

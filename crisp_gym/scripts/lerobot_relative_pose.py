@@ -403,12 +403,21 @@ def _installed_lerobot_version() -> str:
             return "unknown"
 
 
-def stamp_pose_repr(cfg, dataset) -> None:
+def stamp_pose_repr(cfg, dataset, epoch_plan=None) -> None:
     """Write pose_repr.json next to the checkpoints (HANDOFF §4.2).
 
     Records what the model ACTUALLY sees, so the serving side (remote policy
     server / local RelativeLerobotPolicy) can verify its contract instead of
     guessing. Never fails training.
+
+    Args:
+        cfg: lerobot TrainPipelineConfig.
+        dataset: The wrapped dataset the dataloader will see.
+        epoch_plan: Optional `EpochPlan` from `resolve_epoch_steps`, recorded
+            under a "schedule" key. Without it the file is written as before.
+            Stamping this matters: it is the only durable record of how many
+            EPOCHS a checkpoint was trained for, which is what makes two runs
+            on different-sized datasets comparable after the fact.
     """
     import json
     from pathlib import Path
@@ -505,12 +514,82 @@ def stamp_pose_repr(cfg, dataset) -> None:
             # humans reading pose_repr.json next to a checkpoint.
             "lerobot_version_target": _installed_lerobot_version(),
         }
+        if epoch_plan is not None:
+            info["schedule"] = epoch_plan.as_dict()
         out_dir = Path(cfg.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "pose_repr.json").write_text(json.dumps(info, indent=2))
         logger.info(f"Stamped {out_dir / 'pose_repr.json'}")
     except Exception as e:  # provenance must never kill a training run
         logger.warning(f"Could not stamp pose_repr.json: {e}")
+
+
+# ── --epochs support (identical in all three training launchers) ─────────────
+# These launchers must stay runnable where only lerobot is installed: a GPU PC
+# with one script copied over, or a repo clone that was never pip-installed
+# (scripts/train_groot_server.sh's layout). So the epoch scheduler is not a hard
+# `import crisp_gym`: the package is tried first, then epoch_steps.py is loaded
+# by file path from next to this script, then from the repo layout
+# (crisp_gym/util/). epoch_steps.py uses only the standard library. Duplicated
+# on purpose, since a shared helper would need exactly the import it avoids;
+# tests/test_launcher_epochs.py checks the three copies stay identical.
+
+
+def _load_epoch_steps():
+    """Return the epoch_steps module, or None when it cannot be found."""
+    try:
+        from crisp_gym.util import epoch_steps
+
+        return epoch_steps
+    except ImportError:
+        pass
+
+    import importlib.util
+    import sys
+    from pathlib import Path
+
+    here = Path(__file__).resolve().parent
+    for candidate in (here / "epoch_steps.py", here.parent / "util" / "epoch_steps.py"):
+        if candidate.is_file():
+            spec = importlib.util.spec_from_file_location("crisp_gym_epoch_steps", candidate)
+            module = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = module
+            spec.loader.exec_module(module)
+            return module
+    return None
+
+
+def _setup_epochs(argv):
+    """Strip --epochs from argv.
+
+    Returns:
+        (schedule, epochs, remaining_argv): `schedule` is resolve_epoch_steps,
+        or None when epoch_steps.py cannot be found; `epochs` is None when the
+        flag is absent.
+
+    Raises:
+        RuntimeError: --epochs was given but epoch_steps.py cannot be found.
+            Falling back to the --steps schedule would look normal and be wrong.
+    """
+    epoch_steps = _load_epoch_steps()
+    if epoch_steps is None:
+        if any(a == "--epochs" or a.startswith("--epochs=") for a in argv):
+            raise RuntimeError(
+                "--epochs needs epoch_steps.py, which was found neither as the "
+                "crisp_gym.util.epoch_steps package nor next to this script. "
+                "Copy crisp_gym/util/epoch_steps.py into the same folder as this "
+                "launcher, or drop --epochs and pass --steps."
+            )
+        logger.warning(
+            "epoch_steps.py not found: --epochs is unavailable and this run's "
+            "epoch count will not be logged. Training proceeds on --steps."
+        )
+        return None, None, list(argv)
+    epochs, remaining = epoch_steps.pop_epochs_flag(argv)
+    return epoch_steps.resolve_epoch_steps, epochs, remaining
+
+
+# ── end --epochs support ─────────────────────────────────────────────────────
 
 
 # ── Training launcher ─────────────────────────────────────────────────────────
@@ -532,6 +611,18 @@ def main():
     CLI: --no-wrt-start trains a plain 10-D relative-state model; the default
     (--wrt-start) appends rot_wrt_start for the 16-D UMI-parity state. Deploy
     must match (RelativeLerobotPolicy state_input relative vs relative_wrt_start).
+
+    CLI: --epochs N schedules the run by EPOCHS instead of lerobot's --steps,
+    converting to steps once the dataset length is known. Use it whenever
+    comparing runs across datasets whose episode lengths differ: at a fixed
+    --steps, a dataset of shorter episodes is traversed more times and overfits
+    first. See crisp_gym/util/epoch_steps.py for the arithmetic and for upstream
+    reference epoch counts (UMI uses 120 for a UNet denoiser, 200 for a
+    transformer). A checkpoint lands exactly on the epoch target and training
+    then continues for 2 more checkpoint intervals, so the run is LONGER than N
+    epochs and the target checkpoint is the N-epoch model. Without --epochs the
+    schedule is untouched and the equivalent epoch count is only logged.
+
     These are OUR flags — stripped from argv before draccus parses the rest.
     """
     import sys
@@ -539,6 +630,7 @@ def main():
     import lerobot.scripts.lerobot_train as lerobot_train
 
     append_wrt, remaining = _pop_wrt_start_flag(sys.argv[1:])
+    schedule_epochs, epochs, remaining = _setup_epochs(remaining)
     sys.argv = [sys.argv[0]] + remaining
     logging.basicConfig(level=logging.INFO)
     logger.info(
@@ -550,7 +642,10 @@ def main():
         wrapped = RelativePoseDataset(dataset, append_wrt_start_to_state=append_wrt)
         logger.info("Wrapped dataset with RelativePoseDataset (UMI-style relative poses).")
         recompute_relative_stats(wrapped)
-        stamp_pose_repr(cfg, wrapped)
+        # AFTER wrapping: the wrapper is what the dataloader sees, so its len()
+        # is the epoch denominator. BEFORE lerobot_train.main() reads cfg.steps.
+        plan = schedule_epochs(cfg, wrapped, epochs) if schedule_epochs else None
+        stamp_pose_repr(cfg, wrapped, epoch_plan=plan)
         return wrapped
 
     if hasattr(lerobot_train, "make_train_eval_datasets"):  # lerobot >= 0.5

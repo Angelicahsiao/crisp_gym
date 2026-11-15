@@ -20,9 +20,12 @@ cd "$WORKDIR"
 #   ├── train_groot_server.sh          this file
 #   ├── crisp_gym/                     a CLONE of the crisp_gym repo
 #   │   ├── scripts/check_trained_groot.sh
-#   │   └── crisp_gym/scripts/
-#   │       ├── groot_preflight.py     the dataset gate (warn + continue if absent)
-#   │       └── lerobot_relative_pose.py   SE3=1 only (hard fail if absent)
+#   │   └── crisp_gym/
+#   │       ├── scripts/
+#   │       │   ├── groot_preflight.py         the dataset gate (warn + continue if absent)
+#   │       │   └── lerobot_relative_pose.py   SE3=1 only (hard fail if absent)
+#   │       └── util/
+#   │           └── epoch_steps.py             EPOCHS=N only (hard fail if absent)
 #   ├── datasets/<DATASET_NAME>/           meta/ + data/, or .../lerobot/meta
 #   ├── output/train/                  runs land here; created below
 #   └── .home/.cache/huggingface/      ~10 GB of base checkpoint; needs 20 GB free
@@ -62,6 +65,7 @@ cd "$WORKDIR"
 #   SE3=1 ./train_groot_server.sh                    # CROSS-EMBODIMENT mode, see below
 #   SE3=1 WRT_START=0 ./train_groot_server.sh        # ... with a 10-D relative state
 #   STEPS=2000 ./train_groot_server.sh               # smoke test
+#   EPOCHS=10 ./train_groot_server.sh                # schedule by epochs, see below
 #   BATCH_SIZE=16 ./train_groot_server.sh            # H200 has room; 32 is the default
 #   DATASET_NAME=other_set ./train_groot_server.sh
 #   OUT=/mnt/nfs_share/runs/x ./train_groot_server.sh
@@ -70,6 +74,15 @@ cd "$WORKDIR"
 #   DRY_RUN=1 ./train_groot_server.sh                # print the command, launch nothing
 #
 # Anything passed on the command line is appended to the lerobot command.
+#
+# EPOCHS=N schedules by EPOCHS instead of STEPS: a checkpoint lands on the
+# N-epoch target, then 2 more checkpoint intervals run past it, each at most
+# 20000 steps. STEPS / SAVE_FREQ (default 5) then only sets how many checkpoints
+# come before the target; the run length comes from EPOCHS. The [epochs] lines
+# of the log list every checkpoint and mark the target. With SE3=0 this runs
+# crisp_gym/util/epoch_steps.py, which is plain lerobot_train plus the schedule
+# (no data transform); with SE3=1 the relative-pose launcher takes the flag
+# itself. See crisp_gym/util/epoch_steps.py.
 
 DATASET_NAME="${DATASET_NAME:-open_electribox_sum}"
 DATASET="${DATASET:-$WORKDIR/datasets/$DATASET_NAME}"
@@ -79,6 +92,7 @@ _mode_tag=""
 OUT="${OUT:-$WORKDIR/output/train/groot${_mode_tag}_${DATASET_NAME}_$(date +%Y%m%d_%H%M%S)}"
 
 STEPS="${STEPS:-100000}"
+EPOCHS="${EPOCHS:-}"                # empty = schedule by STEPS
 BATCH_SIZE="${BATCH_SIZE:-32}"      # H200: 150 GB, room to spare. 32 GB card: try 2.
 SAVE_FREQ="${SAVE_FREQ:-20000}"
 NUM_WORKERS="${NUM_WORKERS:-8}"
@@ -105,6 +119,12 @@ SE3="${SE3:-0}"
 # 0 -> 10-D plain relative state
 # Deploy MUST match: state_input relative_wrt_start vs relative.
 WRT_START="${WRT_START:-1}"
+
+# Checked first so a typo fails in seconds, before the preflight and hub checks.
+if [ -n "$EPOCHS" ] && ! awk -v e="$EPOCHS" 'BEGIN { exit !(e ~ /^[0-9]*\.?[0-9]+$/ && e + 0 > 0) }'; then
+    echo "EPOCHS must be a positive number, got: $EPOCHS" >&2
+    exit 2
+fi
 
 # Some datasets keep meta/ and data/ directly, others nest them under lerobot/.
 if [ ! -d "$DATASET/meta" ] && [ -d "$DATASET/lerobot/meta" ]; then
@@ -229,8 +249,23 @@ if [ "$SE3" -ne 0 ]; then
     fi
     CMD=(python "$RELTRAINER")
     if [ "$WRT_START" -ne 0 ]; then CMD+=(--wrt-start); else CMD+=(--no-wrt-start); fi
+elif [ -n "$EPOCHS" ]; then
+    # Plain lerobot_train plus the epoch schedule, nothing else: no transform and
+    # no provenance stamp, so GR00T sees exactly what the line below would give it.
+    EPOCH_TRAINER="$WORKDIR/crisp_gym/crisp_gym/util/epoch_steps.py"
+    if [ ! -f "$EPOCH_TRAINER" ]; then
+        echo "EPOCHS=$EPOCHS needs $EPOCH_TRAINER, which is missing." >&2
+        exit 2
+    fi
+    CMD=(python "$EPOCH_TRAINER")
 else
     CMD=(python -m lerobot.scripts.lerobot_train)
+fi
+# Consumed by the launcher before lerobot parses the rest (lerobot itself would
+# reject it). STEPS and SAVE_FREQ are still passed below: with EPOCHS they set
+# how many checkpoints come before the epoch target.
+if [ -n "$EPOCHS" ]; then
+    CMD+=(--epochs "$EPOCHS")
 fi
 
 CMD+=(
@@ -287,6 +322,12 @@ echo "      'using the generic RelativeActionsProcessorStep fallback'"
 echo "    That step SUBTRACTS, which is wrong for rot6d. If it appears, stop:"
 echo "    the checkpoint is not carrying native relative statistics."
 echo
+if [ -n "$EPOCHS" ]; then
+    echo "==> Scheduled by EPOCHS=$EPOCHS: the [epochs] lines near the start list"
+    echo "    every checkpoint step. The one marked '<- epoch target' is the"
+    echo "    ${EPOCHS}-epoch model; the two marked '<- extra' run past it."
+    echo
+fi
 
 # Tee to a log beside the run. lerobot only creates output_dir when it writes
 # its first checkpoint, so a run that dies before then leaves NOTHING behind --

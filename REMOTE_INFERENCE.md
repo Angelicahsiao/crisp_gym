@@ -5,14 +5,20 @@ PC), so the robot machine stays on ROS 2 Humble / Python 3.11 while the model
 runs on any Python with torch + lerobot.
 
 ```
-┌─ Robot machine (ROS 2, Py 3.11) ────────┐      ┌─ GPU machine (any Python) ──┐
-│ crisp_gym env  (obs: pose/gripper/image)│      │ lerobot 0.4.4 + torch       │
-│ RemotePolicy   @register_policy("remote")      │ policy server (YOUR side)   │
+┌─ Robot machine (ROS 2) ─────────────────┐      ┌─ GPU machine (no ROS) ──────┐
+│ crisp_gym env  (obs: pose/gripper/image)│      │ lerobot + torch             │
+│ robot-side policy (no torch needed)     │      │ scripts/policy_server.py    │
 │   collects obs history ── msgpack/ws ───┼──────┼→ relative conversion        │
-│   composes T_cmd = T_obs_tcp @ T_rel  ◄─┼──────┼─ normalize → select_action  │
-│   → env.step()                          │      │ → action chunk (raw units)  │
+│   composes T_cmd = T_obs_tcp @ T_rel  ◄─┼──────┼─ normalize → action chunk   │
+│   → env.step()                          │      │   (raw units)               │
 └─────────────────────────────────────────┘      └─────────────────────────────┘
 ```
+
+**Both halves exist.** The server is `scripts/policy_server.py` (§4): it puts
+this protocol in front of the same `inference_worker` that `deploy_policy.py`
+runs in a local subprocess, unmodified, so a checkpoint that deploys
+in-process is served with the same numbers. On the robot side the same policy
+class as local deployment is used, with `server:` set (§4.5).
 
 The client half lives in crisp_gym (`crisp_gym/policy/remote_policy.py`) and
 speaks **protocol v1**, defined below. The wire format itself is a single
@@ -109,16 +115,16 @@ from the wrong direction is a `ProtocolError` — refuse, do not guess.
 |---|---|---|
 | `hello` | `contract`, `contract_digest` | first frame on every connection |
 | `reset` | `episode` | episode start; must be acked before any `infer` |
-| `infer` | `obs`, `task`, `obs_t` | `obs_t` = client monotonic clock at capture |
+| `infer` | `obs`, `task`, `obs_t` | `obs` is the observation WINDOW: a list of frames, oldest first (one frame alone is also accepted). `obs_t` = client monotonic clock at capture |
 | `bye` | — | clean close |
 
 ### Server → client
 
 | `t` | fields | notes |
 |---|---|---|
-| `hello_ok` | `model_id`, `observation`, `action`, `chunk_size`, `normalization`, `image`, `contract`, `contract_digest` | derived from the checkpoint, never hardcoded |
+| `hello_ok` | `model_id`, `observation`, `action`, `chunk_size`, `normalization`, `image`, `contract`, `contract_digest`, `meta` (optional) | derived from the checkpoint, never hardcoded. `meta` is the inference worker's own description (n_obs_steps, chunk length, image keys and shapes, state width and mode, rename map) |
 | `reset_ok` | — | echoes the `reset` id |
-| `actions` | `actions` (chunk, dim) float32, `server_t` | echoes the `infer` id; raw units |
+| `actions` | `actions` (chunk, dim) float32, `server_t`, `timing` (optional) | echoes the `infer` id; raw units. `timing` = `{decode_ms, infer_ms}` spent on the server |
 | `error` | `code`, `message`, `fatal` | `fatal` is derived from `code`, so the two cannot disagree |
 
 ### Error codes
@@ -129,7 +135,7 @@ from the wrong direction is a `ProtocolError` — refuse, do not guess.
 | `bad_frame` | yes | malformed or wrong-direction frame |
 | `contract_mismatch` | yes | the server rejected the client's contract |
 | `not_ready` | no | `infer` arrived before `reset` was acked |
-| `stale_obs` | no | the observation queued too long; resend a fresh one |
+| `stale_obs` | no | a newer request was already waiting behind this one, or its `obs_t` is older than one already served; resend a fresh observation |
 | `infer_failed` | no | the model raised on this observation |
 
 ### The rules both sides must obey
@@ -158,6 +164,11 @@ from the wrong direction is a `ProtocolError` — refuse, do not guess.
    previous `obs_t` on the same connection, never against its own clock.
 6. **A dropped socket is reopened with backoff**, and the handshake and reset
    are redone from scratch — a reconnected server has no memory of the episode.
+7. **The client sends the observation window, not one frame.** Only the robot
+   side sees every control tick. It asks for a chunk once per `n_action_steps`
+   ticks, so a server that kept the history itself would pair frames
+   `n_action_steps` ticks apart — for a 2-step policy that is not the motion it
+   was trained on. `remote_protocol.encode_window` / `decode_window`.
 
 ### Division of labor (fixed by design, do not move it)
 
@@ -193,21 +204,143 @@ With `chunk_size: 16`, `n_action_steps: 8`, `dt: 1/15`:
 Chunking hides network latency: with ~100 ms round-trips and 8 executed steps
 (~533 ms) per request, inference happens fully in the background.
 
-## 4. Server-side checklist (for whoever builds the server)
+## 4. The server — `scripts/policy_server.py`
 
-The server is out of scope here, but to satisfy the contract it must:
+Runs on the GPU machine. It needs no ROS and no install of crisp_gym — a clone
+of this repository is enough (the script puts it on `sys.path`).
 
-1. Load the checkpoint (`TrainPipelineConfig.from_pretrained`, policy class
-   `from_pretrained`), warm up before accepting connections.
-2. Re-implement (or import) the training-time transforms verbatim:
-   relative conversion wrt the last obs frame, `rot_wrt_start` (noise OFF at
-   inference), pre/post processors, normalization with the recomputed
-   relative stats.
-3. Answer the handshake from ground truth, not hardcoding: derive obs/action
-   spec from the checkpoint's `train_config.json`, the stamped
-   `pose_repr.json`, and the dataset's `record_config.json`.
-4. Return DEnormalized, raw-unit action chunks.
-5. Handle `reset` by clearing `policy.reset()` / obs queues.
+```bash
+# once, in the Python that has torch + the lerobot version the checkpoint was trained with
+pip install websockets msgpack rich
+
+python scripts/policy_server.py \
+    --path outputs/train/RUN/checkpoints/125000/pretrained_model \
+    --host 0.0.0.0 --port 8765
+```
+
+It checks its own requirements first and names what is missing, loads the
+checkpoint, runs two warm-up inferences (the second is the time a robot will
+wait), then listens. `curl http://GPU_HOST:8765/healthz` answers `OK` once it
+is ready. Ctrl-C or SIGTERM stops it and releases the GPU.
+
+| option | meaning |
+|---|---|
+| `--path` | the checkpoint's `pretrained_model` directory (required) |
+| `--host`, `--port` | where to listen; default `0.0.0.0:8765` |
+| `--image-encoding raw\|jpeg`, `--jpeg-quality` | what the robot side sends (rule 4). Default `raw` |
+| `--state-input` | `auto` (reads `pose_repr.json`), `absolute`, `relative`, `relative_wrt_start` |
+| `--num-inference-steps`, `--scheduler ddim\|ddpm` | denoising speed, diffusion policy only (they do not reach `multi_task_dit` yet) |
+| `--set KEY=VALUE` | lerobot policy-config override, repeatable |
+| `--no-warmup` | skip the warm-up inferences |
+
+**What it is.** A thin protocol front (`PolicyServer`) and the inference worker
+behind a pipe:
+
+- The worker is `crisp_gym.policy.relative_lerobot_policy.inference_worker` —
+  the function `deploy_policy.py` already runs in a local subprocess, not a
+  copy of it. Checkpoint loading, the relative / wrt-start conversion (noise
+  off), uint8 -> [0, 1] image scaling, normalization and the per-policy-family
+  queue handling all stay in that one place. Any lerobot policy it can run
+  locally (diffusion, multi_task_dit, act, groot, ...) it can serve.
+- The handshake is derived, not typed in: the worker's metadata, the action
+  width from `config.json`, the pose representation and gripper semantics from
+  `pose_repr.json` / `action_repr.json` next to the checkpoint.
+- One robot at a time. A second connection is refused with `not_ready`.
+- A request that already has a newer one waiting behind it is answered
+  `stale_obs` without running the model: the client keeps one request
+  outstanding, so the older one was given up on.
+- If the worker process dies, the server stops listening and exits with
+  status 1 instead of answering every later request with an error.
+
+**Checked** (`tests/test_policy_server.py`, real client and server on a real
+loopback socket, only the model replaced), and with a real lerobot 0.6.1
+diffusion image checkpoint on CPU:
+
+| check | result |
+|---|---|
+| chunk through the server vs. the same worker over the local pipe, same noise seed, `raw` images | identical (max difference 0.0 over 8 windows) |
+| the same with `jpeg` quality 90 | differs by <= 1e-5 on that small synthetic model; not measured on a real one |
+| robot side run from a Python with no torch and no lerobot | works; 37 ms round trip, 33 ms of it inference |
+| protocol cost alone for a real-size window (2 frames of 800x1280x3 = 6.1 MB), instant model, loopback | `raw` 22 ms; `jpeg` q90 52 ms (0.37 MB) |
+
+On a wired 1 GbE link, 6.1 MB adds about 50 ms of wire time to `raw`, so the
+two encodings cost about the same there and `raw` is the exact one; on a faster
+link `raw` is simply quicker. **Not measured: the round trip on the real GPU
+with a real checkpoint and the real cable** — the server logs decode and
+inference time per request, and the robot side sees the total.
+
+**Not handled:** TLS and authentication (it is meant for a private wired link —
+do not expose the port), more than one robot, and a client that vanishes
+without closing its socket (power or cable): the server notices through
+websocket pings, up to ~40 s, and refuses a new client until then.
+
+### 4.5 The robot side
+
+A lerobot checkpoint is deployed remotely with the SAME policy class as
+locally — `relative_lerobot_policy` — plus one setting in its YAML
+(`crisp_gym/config/policy/relative_lerobot_policy.yaml`):
+
+```yaml
+server: "ws://192.168.1.50:8765"     # null (default) = a subprocess on this machine
+```
+
+```bash
+# robot machine: pip install websockets msgpack      (no torch, no lerobot, no checkpoint)
+python -m crisp_gym.scripts.deploy_policy \
+    --env-config YOUR_DEPLOY_ENV --policy-config relative_lerobot_policy --path remote
+```
+
+`--path` is only a label then; the log names the checkpoint the server serves.
+
+**Structure.** The robot-side half (observation history, gripper units, state
+and image checks, command composition, prefetch) and the inference worker
+talk only through a `WorkerConnection`
+(`crisp_gym/policy/worker_connection.py` — four calls and a small message
+vocabulary, defined there and nowhere else). Where the worker runs is decided
+in one method, `RelativeLerobotPolicy._start_worker`:
+
+| `server` | connection | worker |
+|---|---|---|
+| `null` | the `multiprocessing` pipe itself | subprocess on this machine |
+| address | `RemoteWorkerConnection` (`remote_worker.py`) | behind `policy_server.py`, same worker function |
+
+Nothing else in the class knows which it got. A third way to reach a worker is
+a third `WorkerConnection`, not a third policy class.
+
+**What moves to the server.** It holds the checkpoint, so the settings that
+shape the model are its command line: `--state-input`,
+`--num-inference-steps`, `--scheduler`, `--set`. On the robot side:
+
+| setting | with `server` set |
+|---|---|
+| `state_input: auto` | the server's mode is used |
+| `state_input:` explicit | must equal the server's, or the policy refuses to start |
+| `num_inference_steps`, `scheduler`, `overrides` | logged as NOT APPLIED |
+| `action_repr: auto` | read from the server's handshake (it has read `action_repr.json`) instead of from local disk |
+| everything else (`device_max_width`, `n_action_steps`, `compose_mode`, `async_inference`, ...) | unchanged — robot-side |
+
+**Checked.** `tests/test_policy_server.py` builds the policy through its real
+constructor in both modes: remote, it commands the ground-truth trajectory
+synchronously, with prefetch, and with a late answer; local, it starts the
+subprocess with the same arguments as before and joins it at shutdown. With a
+real lerobot 0.6.1 checkpoint, the policy built by `make_policy` from the
+shipped YAML ran an episode in both modes with no held tick.
+
+**`RemotePolicy` (`name: remote_policy`) is not this path.** It is a minimal
+client for a server that is not `policy_server.py` — one that takes a single
+frame and keeps its own history, described by a contract YAML (§1). It sends
+the current frame only, converts no gripper units, has no input checks and
+blocks while it waits. Do not grow it toward lerobot deployment; that is what
+`server:` is for.
+
+Two consequences of a network that a local pipe does not have:
+
+- `infer_timeout_s` must be longer than the slowest inference plus transfer. A
+  shorter one never recovers: each retry is answered after its own deadline.
+  On a timeout the robot holds pose and asks again.
+- After a dropped socket the server is reset, so a `relative_wrt_start`
+  checkpoint measures its start rotation from the next observation, not from
+  the episode start. It is logged; restart the episode.
 
 ## 5. Failure modes the client must handle
 

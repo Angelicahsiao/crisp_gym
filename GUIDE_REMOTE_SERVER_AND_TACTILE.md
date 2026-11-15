@@ -10,12 +10,8 @@ Step-by-step use of two things that are newer than the rest of the docs:
 For the design and the wire protocol see [REMOTE_INFERENCE.md](REMOTE_INFERENCE.md);
 for the reasoning behind the tactile work see [HANDOFF.md](HANDOFF.md) §7.
 
-**Which branch has what** (as of this writing — the two are not merged yet):
-
-| part | branch |
-|---|---|
-| policy server, `server:` setting in the policy YAML | `claude/vigilant-tesla-VZJT6` |
-| tactile report, residual audit, CSV loader, `extra.gripper_target` recording | `claude/determined-faraday-1z6rx0` |
+Both parts are on branch `claude/determined-faraday-1z6rx0` (the policy server
+was merged in from `claude/vigilant-tesla-VZJT6`).
 
 ---
 

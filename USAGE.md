@@ -494,7 +494,9 @@ the policy then also needs real joint states in its observation.
 
 On the GPU PC (no ROS needed): copy `crisp_gym/scripts/lerobot_relative_pose.py`
 (self-contained: lerobot + torch + numpy only) and run it exactly like
-`lerobot-train`:
+`lerobot-train`. To schedule by epochs, copy `crisp_gym/util/epoch_steps.py`
+into the same folder too (see
+[Schedule by epochs](#schedule-by-epochs-instead-of-steps---epochs)):
 
 **Version support.** The wrapper runs on lerobot **0.4.x and >=0.5**, verified
 against 0.4.4 and 0.6.1. It patches whichever dataset factory that version
@@ -573,16 +575,76 @@ Parameter notes:
 - `--batch_size=64 --steps=500000` — full run; smoke-test with `--steps=100`
   first. Diffusion often converges well before 500k, so a mid checkpoint may
   suffice. Bigger `batch_size` = more VRAM + peak GPU power; total training seen
-  ≈ `batch_size × steps`.
+  ≈ `batch_size × steps`. To compare runs on datasets of different size,
+  schedule by passes over the data instead: `--epochs`, below.
 - `--num_workers` = dataloader processes (raise to feed the GPU; check
   `nvidia-smi` GPU-Util). torchcodec runs fine at `>0` now.
 - `--log_freq` = loss-print interval; `--save_freq` = checkpoint interval (first
   checkpoint at step `save_freq`, under `<output_dir>/checkpoints/`). The
   default is 20000 — set it lower (e.g. 2000) so a usable model is written early
-  and survives interruptions.
+  and survives interruptions. With `--epochs` the interval is recomputed (below).
 - `--output_dir` is resolved **relative to the launch cwd**, and LeRobot appends
   the job name (`_diffusion`); pass an absolute path to place it exactly.
 - Resume an interrupted run with `--resume=true` and the same `--output_dir`.
+
+### Schedule by epochs instead of steps (`--epochs`)
+
+`--steps` fixes the number of optimizer steps, not the number of passes over
+the data, so it does not compare across datasets: at the same `--steps` and
+batch size, a dataset of shorter episodes is traversed more times and overfits
+first. With 50 episodes at 15 Hz, batch 64 and 100k steps, 12 s episodes get
+711 passes and 30 s episodes get 284. `--epochs N` schedules by passes instead.
+It works the same on all three launchers: `lerobot_relative_pose.py`,
+`train_absolute_next_pose.py` and `train_action_from_target_cartesian.py`.
+
+```bash
+python lerobot_relative_pose.py --epochs 120 \
+    --dataset.repo_id=my_org/umi_handheld_demo_aligned \
+    --policy.type=diffusion --output_dir=outputs/train/umi --batch_size=64
+```
+
+The step count is worked out once the dataset is loaded
+(`epochs × samples / batch_size`), and the checkpoints are laid out around it:
+
+- one checkpoint lands exactly on the N-epoch target. If the steps don't divide
+  evenly the target moves up by a few steps, so N epochs are always covered;
+- training then runs **2 more checkpoint intervals past the target**, so the run
+  is longer than N epochs and shows whether more training helps or overfits;
+- the number of checkpoints up to the target is `--steps / --save_freq` (5 with
+  lerobot's defaults), and no interval is longer than 20,000 steps; more
+  checkpoints are added when one would be.
+
+The `[epochs]` lines at the start of the log list every checkpoint and mark the
+target. For 9,000 samples, batch 64 and `--epochs 120`:
+
+```text
+[epochs]       16875    120.00  <- epoch target
+[epochs]       20250    144.00  <- extra
+[epochs]       23625    168.00  <- extra
+```
+
+Things to know:
+
+- **`--epochs` wins over `--steps`** for the run length; `--steps` and
+  `--save_freq` then only set the checkpoint count. Leave them at lerobot's
+  defaults unless you want a different count. If `--steps` equals
+  `--save_freq` there is one checkpoint before the target, so each extra
+  interval is a full N epochs and the run is 3× the target.
+- `--eval_freq` is rescaled along with `--save_freq`; `--log_freq` is unchanged.
+- Without `--epochs` the schedule is untouched, but the run's epoch count is
+  still logged.
+- The resolved schedule is saved under `"schedule"` in `pose_repr.json`.
+- **The target checkpoint is not the same model as a run that stops at N
+  epochs.** lerobot sizes its learning-rate schedule to the whole run, so at the
+  target it has not finished decaying. Compare runs scheduled the same way.
+- **Choosing N:** UMI's configs use 120 for a UNet diffusion denoiser and 200
+  for a transformer one. Those are for training from scratch.
+- **On the GPU PC**, `--epochs` needs `epoch_steps.py` in the same folder as the
+  launcher. Without it the launcher still trains on `--steps`, and refuses
+  `--epochs` with a message saying what to copy.
+
+The full arithmetic and the upstream reference counts are in
+[crisp_gym/util/epoch_steps.py](crisp_gym/util/epoch_steps.py).
 
 ### Verify the relative-pose representation
 
@@ -638,6 +700,10 @@ python crisp_gym/scripts/train_absolute_next_pose.py \
     --output_dir=outputs/train/vive_absolute \
     --batch_size=64 --steps=200000
 ```
+
+`--epochs N` works here exactly as in
+[Schedule by epochs](#schedule-by-epochs-instead-of-steps---epochs), and on
+`train_action_from_target_cartesian.py` below.
 
 ### Train with the COMMANDED pose as the action (ablation)
 
@@ -731,6 +797,26 @@ bash scripts/check_trained_groot.sh \
 `--dataset` is absolutised by the launcher, so a relative path is safe;
 `--output` is passed through verbatim, so it is relative to your cwd.
 
+**Schedule by epochs** with `--epochs N` (or `EPOCHS=N` on the server launcher
+below) for the same schedule as
+[§8](#schedule-by-epochs-instead-of-steps---epochs): a checkpoint on the
+N-epoch target and 2 more past it. In the default mode this runs
+`crisp_gym/util/epoch_steps.py`, which is plain `lerobot-train` plus the
+schedule, so GR00T's data and pinned flags are unchanged. In cross-embodiment
+mode `lerobot_relative_pose.py` takes the flag itself. The 120/200 reference
+counts are for diffusion trained from scratch and don't carry over to
+fine-tuning a pretrained 3B model: start low and use the 2 extra checkpoints to
+see whether more training helps.
+
+```bash
+bash scripts/train_groot.sh \
+    --dataset datasets/franka_electricbox/lerobot \
+    --output  outputs/train/groot_electricbox --epochs 10
+```
+
+A value-taking flag given without a value (`--epochs` as the last argument, or
+followed by another flag) exits with `<flag> needs a value`.
+
 **Two launchers, same gates and same pinned flags.** `scripts/train_groot.sh`
 takes flags, as above. `scripts/train_groot_server.sh` is driven by the
 environment and defaults every path off its own directory — datasets at
@@ -742,6 +828,7 @@ which is what you want on a training box with a bind mount:
 SE3=1 ./train_groot_server.sh                 # cross-embodiment, 16-D state
 SE3=1 WRT_START=0 ./train_groot_server.sh     # ... 10-D plain relative state
 STEPS=2000 ./train_groot_server.sh            # smoke test
+EPOCHS=10 ./train_groot_server.sh             # schedule by epochs (either mode)
 ```
 
 **The two flag forms are not interchangeable**, and both fail quietly: `SE3=1`
@@ -757,8 +844,9 @@ and a UR. It routes training through `lerobot_relative_pose.py` (§8 above) and
 switches GR00T's own action conversion off so nothing is converted twice. The
 dataset on disk stays absolute either way.
 
-**Neither launcher is self-contained**: both resolve `groot_preflight.py` and,
-for cross-embodiment mode, `lerobot_relative_pose.py` by path. Every flag,
+**Neither launcher is self-contained**: both resolve `groot_preflight.py`, for
+cross-embodiment mode `lerobot_relative_pose.py`, and with epochs
+`crisp_gym/util/epoch_steps.py`, all by path. Every flag,
 every environment variable, the file layout each one needs, and the three
 checkers are in
 [crisp_gym/scripts/README.md](crisp_gym/scripts/README.md#scriptstrain_grootsh--gr00t-n17-fine-tuning-launcher).

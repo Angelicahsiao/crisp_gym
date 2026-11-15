@@ -36,9 +36,19 @@
 #   --output DIR       training output directory              (required)
 #   --repo-id ID       dataset repo id (default: last two path components)
 #   --batch-size N     default 32; the H200 has room, a 32 GB card does not
-#   --steps N          default 100000
+#   --steps N          default 100000. With --epochs it no longer sets the run
+#                      length: steps / save-freq (default 5) only sets how many
+#                      checkpoints come before the epoch target
+#   --epochs N         schedule by EPOCHS instead of --steps: a checkpoint lands
+#                      on the N-epoch target, then 2 more checkpoint intervals
+#                      run past it, each at most 20000 steps. The [epochs] lines
+#                      of the log list every checkpoint and mark the target. In
+#                      the default mode this runs crisp_gym/util/epoch_steps.py,
+#                      which is plain lerobot_train plus the schedule (no data
+#                      transform); with --se3 the relative-pose launcher takes
+#                      the flag itself. See crisp_gym/util/epoch_steps.py
 #   --job-name NAME    default: the output directory's name
-#   --save-freq N      default 20000
+#   --save-freq N      default 20000 (with --epochs: see --steps)
 #   --num-workers N    default 8
 #   --se3              CROSS-EMBODIMENT mode: train through crisp_gym's UMI
 #                      relative-pose wrapper, which re-expresses the
@@ -65,21 +75,35 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 
-DATASET="" OUTPUT="" REPO_ID="" JOB_NAME=""
+DATASET="" OUTPUT="" REPO_ID="" JOB_NAME="" EPOCHS=""
 BATCH_SIZE=32 STEPS=100000 SAVE_FREQ=20000 NUM_WORKERS=8
 SKIP_PREFLIGHT=0 DRY_RUN=0 SE3=0 WRT_START=1
 EXTRA=()
 
+# Every value-taking option goes through this first. Without it, a flag given
+# last with no value (`... --epochs`) hung the script silently: `shift 2` with
+# only one argument left shifts NOTHING (bash refuses an out-of-range count),
+# so the loop read the same flag forever. A following flag taken as the value
+# (`--output --dry-run`) is the same mistake and is refused too; no value here
+# legitimately starts with "--".
+need_value() {
+    if [ $# -lt 2 ] || [ -z "$2" ] || [[ "$2" == --* ]]; then
+        echo "$1 needs a value (--help for the full list)" >&2
+        exit 2
+    fi
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
-        --dataset)        DATASET="${2:-}"; shift 2 ;;
-        --output)         OUTPUT="${2:-}"; shift 2 ;;
-        --repo-id)        REPO_ID="${2:-}"; shift 2 ;;
-        --batch-size)     BATCH_SIZE="${2:-}"; shift 2 ;;
-        --steps)          STEPS="${2:-}"; shift 2 ;;
-        --job-name)       JOB_NAME="${2:-}"; shift 2 ;;
-        --save-freq)      SAVE_FREQ="${2:-}"; shift 2 ;;
-        --num-workers)    NUM_WORKERS="${2:-}"; shift 2 ;;
+        --dataset)        need_value "$@"; DATASET="$2"; shift 2 ;;
+        --output)         need_value "$@"; OUTPUT="$2"; shift 2 ;;
+        --repo-id)        need_value "$@"; REPO_ID="$2"; shift 2 ;;
+        --batch-size)     need_value "$@"; BATCH_SIZE="$2"; shift 2 ;;
+        --steps)          need_value "$@"; STEPS="$2"; shift 2 ;;
+        --epochs)         need_value "$@"; EPOCHS="$2"; shift 2 ;;
+        --job-name)       need_value "$@"; JOB_NAME="$2"; shift 2 ;;
+        --save-freq)      need_value "$@"; SAVE_FREQ="$2"; shift 2 ;;
+        --num-workers)    need_value "$@"; NUM_WORKERS="$2"; shift 2 ;;
         --se3)            SE3=1; shift ;;
         --no-wrt-start)   WRT_START=0; shift ;;
         --skip-preflight) SKIP_PREFLIGHT=1; shift ;;
@@ -97,6 +121,11 @@ if [ -z "$DATASET" ] || [ -z "$OUTPUT" ]; then
 fi
 if [ ! -d "$DATASET" ]; then
     echo "dataset directory not found: $DATASET" >&2
+    exit 2
+fi
+# Checked here so a typo fails in seconds, before the preflight and hub checks.
+if [ -n "$EPOCHS" ] && ! awk -v e="$EPOCHS" 'BEGIN { exit !(e ~ /^[0-9]*\.?[0-9]+$/ && e + 0 > 0) }'; then
+    echo "--epochs must be a positive number, got: $EPOCHS" >&2
     exit 2
 fi
 
@@ -197,8 +226,23 @@ if [ "$SE3" -eq 1 ]; then
     fi
     CMD=(python3 "$RELTRAINER")
     if [ "$WRT_START" -eq 1 ]; then CMD+=(--wrt-start); else CMD+=(--no-wrt-start); fi
+elif [ -n "$EPOCHS" ]; then
+    # Plain lerobot_train plus the epoch schedule, nothing else: no transform and
+    # no provenance stamp, so GR00T sees exactly what the line below would give it.
+    EPOCH_TRAINER="$REPO/crisp_gym/util/epoch_steps.py"
+    if [ ! -f "$EPOCH_TRAINER" ]; then
+        echo "--epochs needs $EPOCH_TRAINER, which is missing." >&2
+        exit 2
+    fi
+    CMD=(python3 "$EPOCH_TRAINER")
 else
     CMD=(python3 -m lerobot.scripts.lerobot_train)
+fi
+# Consumed by the launcher before lerobot parses the rest (lerobot itself would
+# reject it). --steps and --save_freq are still passed below: with --epochs they
+# set how many checkpoints come before the epoch target.
+if [ -n "$EPOCHS" ]; then
+    CMD+=(--epochs "$EPOCHS")
 fi
 
 CMD+=(
@@ -254,6 +298,12 @@ echo "      'using the generic RelativeActionsProcessorStep fallback'"
 echo "    That step SUBTRACTS, which is wrong for rot6d. If it appears, stop:"
 echo "    the checkpoint is not carrying native relative statistics."
 echo
+if [ -n "$EPOCHS" ]; then
+    echo "==> Scheduled by --epochs $EPOCHS: the [epochs] lines near the start list"
+    echo "    every checkpoint step. The one marked '<- epoch target' is the"
+    echo "    ${EPOCHS}-epoch model; the two marked '<- extra' run past it."
+    echo
+fi
 
 # Tee to a log beside the run. lerobot only creates output_dir when it writes
 # its first checkpoint, so a run that dies before then leaves nothing behind and

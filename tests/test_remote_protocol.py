@@ -384,5 +384,113 @@ def test_the_server_decides_the_encoding():
         c.close()
 
 
+# ── the shipped contract files ───────────────────────────────────────────────
+
+CONTRACT_YAMLS = sorted((REPO / "crisp_gym" / "config" / "policy").glob("remote_*.yaml"))
+
+
+@pytest.mark.parametrize("path", CONTRACT_YAMLS, ids=lambda p: p.name)
+def test_every_shipped_contract_file_loads(path):
+    """They write observation.keys as a MAPPING name -> spec. contract_fields
+    iterated it as a list of dicts, so each of them raised AttributeError
+    before RemotePolicy could be constructed."""
+    yaml = pytest.importorskip("yaml")
+    config = yaml.safe_load(path.read_text())
+    assert config["name"] == "remote_policy", "the registry name make_policy looks up"
+    fields = proto.contract_fields(config)
+    keys = fields["observation"]["keys"]
+    names = [k["name"] for k in keys]
+    assert names == sorted(names)
+    for key in keys:
+        assert set(key) == {"name", "shape", "layout"}
+    proto.digest(fields)  # serializable
+
+
+def test_there_are_contract_files_to_check():
+    assert len(CONTRACT_YAMLS) >= 3
+
+
+def test_keys_as_a_mapping_or_a_list_are_the_same_contract():
+    as_list = dict(CONTRACT, observation={"n_obs_steps": 1, "keys": [
+        {"name": "b", "shape": [1], "layout": None},
+        {"name": "a", "shape": [9], "layout": "xyz+rot6d"},
+    ]})
+    as_map = dict(CONTRACT, observation={"n_obs_steps": 1, "keys": {
+        "a": {"shape": [9], "layout": "xyz+rot6d", "dtype": "float32"},
+        "b": {"shape": [1]},
+    }})
+    assert proto.contract_fields(as_list) == proto.contract_fields(as_map)
+    with pytest.raises(proto.ProtocolError, match="must be maps"):
+        proto.contract_fields(dict(CONTRACT, observation={"keys": ["a", "b"]}))
+
+
+# ── observation windows ──────────────────────────────────────────────────────
+
+def _frames(n=2):
+    rng = np.random.default_rng(0)
+    return [{"observation.state": rng.normal(size=10).astype(np.float32),
+             "observation.images.cam": rng.integers(0, 256, (6, 8, 3), dtype=np.uint8),
+             "task": "open the door"} for _ in range(n)]
+
+
+def test_a_window_survives_the_wire_frame_by_frame():
+    window = _frames()
+    wire = proto.unpack(proto.pack(proto.infer(
+        1, proto.encode_window(window, {"encoding": "raw"}), None, 0.0)))
+    got = proto.decode_window(wire["obs"], wire["task"])
+    assert len(got) == 2
+    for sent, received in zip(window, got, strict=True):
+        assert received["task"] == "open the door"
+        for key in ("observation.state", "observation.images.cam"):
+            assert received[key].dtype == sent[key].dtype
+            assert np.array_equal(received[key], sent[key])
+
+
+def test_arrays_off_the_wire_are_made_writable():
+    """np.frombuffer hands out read-only views; a local pipe does not, and the
+    inference worker is written for the pipe."""
+    wire = proto.unpack(proto.pack(proto.infer(1, _frames(1)[0], None, 0.0)))
+    assert not wire["obs"]["observation.state"].flags.writeable
+    (frame,) = proto.decode_window(wire["obs"])
+    assert frame["observation.state"].flags.writeable
+    assert frame["observation.images.cam"].flags.writeable
+
+
+def test_one_frame_is_a_window_of_one_and_gets_the_frame_level_task():
+    frame = _frames(1)[0]
+    del frame["task"]
+    (got,) = proto.decode_window(frame, task="press the button")
+    assert got["task"] == "press the button"
+    assert "task" not in frame, "the caller's frame is not modified"
+
+
+def test_a_frames_own_task_wins_over_the_frame_level_one():
+    (got,) = proto.decode_window(_frames(1), task="something else")
+    assert got["task"] == "open the door"
+
+
+def test_an_empty_or_malformed_window_is_refused():
+    with pytest.raises(proto.ProtocolError, match="empty window"):
+        proto.decode_window([])
+    with pytest.raises(proto.ProtocolError, match="must be a map"):
+        proto.decode_window([np.zeros(3)])
+
+
+def test_optional_fields_are_absent_unless_given():
+    """A v1 peer written before `meta` and `timing` existed sees the frames it
+    always saw."""
+    hello_ok = proto.hello_ok(1, model_id="m", observation={}, action={}, chunk_size=8,
+                              normalization="server_side", image={"encoding": "raw"},
+                              contract={})
+    assert "meta" not in hello_ok
+    assert "timing" not in proto.actions(1, np.zeros((2, 10)), 0.0)
+    with_meta = proto.hello_ok(1, model_id="m", observation={}, action={}, chunk_size=8,
+                               normalization="server_side", image={"encoding": "raw"},
+                               contract={}, meta={"n_obs_steps": 2})
+    assert with_meta["meta"] == {"n_obs_steps": 2}
+    timed = proto.actions(1, np.zeros((2, 10)), 0.0, timing={"infer_ms": np.float64(12.5)})
+    assert timed["timing"] == {"infer_ms": 12.5}
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

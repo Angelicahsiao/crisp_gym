@@ -42,6 +42,23 @@ HANDSHAKE
     gripper scale does not crash, it moves the robot wrongly. This is the
     `verify_handshake` the configs have always declared and no code performed.
 
+OBSERVATIONS ARE A WINDOW
+    `infer.obs` is either one observation frame (a map) or the policy's whole
+    observation window: a LIST of frames, oldest first, `n_obs_steps` long and
+    one control tick apart. Send the window. The client is the only side that
+    sees every tick; it asks for a chunk once per `n_action_steps` ticks, so a
+    server that kept the history itself would pair frames that are
+    `n_action_steps` ticks apart — for a 2-step policy that is not the motion
+    it was trained on. A single frame is a window of one (the server pads it by
+    repeating, as lerobot does right after a reset). Use `encode_window` /
+    `decode_window`; they apply the image encoding to every frame.
+
+    `hello_ok.meta` (optional) is the inference worker's own description of the
+    checkpoint — n_obs_steps, the chunk length, image keys and shapes, state
+    width, state mode, rename map — for a client that verifies itself against
+    the robot instead of against a YAML contract. `actions.timing` (optional)
+    reports where the server spent the request, in milliseconds.
+
 IMAGES
     The server owns the checkpoint, so the server decides: `hello_ok.image`
     carries {"encoding": "raw"|"jpeg", "quality": int, "shape": [H, W, C]} and
@@ -59,7 +76,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -204,26 +221,36 @@ def bye(id_: int) -> dict:
 # server -> client
 def hello_ok(id_: int, *, model_id: str, observation: dict, action: dict,
              chunk_size: int, normalization: str, image: dict,
-             contract: dict) -> dict:
-    """Answer to hello: what the SERVER's checkpoint actually requires."""
-    return _frame(
-        T_HELLO_OK, id_, model_id=model_id, observation=observation,
+             contract: dict, meta: dict | None = None) -> dict:
+    """Answer to hello: what the SERVER's checkpoint actually requires.
+
+    `meta` is the inference worker's own metadata, passed through untouched.
+    """
+    fields = dict(
+        model_id=model_id, observation=observation,
         action=action, chunk_size=int(chunk_size), normalization=normalization,
         image=image, contract=contract, contract_digest=digest(contract),
     )
+    if meta is not None:
+        fields["meta"] = meta
+    return _frame(T_HELLO_OK, id_, **fields)
 
 
 def reset_ok(id_: int) -> dict:
     return _frame(T_RESET_OK, id_)
 
 
-def actions(id_: int, chunk: np.ndarray, server_t: float) -> dict:
+def actions(id_: int, chunk: np.ndarray, server_t: float,
+            timing: dict | None = None) -> dict:
     arr = np.asarray(chunk, dtype=np.float32)
     if arr.ndim == 1:
         arr = arr[None]
     if arr.ndim != 2:
         raise ProtocolError(f"an action chunk must be 2-D (steps, dim), got {arr.shape}")
-    return _frame(T_ACTIONS, id_, actions=arr, server_t=float(server_t))
+    fields = dict(actions=arr, server_t=float(server_t))
+    if timing:
+        fields["timing"] = {k: float(v) for k, v in timing.items()}
+    return _frame(T_ACTIONS, id_, **fields)
 
 
 def error(id_: int | None, code: str, message: str) -> dict:
@@ -246,6 +273,33 @@ def digest(contract: dict) -> str:
     return "sha256:" + hashlib.sha256(blob).hexdigest()[:32]
 
 
+def _observation_keys(keys: dict | list | None) -> list[dict]:
+    """`observation.keys` as a list of {name, shape, layout}, sorted by name.
+
+    The policy YAMLs write it as a mapping `name: {shape, layout, ...}`; a
+    server builds a list. Both describe the same thing, and neither order
+    means anything, so both are reduced to one sorted form. (Iterating the
+    mapping as if it were a list of dicts is what made every shipped contract
+    YAML raise AttributeError before RemotePolicy could be constructed.)
+    """
+    if not keys:
+        return []
+    if isinstance(keys, dict):
+        items = [{"name": name, **(spec or {})} for name, spec in keys.items()]
+    else:
+        items = list(keys)
+    for item in items:
+        if not isinstance(item, dict):
+            raise ProtocolError(
+                f"observation.keys entries must be maps, got {type(item).__name__}: {item!r}"
+            )
+    return sorted(
+        ({"name": k.get("name"), "shape": list(k.get("shape") or []),
+          "layout": k.get("layout")} for k in items),
+        key=lambda k: str(k["name"]),
+    )
+
+
 def contract_fields(spec: dict) -> dict:
     """The subset of a policy contract that both sides must agree on.
 
@@ -258,11 +312,7 @@ def contract_fields(spec: dict) -> dict:
     return {
         "observation": {
             "n_obs_steps": obs.get("n_obs_steps"),
-            "keys": [
-                {"name": k.get("name"), "shape": list(k.get("shape") or []),
-                 "layout": k.get("layout")}
-                for k in (obs.get("keys") or [])
-            ],
+            "keys": _observation_keys(obs.get("keys")),
         },
         "action": {
             "dim": act.get("dim"),
@@ -329,5 +379,57 @@ def decode_image(payload: np.ndarray | dict) -> np.ndarray:
         img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if img is None:
             raise ProtocolError("cv2.imdecode failed on a received frame")
-        return img[:, :, ::-1]  # BGR -> RGB
+        return np.ascontiguousarray(img[:, :, ::-1])  # BGR -> RGB
     return np.asarray(payload)
+
+
+# ── observation windows ──────────────────────────────────────────────────────
+
+IMAGE_PREFIX = "observation.images"
+
+
+def _map_images(frame: dict, fn: Callable[[Any], Any]) -> dict:
+    return {
+        key: fn(value) if key.startswith(IMAGE_PREFIX) and value is not None else value
+        for key, value in frame.items()
+    }
+
+
+def encode_window(obs: dict | list, spec: dict) -> dict | list:
+    """Apply the server's image encoding to one frame or to every frame of a window."""
+    if isinstance(obs, (list, tuple)):
+        return [_map_images(frame, lambda img: encode_image(np.asarray(img), spec)) for frame in obs]
+    return _map_images(obs, lambda img: encode_image(np.asarray(img), spec))
+
+
+def decode_window(obs: dict | list, task: str | None = None) -> list[dict]:
+    """The received `infer.obs` as a list of frames with their images decoded.
+
+    One frame becomes a window of one. `task` (the frame-level field) is filled
+    into frames that do not carry their own, so a language-conditioned policy
+    gets it whichever way the client sent it.
+    """
+    frames = obs if isinstance(obs, (list, tuple)) else [obs]
+    if not frames:
+        raise ProtocolError("infer.obs is an empty window")
+    window = []
+    for frame in frames:
+        if not isinstance(frame, dict):
+            raise ProtocolError(f"an observation frame must be a map, got {type(frame).__name__}")
+        frame = {key: _writable(value) for key, value in _map_images(frame, decode_image).items()}
+        if task is not None and frame.get("task") is None:
+            frame["task"] = task
+        window.append(frame)
+    return window
+
+
+def _writable(value: Any) -> Any:  # noqa: ANN401
+    """Arrays off the wire are read-only views of the received bytes.
+
+    Over a local pipe the inference worker gets ordinary writable arrays, and
+    torch.from_numpy warns on (and in-place code breaks on) a read-only one,
+    so hand it the same thing here. One copy per array.
+    """
+    if isinstance(value, np.ndarray) and not value.flags.writeable:
+        return value.copy()
+    return value

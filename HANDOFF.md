@@ -173,7 +173,7 @@ Repos involved (same owner, branch conventions apply to all):
 | `crisp_gym/util/loop_timing.py` | Phase timing for the record/deploy loop (`LoopTimingRecorder` producer side, `WriterTimingRecorder` consumer side). Attributes a dropped control rate to `data` (producer) vs `put` (writer back-pressure) vs `sleep`. Stdlib only — no ROS/numpy/lerobot, so the writer subprocess can import it. MEASUREMENT ONLY: no control flow depends on it. USAGE.md §12. |
 | `tests/test_loop_timing.py` | Pins the attribution in all three regimes against a REAL `mp.JoinableQueue` with a slow consumer, plus `make_record_fn`'s `.timing` publication. Stdlib + numpy; stubs `crisp_py.utils.geometry`. |
 | `crisp_gym/scripts/audit_command_residual.py` | READ-ONLY audit of the command-minus-measured residual `T_tcp^-1 @ T_cmd` (TCP frame, world-invariant) on Cartesian-driven data: size in contact vs free, tracking lag, SYSTEM IDENTIFICATION of the delivered stiffness/damping from `extra.ext_torque` (built-in FR3 DH kinematics, Jacobian at the recorded TCP so no tool model; skipped when recorded TCP and DH flange are not rigid), a held-out-EPISODE linear probe of tactile → residual, and the gripper residual. Tactile columns are found by themselves (`extra.tactile.left/right`, else `left_tactile`/`right_tactile`) and may have any shape; frames with `<tactile>.sync_valid` false are left out of C/D. Refuses, BEFORE any pose math and with a `NoCommandError` that says which, a handheld dataset (placeholder all-zero command, joints never move), a frozen command (FACTR/JIC), and a mix of both. `--tactile-only` needs no command: per-sensor noise, dead taxels, baseline drift, contact share/strength, and for `<dataset>/tactile_raw/` the stream rate, gaps and the stamp join — run it on the handheld AND the robot dataset and compare. GPU-PC, crisp-import-free. USAGE.md §14, HANDOFF §7. |
-| `GUIDE_REMOTE_SERVER_AND_TACTILE.md` | USER-FACING how-to for the policy server (which lives on `claude/vigilant-tesla-VZJT6` until merged) and the tactile scripts. Keep it in step with `scripts/policy_server.py` options, the `server:` YAML block and the audit's flags; drop its "which branch" table once the branches are merged. |
+| `GUIDE_REMOTE_SERVER_AND_TACTILE.md` | USER-FACING how-to for the policy server and the tactile scripts. Keep it in step with `scripts/policy_server.py` options, the `server:` YAML block and the audit's flags. |
 | `crisp_gym/util/tactile_raw.py` | Loader for the high-rate tactile CSVs (`tactile_raw/episode_<NNNNNN>_<side>.csv`): `load_csv`, `match_frames` (exact int64 stamp join to the dataset's `source_stamp_ns`), `windows` (fixed-length CAUSAL zero-order-hold windows on a time grid ending at each frame, plus the age of every held sample), `interval_stats`. numpy + pandas only; the audit loads it by path. |
 | `tests/test_audit_command_residual.py` | The audit against a simulated impedance episode with CHOSEN gains: residual recovery + world-frame invariance, Jacobian vs finite differences, DH table vs Franka's zero and home poses, recovered K/D, lag time constant, held-out-group scoring (an episode-id feature must not look predictive), frozen-command, handheld-placeholder and mixed-dataset refusals (no NaN warning may escape), kinematics-mismatch refusal, the per-sensor tactile report against known answers, `sync_valid` exclusion, parquet end-to-end (nested 8x10 tactile) and `--tactile-only` end-to-end on a handheld-shaped dataset with CSVs (missing CSV, float32 stamps). Numpy-only except the end-to-end ones (pandas + pyarrow, skipped without). |
 | `tests/test_tactile_raw.py` | The CSV loader on hand-built streams: windows are a causal hold (never a later sample), gaps show as age and pre-stream padding as negative age, the last window column is the frame's own sample, the stamp join is exact in int64 and rejects float32-rounded stamps, rows/taxel columns are sorted. |
@@ -356,7 +356,7 @@ a from-scratch policy has no priors to unlearn.
 ## 4. Roadmap / pending work (agreed with the owner; do not re-litigate)
 
 1. **WebSocket inference client** (`crisp_gym/policy/remote_policy.py`,
-   `@register_policy("remote")`): msgpack-numpy over websocket (openpi-style).
+   `@register_policy("remote_policy")`): msgpack-numpy over websocket (openpi-style).
    NO torch/lerobot/rclpy imports in the client. Client sends ABSOLUTE poses +
    images (uint8 HWC) + task string; SERVER does the relative conversion
    (must reuse/verbatim-match `RelativePoseDataset.convert_item`) and
@@ -366,8 +366,23 @@ a from-scratch policy has no priors to unlearn.
    specified in session notes — key fields: obs keys/shapes/dtypes, n_obs_steps,
    pose_convention, action layout/pose_repr/chunking/dt, gripper semantics,
    normalization="server_side", reset message support.
-   **The server itself is NOT this project's job** — the owner builds it; we
-   provide the client + the metadata contract.
+   **The server now exists** (owner's request, 2026-11):
+   `scripts/policy_server.py` puts protocol v1 in front of the UNMODIFIED
+   `inference_worker` from `relative_lerobot_policy.py`, in a subprocess, so
+   there is one implementation of loading / relative conversion / image
+   scaling / queue handling for local and remote deployment. Do not fork that
+   logic into the server. `crisp_gym/policy/remote_worker.py`
+   (`RemoteWorkerConnection`) is the pipe-compatible network transport;
+   `crisp_gym.policy` imports without ROS, torch or lerobot so the GPU machine
+   needs only a clone. DECIDED (owner, 2026-11): the robot side is
+   `RelativeLerobotPolicy` with `server:` set — one robot-side implementation
+   for local and remote. `_start_worker` is the ONLY place that knows where
+   the model runs; the rest of the class sees a `WorkerConnection`
+   (`crisp_gym/policy/worker_connection.py`, the interface and message
+   vocabulary). Do not add `if remote` elsewhere in the class, and do not
+   grow `RemotePolicy` toward lerobot deployment: it stays the minimal client
+   for servers that are not `policy_server.py`. See REMOTE_INFERENCE.md §4
+   and §4.5; tests in `tests/test_policy_server.py`.
 2. **(IMPLEMENTED) `pose_repr.json` stamping**: `lerobot_relative_pose.py`
    writes it into the training output dir (pose layout, relative convention,
    rot6d convention, fps, window sizes, and per-key `observation.state`
@@ -931,13 +946,15 @@ established so far — verify before contradicting them:
   (`robot.set_target`) → crisp_py re-publishes the latest target at
   `publish_frequency` (50 Hz default), ZERO-ORDER HOLD, no interpolation → CIC
   at 1 kHz. The CIC is the only layer that reacts between ticks, and it reacts
-  mechanically, not to tactile. ON THIS BRANCH `RemotePolicy.make_data_fn` calls
-  `client.infer` SYNCHRONOUSLY inside the tick and there is no policy server.
-  Branch `claude/vigilant-tesla-VZJT6` (not merged here; merges cleanly) adds
-  `scripts/policy_server.py` and a non-blocking `WorkerConnection`, so with
-  `async_inference: true` the next-chunk request no longer blocks the tick. That
-  server takes ONE client and answers in order: a fast tactile model must be a
-  SECOND worker behind a second connection, not a second request on that socket.
+  mechanically, not to tactile. The policy server
+  (`scripts/policy_server.py`, merged in from `claude/vigilant-tesla-VZJT6`) and
+  its non-blocking `WorkerConnection` mean that with `async_inference: true`
+  the next-chunk request no longer blocks the tick (default is still `false`;
+  the first chunk always blocks). The server takes ONE client and answers in
+  order: a fast tactile model must be a SECOND worker behind a second
+  connection, not a second request on that socket. `RemotePolicy`
+  (`remote_policy`) is a different, minimal client that still blocks — do not
+  grow it.
 - **High-rate tactile lives in CSVs next to the 15 Hz dataset**
   (`<dataset>/tactile_raw/episode_<NNNNNN>_<side>.csv`, DVC-tracked): tactile
   only — no pose, so it gives high-rate INPUT windows and no action labels
