@@ -609,6 +609,60 @@ def test_the_shipped_fr3_controllers_yaml_layout_parses():
     assert k_pos and k_pos > 0 and k_rot and k_rot > 0
 
 
+def test_step_F_separates_lag_from_what_only_the_command_carries():
+    """Command = the pose 3 frames later (pure lag) + 20 mm along TCP z in contact.
+
+    Then the gap closes at L = 3 in free motion and leaves exactly the 20 mm in
+    contact; and the recorded action (pose 1 frame later) is found as L = 1.
+    """
+    mod = _load()
+    eps, n, lag = 3, 120, 3
+    episode, poses, cmds, contact = [], [], [], []
+    for ep in range(eps):
+        t = np.arange(n + lag) / FPS
+        T = np.tile(np.eye(4), (n + lag, 1, 1))
+        T[:, :3, :3] = _exp(np.stack([0.3 * np.sin(t), 0.2 * np.cos(0.7 * t), 0.1 * t], axis=1))
+        T[:, :3, 3] = np.stack([0.4 + 0.1 * np.sin(1.3 * t + ep), 0.1 * np.cos(t),
+                                0.3 + 0.05 * np.sin(0.5 * t)], axis=1)
+        c = np.arange(n) >= 80
+        push = np.tile(np.eye(4), (n, 1, 1))
+        push[c, 2, 3] = 0.020
+        episode.append(np.full(n, ep))
+        poses.append(T[:n])
+        cmds.append(T[lag:lag + n] @ push)
+        contact.append(c)
+    episode, contact = np.concatenate(episode), np.concatenate(contact)
+    T_tcp, T_cmd = np.concatenate(poses), np.concatenate(cmds)
+
+    rows = mod.lookahead_gap(T_tcp, T_cmd, episode, contact, FPS)
+    assert [r["lookahead"] for r in rows] == list(range(9))
+    free = [r["pos_mm"]["free"]["p50"] for r in rows]
+    assert int(np.argmin(free)) == lag and free[lag] < 1e-6
+    assert abs(rows[lag]["pos_mm"]["contact"]["p50"] - 20.0) < 1e-6
+    assert rows[0]["pos_mm"]["free"]["p50"] > 5.0                 # the lag is visible at L = 0
+    assert rows[lag]["ms"] == 1e3 * lag / FPS
+    # pairs never cross an episode: L frames are lost per episode
+    assert rows[lag]["pos_mm"]["free"]["n"] + rows[lag]["pos_mm"]["contact"]["n"] == eps * (n - lag)
+
+    pose9 = _pose9(T_tcp)
+    action = np.concatenate([np.roll(pose9, -1, axis=0), np.zeros((len(pose9), 1))], axis=1)
+    assert mod.detect_action_lookahead(action, pose9, episode) == 1
+    assert mod.detect_action_lookahead(np.roll(action, -1, axis=0), pose9, episode) == 2
+    # an action that is no measured pose at any lookahead (here: 5 mm off) is not matched
+    off = pose9.copy()
+    off[:, 0] += 0.005
+    not_a_pose = np.concatenate([np.roll(off, -1, axis=0), np.zeros((len(pose9), 1))], axis=1)
+    assert mod.detect_action_lookahead(not_a_pose, pose9, episode) is None
+
+    # through analyze + the printed report
+    report, _ = mod.analyze(episode=episode, pose9=pose9, target9=_pose9(T_cmd), fps=FPS,
+                            contact_from="none", action=action)
+    f = report["action_labels"]
+    assert f["best_free_lookahead"] == lag and f["action_lookahead"] == 1
+    text = mod.format_report({**report, "columns": {}})
+    assert "F. Command vs measured-pose action label" in text and "the recorded `action`" in text
+
+
 def test_gains_from_an_env_config():
     """--env-config follows the env's own lookup: first match wins, null = bring-up."""
     try:

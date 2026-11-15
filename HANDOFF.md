@@ -964,6 +964,18 @@ established so far — verify before contradicting them:
   is BURSTY — median interval 4.7 ms (~213 Hz), mean rate 157 Hz, 1 % of
   intervals above 18 ms, max 34 ms — so cut windows by TIME, never by row
   count (`crisp_gym/util/tactile_raw.py::windows`, causal hold + sample age).
+- **Measured-pose vs command action comparison (owner asked for it, 2026-11).**
+  The tooling existed already: `swap_action_offline.py` (command -> `action`
+  copy) + `lerobot_relative_pose.py` on both = two RELATIVE policies that differ
+  only in the action source, deployed with the same `relative_lerobot_policy`.
+  Protocol in USAGE §14. Added for it: audit step F (`lookahead_gap`) — the gap
+  between command[t] and pose[t+L], free vs contact, which separates plain lag
+  (closes at some L) from what only the command carries (stays open in
+  contact). Not done, and worth doing before many runs exist: a relative
+  checkpoint does not record its action source (`pose_repr.json` has no field
+  for it; the dataset copy's `meta/action_repr.json` is not carried over), so
+  the two checkpoints are told apart by directory name only. `ur_electricbox`
+  (10 episodes) is too small to train either policy.
 - Planned order: audit existing data → robot-only ablation of measured-pose vs
   command action (true commands exist, no residual model needed) → residual
   model on robot data → relabel handheld data into a NEW column (never

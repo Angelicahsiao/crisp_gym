@@ -18,6 +18,12 @@ whether a tactile "residual trajectory correction" model is worth building:
      bound on what a real model will reach.
   E. The same residual statistics for the gripper channel, when the dataset
      carries a gripper command column.
+  F. How different are the two ACTION LABELS a policy can be trained on — the
+     measured pose a few frames ahead (`next_tcp_pose`, what `action` stores)
+     and the command? The gap between command[t] and pose[t + L] for L = 0..8
+     frames, in free motion and in contact. A lookahead that closes the gap in
+     free motion says how much of the difference is plain lag; what is left in
+     contact at that lookahead is the part only the command carries.
 
 The residual is expressed in the TCP (body) frame, like the relative-pose
 convention in lerobot_relative_pose.py, so it is independent of the world frame
@@ -352,6 +358,62 @@ def ridge_cv(
 
 # ── the analysis (pure arrays in, plain dict out — unit-tested) ──────────────
 
+def lookahead_gap(
+    T_tcp: np.ndarray, T_cmd: np.ndarray, episode: np.ndarray, contact: np.ndarray,
+    fps: float, max_lookahead: int = 8,
+) -> list[dict]:
+    """Gap between command[t] and the measured pose L frames later, per L.
+
+    `pose[t + L]` is the measured-pose action label with lookahead L; the
+    command is the other label. Pairs never cross an episode boundary. The
+    contact/free split is taken at the command's frame t.
+    """
+    episode = np.asarray(episode)
+    n = len(episode)
+    rows = []
+    for L in range(max_lookahead + 1):
+        s = np.arange(n - L)
+        s = s[episode[s] == episode[s + L]]
+        if len(s) == 0:
+            break
+        pos, rot = tcp_frame_residual(T_tcp[s + L], T_cmd[s])
+        pos_mm = np.linalg.norm(pos, axis=1) * 1e3
+        rot_deg = np.degrees(np.linalg.norm(rot, axis=1))
+        c = np.asarray(contact, bool)[s]
+        rows.append({
+            "lookahead": L, "ms": 1e3 * L / float(fps),
+            "pos_mm": {"free": _percentiles(pos_mm[~c]), "contact": _percentiles(pos_mm[c])},
+            "rot_deg": {"free": _percentiles(rot_deg[~c]), "contact": _percentiles(rot_deg[c])},
+        })
+    return rows
+
+
+def detect_action_lookahead(
+    action: np.ndarray, pose9: np.ndarray, episode: np.ndarray, max_lookahead: int = 8,
+    tol_m: float = 1e-4,
+) -> int | None:
+    """The lookahead L with action[t] == pose[t + L], read from the data.
+
+    None when the `action` column is not a measured pose at any tested
+    lookahead (a swapped/commanded action, a delta action, another layout).
+    """
+    action = np.asarray(action, dtype=np.float64)
+    pose9 = np.asarray(pose9, dtype=np.float64)
+    episode = np.asarray(episode)
+    if action.ndim != 2 or action.shape[1] < 3:
+        return None
+    best = None
+    for L in range(1, max_lookahead + 1):
+        s = np.arange(len(episode) - L)
+        s = s[episode[s] == episode[s + L]]
+        if len(s) == 0:
+            break
+        err = float(np.median(np.linalg.norm(action[s, :3] - pose9[s + L, :3], axis=1)))
+        if err < tol_m and (best is None or err < best[1]):
+            best = (L, err)
+    return None if best is None else best[0]
+
+
 class NoCommandError(ValueError):
     """The dataset carries no usable Cartesian command (handheld or joint-driven)."""
 
@@ -561,6 +623,7 @@ def analyze(
     folds: int = 5,
     max_tool_offset_std: float = 0.005,
     tactile_valid: np.ndarray | None = None,
+    action: np.ndarray | None = None,
 ) -> tuple[dict, dict]:
     """Run every step. Rows must be sorted by (episode, frame).
 
@@ -777,6 +840,22 @@ def analyze(
                 entry["tactile_probe_r2"] = out["r2"][0]
         report["gripper_residual"] = entry
         frames["gripper_residual"] = gres
+
+    # ── F. command vs the measured-pose action label ────────────────────────
+    rows = lookahead_gap(T_tcp, T_cmd, episode, contact, fps)
+    labels: dict = {"by_lookahead": rows}
+    scored = [r for r in rows if r["pos_mm"]["free"].get("n")]
+    if scored:
+        best = min(scored, key=lambda r: r["pos_mm"]["free"]["p50"])
+        labels["best_free_lookahead"] = best["lookahead"]
+    if action is not None:
+        labels["action_lookahead"] = detect_action_lookahead(action, pose9, episode)
+        if labels["action_lookahead"] is None:
+            notes.append(
+                "the `action` column is not the measured pose at any lookahead up to 8 frames "
+                "(already swapped to the command, a delta action, or another layout): step F "
+                "cannot mark which row is the recorded action.")
+    report["action_labels"] = labels
 
     report["notes"] = notes
     return report, frames
@@ -1142,6 +1221,27 @@ def format_report(r: dict) -> str:
         if "tactile_probe_r2" in g:
             add(f"  tactile -> gripper residual, held-out R2 {g['tactile_probe_r2']:.2f}")
 
+    f = r.get("action_labels")
+    if f and f["by_lookahead"]:
+        add("\nF. Command vs measured-pose action label  (gap between command[t] and pose[t+L])")
+        rec, best = f.get("action_lookahead"), f.get("best_free_lookahead")
+        for row in f["by_lookahead"]:
+            fr, co = row["pos_mm"]["free"], row["pos_mm"]["contact"]
+            cell = lambda d: f"{d['p50']:6.2f} / {d['p90']:6.2f}" if d.get("n") else "     -          "  # noqa: E731
+            tags = []
+            if row["lookahead"] == rec:
+                tags.append("<- the recorded `action`: what the two training targets differ by")
+            if row["lookahead"] == best:
+                tags.append("<- smallest in free motion")
+            add(f"  L={row['lookahead']} ({row['ms']:4.0f} ms)  free {cell(fr)} mm   contact "
+                f"{cell(co)} mm   (median / p90)  " + "  ".join(tags))
+        if best is not None:
+            b = next(row for row in f["by_lookahead"] if row["lookahead"] == best)
+            if b["pos_mm"]["contact"].get("n"):
+                add(f"  best lookahead L={best}: {b['pos_mm']['free']['p50']:.1f} mm remain in free "
+                    f"motion, {b['pos_mm']['contact']['p50']:.1f} mm in contact (median). The contact "
+                    "excess is what a measured-pose label does not carry.")
+
     if r.get("notes"):
         add("\nNotes")
         for note in r["notes"]:
@@ -1232,6 +1332,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--joints-key", default=JOINTS_KEY)
     p.add_argument("--gripper-key", default=GRIPPER_KEY)
     p.add_argument("--gripper-target-key", default=GRIPPER_TARGET_KEY)
+    p.add_argument("--action-key", default="action",
+                   help="the recorded action column; only used to mark, in step F, which "
+                        "lookahead it was recorded with")
     p.add_argument("--k-pos", type=float, help="nominal translational stiffness, N/m")
     p.add_argument("--k-rot", type=float, help="nominal rotational stiffness, Nm/rad")
     p.add_argument("--control-config", type=Path,
@@ -1277,6 +1380,7 @@ def main(argv: list[str] | None = None) -> int:
             "ext_torque": (args.ext_torque_key, False),
             "gripper": (args.gripper_key, False),
             "gripper_target": (args.gripper_target_key, False),
+            "action": (args.action_key, False),
         }
     columns = dataset_columns(args.dataset)
     keys = default_tactile_keys(columns) if args.tactile_keys is None else args.tactile_keys
@@ -1356,6 +1460,7 @@ def main(argv: list[str] | None = None) -> int:
         contact_from=args.contact_from, tactile_threshold=args.tactile_threshold,
         force_threshold=args.force_threshold, min_sigma=args.min_sigma,
         ridge_lambda=args.ridge_lambda, folds=args.folds, tactile_valid=all_valid,
+        action=arrays.get("action"),
     )
     report["columns"] = resolved
     report["nominal_gains"] = {"k_pos": k_pos, "k_rot": k_rot, "source": source}

@@ -222,6 +222,7 @@ What the steps need and answer:
 | C | what stiffness does the controller really deliver? | `extra.joints` + `extra.ext_torque`, **Franka only** |
 | D | can tactile predict the gap on held-out episodes? | tactile columns |
 | E | the same gap for the gripper | `extra.gripper_target` |
+| F | how different are the two action labels (command vs measured pose `L` frames ahead)? | commanded + measured pose |
 
 Things to know:
 

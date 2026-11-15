@@ -1454,6 +1454,7 @@ It reports:
 | C | What stiffness/damping does the controller actually deliver? (`F_ext = −K r + D v`) | `extra.joints` + `extra.ext_torque`, Franka FR3 |
 | D | Can tactile predict the residual on HELD-OUT episodes (linear, single frame)? | tactile columns |
 | E | The same residual for the gripper channel | `extra.gripper_target` |
+| F | How different are the two action labels — command vs the measured pose `L` frames ahead — in free motion and in contact? | command + pose (`action` only to mark the recorded lookahead) |
 
 Things to know when reading it:
 
@@ -1491,6 +1492,80 @@ Things to know when reading it:
 - **Step C** uses built-in Franka FR3/Panda kinematics with the Jacobian taken
   at the recorded TCP position, so no tool model is needed. It is skipped, with
   a note, if the recorded TCP is not rigid w.r.t. the computed flange.
+
+### Measured-pose action vs command action: running the comparison
+
+Two policies, identical in everything except what the arm action is:
+
+| | arm action | dataset |
+|---|---|---|
+| **M** (measured) | the pose the arm reached one frame later (`next_tcp_pose`, the recorded `action`) | the dataset as recorded |
+| **C** (command) | the pose that was commanded (`extra.target_cartesian`) | a copy made by `swap_action_offline.py` |
+
+Both are trained RELATIVE with the same launcher, so only the action source
+differs, and both deploy with the same `relative_lerobot_policy` config.
+
+**0. Look at the labels first (no training).** Step F of the audit prints the
+gap between the command and the measured pose `L` frames ahead. The row marked
+"the recorded `action`" is what the two training targets differ by. If the gap
+nearly closes at some `L` in free motion AND in contact, a longer action
+lookahead would do the same job as the command; what stays open in contact is
+what only the command carries.
+
+**1. Make the command copy** (videos are copied, only `action` is rewritten):
+
+```bash
+python crisp_gym/scripts/swap_action_offline.py \
+    --input datasets/ROBOT/lerobot --output datasets/ROBOT_cmd/lerobot
+```
+
+**2. Train both with the same settings** (same policy, steps, batch size, seed):
+
+```bash
+python crisp_gym/scripts/lerobot_relative_pose.py \
+    --dataset.repo_id=ROBOT --dataset.root=datasets/ROBOT/lerobot \
+    --policy.type=diffusion --policy.push_to_hub=false --seed=1000 \
+    --output_dir=outputs/train/cmp_measured --batch_size=64 --steps=200000
+python crisp_gym/scripts/lerobot_relative_pose.py \
+    --dataset.repo_id=ROBOT_cmd --dataset.root=datasets/ROBOT_cmd/lerobot \
+    --policy.type=diffusion --policy.push_to_hub=false --seed=1000 \
+    --output_dir=outputs/train/cmp_command --batch_size=64 --steps=200000
+```
+
+Keep the two output directories apart by name: nothing inside a relative
+checkpoint records which action it was trained on.
+
+**3. Check each model learned its own target** (GPU PC, no robot):
+
+```bash
+python crisp_gym/scripts/check_policy_openloop.py \
+    --path outputs/train/cmp_measured/checkpoints/last/pretrained_model \
+    --repo-id datasets/ROBOT/lerobot --episodes 0 1 2
+python crisp_gym/scripts/check_policy_openloop.py \
+    --path outputs/train/cmp_command/checkpoints/last/pretrained_model \
+    --repo-id datasets/ROBOT_cmd/lerobot --episodes 0 1 2
+```
+
+Each is compared against ITS OWN dataset. The two errors are not comparable
+with each other (the command moves more than the pose does); this step only
+rules out a model that failed to train.
+
+**4. Roll out both on the robot**, same deploy env, same policy YAML, same
+controller gains as the recording:
+
+- the same start poses and object placements for both, trials alternated
+  (M, C, C, M, ...) so drift in the setup hits both alike;
+- at least 10 trials each; note success, time to finish and any stall in contact;
+- RECORD the rollouts with the same record config, then run the audit on each
+  set. Step A on the rollouts shows whether the policy reproduces the contact
+  gap of the demonstrations (C should, M should show a gap near zero in
+  contact, i.e. it does not press).
+
+What to expect, and what would falsify it: M sends the reached pose as a
+command, so the arm should trail it by the tracking lag (step B) and press with
+little force in contact; C should move at the demonstrated speed and press as
+demonstrated. If M and C succeed equally often, the command action is not
+worth its extra data requirement on this task.
 
 ### Tactile signal alone (`--tactile-only`) — handheld data too
 
