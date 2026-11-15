@@ -739,8 +739,10 @@ order. It matches today only because `_collect_obs` iterates
   - The repository was formatted once (`ruff format`, commit in
     `.git-blame-ignore-revs`). Format the files you touch; do not reformat
     with a different ruff version.
-  - `.github/workflows/pixi_ci.yml` is entirely commented out, which GitHub
-    reports as a FAILED run on every push. Owner's call whether to delete it.
+  - `.github/workflows/pixi_ci.yml` was deleted (owner's decision): it was
+    entirely commented out, which GitHub reports as a FAILED run on every
+    push. A workflow file with no `on:` is never "off" — delete it or give it
+    a real trigger.
 
 ---
 
