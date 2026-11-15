@@ -714,6 +714,33 @@ order. It matches today only because `_collect_obs` iterates
 - The user typically records on a ROS2 Humble/Python 3.11 machine and trains on
   a separate GPU PC with lerobot 0.6.1 (0.4.4 still supported) — keep the
   training/inference files free of crisp/ROS imports.
+- **Tests and lint (set up 2026-11; keep both green).**
+  - Run everything with `python -m pytest` from the repo root (settings in
+    `pyproject.toml`; `pip install -r tests/requirements.txt` is enough, no
+    ROS). The "Tests" GitHub job does exactly that on Python 3.11 and 3.12.
+  - `tests/conftest.py` isolates test FILES from each other: most files put
+    fake `torch` / `rclpy` / `lerobot` / `crisp_py` modules into `sys.modules`
+    so they can run alone, and those used to leak into the next file (tests
+    passed or failed depending on order). The conftest takes each file's fakes
+    and the project modules imported under them out again and restores them
+    only while that file runs. Consequences: a test file gets its OWN fresh
+    copy of every `crisp_gym` module; real third-party modules are shared and
+    never re-imported. `CRISP_TEST_NO_ISOLATION=1` turns it off. NOT yet run in
+    the ROS + lerobot pixi environment — if a test behaves differently there
+    under pytest than as a script, suspect this first.
+  - A test that needs the REAL lerobot/torch or ROS gets `@pytest.mark.lerobot`
+    / `@pytest.mark.ros` (or a line in `FILE_MARKERS`); it then skips with a
+    reason where they are missing instead of failing on import.
+  - `ruff check .` must pass (ruff 0.12.0, the version pre-commit pins; the
+    Ruff job installs the same). tests/ and examples/ are exempt from the
+    docstring/annotation rules. 25 package files have a per-file, per-rule
+    BASELINE in `pyproject.toml` for the docstrings/annotations they lacked —
+    shorten that list, never extend it; new files get the full rule set.
+  - The repository was formatted once (`ruff format`, commit in
+    `.git-blame-ignore-revs`). Format the files you touch; do not reformat
+    with a different ruff version.
+  - `.github/workflows/pixi_ci.yml` is entirely commented out, which GitHub
+    reports as a FAILED run on every push. Owner's call whether to delete it.
 
 ---
 

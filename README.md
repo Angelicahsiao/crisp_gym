@@ -30,6 +30,19 @@ The UMI-style data pipeline — handheld and robot recording, dataset alignment
 and merging, relative-pose training, deployment — is covered end to end in
 [USAGE.md](USAGE.md).
 
+## Tests and lint
+
+```bash
+pip install -r tests/requirements.txt    # no ROS, no robot, no GPU needed
+python -m pytest                         # the whole suite
+ruff check .                             # ruff 0.12.0, as pinned in .pre-commit-config.yaml
+```
+
+Tests that need the real lerobot/torch or a ROS environment skip themselves
+where those are missing and say so at the end of the run (`-rs`). Every test
+file also still runs on its own: `python tests/test_pose_math.py`. Both checks
+run on GitHub on every push.
+
 ## Workspace layout
 
 Clone `crisp_gym` and its sibling repositories into a common workspace folder
