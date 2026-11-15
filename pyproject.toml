@@ -28,6 +28,15 @@ crisp-deploy-policy = "crisp_gym.scripts.deploy_policy:main"
 crisp-record-leader-follower = "crisp_gym.scripts.record_lerobot_format_leader_follower:main"
 crisp-check-config = "crisp_gym.scripts.check_config:main"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# the repository root, so `crisp_gym` imports without an install or PYTHONPATH
+pythonpath = ["."]
+markers = [
+    "lerobot: needs the real lerobot and torch packages; skipped where they are not installed",
+    "ros: needs a ROS 2 environment (rclpy, crisp_py); skipped where it is not there",
+]
+
 [tool.ruff]
 exclude = [
     ".git",

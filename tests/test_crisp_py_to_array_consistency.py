@@ -70,7 +70,9 @@ def _stub_ros_modules() -> None:
 def _load_crisp_py_geometry():
     geom_path = REPO.parent / "crisp_py" / "crisp_py" / "utils" / "geometry.py"
     if not geom_path.exists():
-        pytest.skip(f"crisp_py checkout not found at {geom_path}")
+        # called while this file is imported, so the whole file is skipped;
+        # without allow_module_level pytest reports a collection ERROR instead
+        pytest.skip(f"crisp_py checkout not found at {geom_path}", allow_module_level=True)
     _stub_ros_modules()
     spec = importlib.util.spec_from_file_location("crisp_py_geometry_under_test", geom_path)
     mod = importlib.util.module_from_spec(spec)

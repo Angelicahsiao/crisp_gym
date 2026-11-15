@@ -1,0 +1,20 @@
+# What the ROS-free part of the test suite needs (the "Tests" CI job installs
+# exactly this). No ROS, no crisp_py, no torch, no lerobot: the tests bring
+# their own fakes for those, and the ones that need the real packages are
+# marked `lerobot` / `ros` and skip themselves.
+#
+#     pip install -r tests/requirements.txt
+#     python -m pytest
+#
+# Bounds mirror pyproject.toml / pixi.toml so CI runs against what the robot
+# environment resolves to.
+numpy>=2.0,<2.3
+scipy>=1.10,<2
+pyyaml
+rich>=14.0.0,<15
+gymnasium>=0.26.3,<2
+pandas
+pyarrow
+websockets
+msgpack
+pytest>=7.4
