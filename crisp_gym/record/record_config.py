@@ -85,7 +85,8 @@ def _pose_to_array(pose, representation: str) -> np.ndarray:
 @register_source("robot.tcp_pose")
 def _src_tcp_pose(env, representation: str = "rotation_6d", **_) -> np.ndarray:
     """Measured TCP pose. Robot envs: robot.end_effector_pose. Handheld env:
-    the tracked pose (UmiHandheldEnv exposes it via current_pose_as_action)."""
+    the tracked pose (UmiHandheldEnv exposes it via current_pose_as_action).
+    """
     if hasattr(env, "robot"):
         return _pose_to_array(env.robot.end_effector_pose, representation)
     if hasattr(env, "current_pose_as_action"):
@@ -115,7 +116,8 @@ def _src_joint_velocities(env, **_) -> np.ndarray:
 @register_source("robot.joint_efforts")
 def _src_joint_efforts(env, **_) -> np.ndarray:
     """Measured joint efforts. Requires has_effort_feedback on the robot
-    config and effort values in the JointState messages (else zeros)."""
+    config and effort values in the JointState messages (else zeros).
+    """
     return np.asarray(env.robot.current_joint_effort, dtype=np.float32)
 
 

@@ -618,7 +618,7 @@ def _run_driver(tmp_path, mode, *episodes):
 
 def _rows(out):
     import json
-    line = [l for l in out.splitlines() if l.startswith("ROWS ")][-1]
+    line = [ln for ln in out.splitlines() if ln.startswith("ROWS ")][-1]
     return json.loads(line[len("ROWS "):])
 
 
@@ -652,9 +652,12 @@ def test_main_stops_on_an_episode_that_is_not_in_the_dataset(tmp_path):
 # ── --diagnose ───────────────────────────────────────────────────────────────
 
 def test_sampling_diagnostics_separates_noise_from_a_wrong_mean():
-    rec = np.zeros((4, 10)); rec[:, 0] = [0.01, 0.02, 0.03, 0.04]
+    rec = np.zeros((4, 10))
+    rec[:, 0] = [0.01, 0.02, 0.03, 0.04]
     # Two samples scattered +-5 mm around the recording: noisy but right on average.
-    noisy = np.stack([rec.copy(), rec.copy()]); noisy[0, :, 1] += 0.005; noisy[1, :, 1] -= 0.005
+    noisy = np.stack([rec.copy(), rec.copy()])
+    noisy[0, :, 1] += 0.005
+    noisy[1, :, 1] -= 0.005
     d = ol.sampling_diagnostics(noisy, rec)
     assert d["single_err"] == pytest.approx([0.005] * 4)
     assert d["spread"] == pytest.approx([0.005] * 4)
@@ -671,7 +674,8 @@ def test_sampling_diagnostics_measures_what_a_swapped_input_changes():
     rec = np.zeros((3, 10))
     samples = np.zeros((2, 3, 10))
     ignored = samples[0].copy()                       # model ignores the swapped input
-    used = samples[0].copy(); used[:, 2] += 0.02      # model follows it: 20 mm away
+    used = samples[0].copy()
+    used[:, 2] += 0.02      # model follows it: 20 mm away
     d = ol.sampling_diagnostics(samples, rec, swapped_image=ignored, swapped_state=used)
     assert d["image_swap"] == pytest.approx([0.0] * 3, abs=1e-12)
     assert d["state_swap"] == pytest.approx([0.02] * 3)
@@ -709,21 +713,21 @@ def test_diagnose_on_a_perfect_policy(tmp_path, mode):
     assert "identical: the model receives the same tensors as in training" in one
 
     two = _section(out, 2)
-    own = [l for l in two.splitlines() if "the frame's own observations" in l][0]
-    swapped = [l for l in two.splitlines() if "state from another frame" in l][0]
+    own = [ln for ln in two.splitlines() if "the frame's own observations" in ln][0]
+    swapped = [ln for ln in two.splitlines() if "state from another frame" in ln][0]
     assert float(own.split()[4]) == 0.0
     assert float(swapped.split()[4]) > 0.0
     assert "images from another frame" not in two      # this policy has no cameras
 
     three = _section(out, 3)
     def row(label):
-        line = [l for l in three.splitlines() if label in l][0]
+        line = [ln for ln in three.splitlines() if label in ln][0]
         return [float(x) for x in line.split()[-2:]]
     assert row("demo motion from the current pose") == [5.0, 40.0]      # 1 and 8 steps of 5 mm
     assert row("error of one sample") == [0.0, 0.0]
     assert row("spread between samples") == [0.0, 0.0]
     assert row("change when state comes from another frame")[0] > 0.0
-    assert [l for l in three.splitlines() if "change when images" in l][0].split()[-2:] == ["-", "-"]
+    assert [ln for ln in three.splitlines() if "change when images" in ln][0].split()[-2:] == ["-", "-"]
 
 
 def test_diagnose_catches_a_batch_path_that_differs_from_the_frame_path(tmp_path):

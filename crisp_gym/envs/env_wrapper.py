@@ -19,7 +19,6 @@ from numpy.typing import NDArray
 
 from crisp_gym.envs.manipulator_env import ManipulatorBaseEnv
 
-
 # def stack_gym_space(space: gym.Space, repeat: int) -> gym.Space:
 #     """Repeat a Gym space definition by stacking it multiple times.
 

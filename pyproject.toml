@@ -73,6 +73,45 @@ ignore = ["ANN401"]
 fixable = ["ALL"]
 unfixable = []
 
+[tool.ruff.lint.per-file-ignores]
+# Tests and examples are read top to bottom, not called: a docstring and type
+# annotations on every helper and every test function add nothing there. The
+# rules that find real mistakes (unused or undefined names, import order,
+# syntax) still apply to them.
+"tests/**" = ["D", "ANN"]
+"examples/**" = ["D", "ANN"]
+
+# BASELINE, 25 files, 234 findings on 2026-11-15: docstring and annotation rules these
+# files did not meet when the lint job was first made to pass. Each entry
+# lists only the rules that file breaks (the number is how often), so anything
+# else in it, and every file not listed here, is held to the full rule set.
+# This is a list to SHORTEN: fix a file, delete its line. Do not add to it.
+"crisp_gym/config/home.py" = ["ANN001"]  # 1
+"crisp_gym/envs/env_wrapper.py" = ["D103"]  # 1
+"crisp_gym/envs/umi_handheld_env.py" = ["ANN003", "D102", "D105", "D107"]  # 9
+"crisp_gym/policy/lerobot_policy.py" = ["ANN001"]  # 1
+"crisp_gym/policy/relative_lerobot_policy.py" = ["ANN001", "D107", "D205"]  # 5
+"crisp_gym/policy/remote_policy.py" = ["D102", "D107"]  # 4
+"crisp_gym/policy/remote_protocol.py" = ["ANN001", "ANN003", "ANN202", "D103"]  # 11
+"crisp_gym/record/record_config.py" = ["ANN001", "ANN201", "ANN202", "D102", "D105", "D205"]  # 26
+"crisp_gym/record/record_functions.py" = ["ANN001", "ANN202", "D205"]  # 10
+"crisp_gym/record/recording_manager.py" = ["ANN001", "ANN003", "D105", "D107"]  # 7
+"crisp_gym/scripts/check_policy_openloop.py" = ["ANN001", "ANN201", "ANN202", "D103"]  # 39
+"crisp_gym/scripts/check_relative_pose.py" = ["D103", "D205"]  # 2
+"crisp_gym/scripts/lerobot_relative_pose.py" = ["ANN001", "ANN202", "ANN204", "D102", "D105", "D107", "D301"]  # 25
+"crisp_gym/scripts/migrate_euler_delta_to_rot6d.py" = ["ANN001", "ANN201", "D103", "D205", "D301"]  # 14
+"crisp_gym/scripts/postprocess_align_datasets.py" = ["ANN001", "ANN202", "D103", "D301", "D415"]  # 10
+"crisp_gym/scripts/record_umi_handheld.py" = ["D103", "D301"]  # 2
+"crisp_gym/scripts/reencode_dataset_videos.py" = ["ANN001"]  # 1
+"crisp_gym/scripts/swap_action_offline.py" = ["ANN001", "ANN201", "D103", "D301"]  # 6
+"crisp_gym/scripts/train_absolute_next_pose.py" = ["ANN001", "ANN202", "D301"]  # 10
+"crisp_gym/scripts/train_action_from_target_cartesian.py" = ["ANN001", "ANN202", "ANN204", "D102", "D105", "D107", "D301"]  # 27
+"crisp_gym/teleop/spacemouse_node.py" = ["ANN201", "D102", "D103", "D107"]  # 6
+"crisp_gym/teleop/teleop_factr_stream.py" = ["D102", "D107", "D301"]  # 6
+"crisp_gym/util/epoch_steps.py" = ["ANN001", "ANN202", "D107"]  # 5
+"crisp_gym/util/lerobot_features.py" = ["ANN001"]  # 4
+"scripts/dataset_conversions/add_umilike_state_observation.py" = ["D103", "D301"]  # 2
+
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 

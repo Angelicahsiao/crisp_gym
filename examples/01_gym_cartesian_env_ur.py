@@ -1,5 +1,7 @@
 """Draw a circle using the ManipulatorCartesianEnv with a UR robot."""
 
+import time
+
 import numpy as np
 
 from crisp_gym.envs.manipulator_env import ManipulatorCartesianEnv
@@ -21,7 +23,7 @@ start_position = CENTER + [0, RADIUS, 0]
 print(f"Moving to start position: {start_position}")
 env.move_to(position=start_position, speed=0.15)
 obs, _ = env.reset()
-import time; time.sleep(15)
+time.sleep(15)
 
 # %%=== Generate Circle Trajectory ===
 time_period = ITERATIONS / SIN_FREQ  # total time in seconds

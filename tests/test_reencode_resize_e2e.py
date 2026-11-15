@@ -181,7 +181,7 @@ def _run(tmp_path):
         [sys.executable, str(driver), str(SCRIPT), str(tmp_path)],
         capture_output=True, text=True, timeout=600,
     )
-    lines = [l for l in proc.stdout.splitlines() if l.startswith("RESULT ")]
+    lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("RESULT ")]
     assert lines, f"driver failed:\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr[-4000:]}"
     return json.loads(lines[-1][len("RESULT "):]), proc
 

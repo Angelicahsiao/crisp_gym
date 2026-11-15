@@ -22,7 +22,6 @@ Requires numpy, scipy, pandas, pyarrow (the [postprocess] extra). No lerobot.
 
 import importlib.util
 import json
-import sys
 import tempfile
 import types
 from pathlib import Path

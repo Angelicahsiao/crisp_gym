@@ -36,15 +36,13 @@ from typing import TYPE_CHECKING, Callable, Tuple
 
 import numpy as np
 
+from crisp_gym.policy import remote_protocol as proto
 from crisp_gym.policy.policy import Action, Observation, Policy, register_policy
 
 if TYPE_CHECKING:
     from crisp_gym.envs.manipulator_env import ManipulatorBaseEnv
 
 logger = logging.getLogger(__name__)
-
-
-from crisp_gym.policy import remote_protocol as proto
 
 
 class WebsocketPolicyClient:

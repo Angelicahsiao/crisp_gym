@@ -207,9 +207,6 @@ def inference_worker(  # noqa: D417
     # state are unaffected.
     use_umilike = _detect_umilike(policy, env, train_config, logger)
 
-    # Read policy config to know obs/action window sizes
-    cfg = policy.config
-    n_obs = int(cfg.n_obs_steps)
     print("Ready to recive information")
 
     while True:

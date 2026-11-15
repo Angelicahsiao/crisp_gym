@@ -53,7 +53,8 @@ def _leader_gripper_to_action(
 
 def _drive_fn_to_teleop_fn(env, drive_fn: Callable) -> Callable:
     """Wrap a drive-fn (command computation only) into a legacy teleop fn that
-    also steps the env and returns (obs, action) for RecordingManager."""
+    also steps the env and returns (obs, action) for RecordingManager.
+    """
     timing = {"drive": 0.0, "step": 0.0, "collect": 0.0, "action": 0.0}
 
     def _fn() -> tuple:

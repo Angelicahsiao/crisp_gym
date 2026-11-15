@@ -4,20 +4,19 @@ import argparse
 import logging
 import time
 from pathlib import Path
-import crisp_gym
+
+import crisp_py
 import numpy as np
-import yaml
-from crisp_gym.envs.manipulator_env import make_env, ManipulatorCartesianEnv, ManipulatorJointEnv
+from crisp_py.gripper import GripperConfig
+
+import crisp_gym
+from crisp_gym.envs.manipulator_env import ManipulatorCartesianEnv
 from crisp_gym.envs.manipulator_env_config import FrankaEnvConfig
 from crisp_gym.teleop.teleop_robot import make_leader
 from crisp_gym.teleop.teleop_sensor_stream import TeleopStreamedPose
-from crisp_gym.util.setup_logger import setup_logging
-from crisp_py.gripper import GripperConfig
-from crisp_py.gripper import make_gripper
-
-import crisp_py
-
 from crisp_gym.util.gripper_mode import GripperMode
+from crisp_gym.util.setup_logger import setup_logging
+
 print(crisp_py.__file__)
 # Parse args:
 parser = argparse.ArgumentParser(description="Teleoperation of a leader robot.")

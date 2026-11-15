@@ -12,7 +12,6 @@ Run:  python tests/test_writer_throughput.py   (or via pytest)
 """
 
 import multiprocessing as mp
-import queue as queue_mod
 import sys
 import time
 import types
@@ -82,7 +81,6 @@ def _install_stubs() -> None:
 _install_stubs()
 
 from crisp_gym.util.loop_timing import DeadlinePacer  # noqa: E402
-
 
 # ── queue slack in seconds ───────────────────────────────────────────────────
 

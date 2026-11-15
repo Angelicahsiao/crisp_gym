@@ -27,7 +27,6 @@ from __future__ import annotations
 import sys
 
 import numpy as np
-
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot_relative_pose import (  # self-contained; ships next to this file
     RelativePoseDataset,

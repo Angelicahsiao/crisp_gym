@@ -35,7 +35,6 @@ import threading
 import time
 import types
 import urllib.request
-from collections import deque
 from pathlib import Path
 
 import numpy as np

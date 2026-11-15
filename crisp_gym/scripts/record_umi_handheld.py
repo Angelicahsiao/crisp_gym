@@ -24,7 +24,6 @@ from crisp_gym.envs.umi_handheld_env import UmiHandheldEnv
 from crisp_gym.record.record_config import RecordConfig, resolve_robot_type
 from crisp_gym.record.record_functions import make_record_fn
 from crisp_gym.record.recording_manager import make_recording_manager
-from crisp_gym.util import prompt
 from crisp_gym.util.setup_logger import setup_logging
 
 

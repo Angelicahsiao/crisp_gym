@@ -14,13 +14,11 @@ To use this:
 """
 
 import logging
-import time
 
 import numpy as np
 
 from crisp_gym.envs.manipulator_env import ManipulatorCartesianEnv
 from crisp_gym.envs.manipulator_env_config import FrankaEnvConfig
-
 from crisp_gym.teleop.teleop_sensor_stream import TeleopStreamedPose
 from crisp_gym.util.setup_logger import setup_logging
 
@@ -79,7 +77,6 @@ def control_robot_with_spacemouse(env_config: str = "default", namespace: str = 
     
     prev_pose = teleop.last_pose
     step_count = 0
-    dt = 1.0 / CTRL_FREQ  # Control loop time step
     debug_count = 0
     pose_update_count = 0
     

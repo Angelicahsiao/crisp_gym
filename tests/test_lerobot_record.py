@@ -12,6 +12,7 @@ Run with:
 
 import os
 import tempfile as _tempfile_early
+
 # Prevent lerobot's HF Hub calls (v0.4.x's LeRobotDataset constructor calls
 # get_safe_version which hits the Hub).
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -31,13 +32,14 @@ def _import_lerobot_metadata():
         from lerobot.datasets.lerobot_dataset import CODEBASE_VERSION, LeRobotDatasetMetadata
     return CODEBASE_VERSION, LeRobotDatasetMetadata
 
-import os
-import sys
-import tempfile
-import types
-import traceback
-import numpy as np
+# These follow the environment set-up above on purpose (lerobot reads it when
+# it is first imported), hence the E402 exemptions.
+import sys  # noqa: E402
+import tempfile  # noqa: E402
+import traceback  # noqa: E402
+import types  # noqa: E402
 
+import numpy as np  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Stub out ROS2 and robot packages so the module can be imported without them
@@ -117,7 +119,8 @@ _sensor_cfg.SensorConfig = object
 # crisp_gym.config.path calls importlib.resources.files("crisp_py") at module
 # level — that call fails when crisp_py is a bare ModuleType stub. Stub the
 # entire module so the import chain can proceed.
-import tempfile as _tempfile
+import tempfile as _tempfile  # noqa: E402
+
 _path_stub = _make_stub("crisp_gym.config.path")
 _path_stub.CRISP_CONFIG_PATH = _tempfile.mkdtemp()
 _path_stub.CRISP_CONFIG_PATHS = [_path_stub.CRISP_CONFIG_PATH]
@@ -215,7 +218,8 @@ def test_get_features():
 def test_get_features_version_check():
     """get_features() should not warn for v3.x datasets."""
     import logging
-    from crisp_gym.util.lerobot_features import get_features, CODEBASE_VERSION
+
+    from crisp_gym.util.lerobot_features import CODEBASE_VERSION, get_features
 
     # Capture warnings
     warnings = []
@@ -255,6 +259,7 @@ def _add_frame_compat(dataset, frame, task):
 def test_dataset_create_add_save(tmp_dir):
     """LeRobotDataset.create() → add_frame() → save_episode() flow."""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
     from crisp_gym.util.lerobot_features import get_features
 
     env = _make_mock_env()
@@ -310,8 +315,8 @@ def _unique_repo_id(prefix):
 
 def test_recording_manager_create(tmp_dir):
     """RecordingManager._create_dataset() creates a new dataset correctly."""
-    from crisp_gym.util.lerobot_features import get_features
     from crisp_gym.record.recording_manager_config import RecordingManagerConfig
+    from crisp_gym.util.lerobot_features import get_features
 
     ConcreteRM = _make_concrete_rm()
     env = _make_mock_env()
@@ -361,6 +366,7 @@ def test_concatenate_state_features():
 def test_numpy_obs_to_torch():
     """numpy_obs_to_torch should produce torch tensors with correct shape and batch dim."""
     import torch
+
     from crisp_gym.util.lerobot_features import numpy_obs_to_torch
 
     obs = {
@@ -397,9 +403,9 @@ def _make_tiny_act_policy(state_dim=7, action_dim=7, image_shape=(3, 96, 96)):
 
     # PolicyFeature/FeatureType lives at different places across versions.
     try:
-        from lerobot.configs.types import PolicyFeature, FeatureType
+        from lerobot.configs.types import FeatureType, PolicyFeature
     except ImportError:
-        from lerobot.configs.policies import PolicyFeature, FeatureType  # fallback
+        from lerobot.configs.policies import FeatureType, PolicyFeature  # fallback
 
     input_features = {
         "observation.state": PolicyFeature(type=FeatureType.STATE, shape=(state_dim,)),

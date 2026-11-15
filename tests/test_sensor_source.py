@@ -7,7 +7,6 @@ sensor via `source: robot.sensor`. No Pinocchio dependency here.
 Run:  python tests/test_sensor_source.py   (or via pytest)
 """
 
-import sys
 import types
 from importlib.machinery import SourceFileLoader
 from pathlib import Path

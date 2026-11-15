@@ -172,6 +172,7 @@ def _test_record_via_manager(env):
       q  quit (exit after up to 3 episodes)
     """
     import uuid
+
     from crisp_gym.record.recording_manager import make_recording_manager
     from crisp_gym.record.recording_manager_config import RecordingManagerConfig
     from crisp_gym.util.lerobot_features import get_features

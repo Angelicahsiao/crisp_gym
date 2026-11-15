@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 def _installed_lerobot_version() -> str:
-    """lerobot version importable here; 'unknown' rather than raising."""
+    """Lerobot version importable here; 'unknown' rather than raising."""
     try:
         from importlib.metadata import version
 

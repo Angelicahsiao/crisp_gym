@@ -49,7 +49,7 @@ Assumptions (validated at start; the script aborts with a clear message if not)
 Run it in the lerobot environment (no ROS needed). ``--input``/``--output`` are
 dataset **root directories** (each with ``data/`` and ``meta/``), NOT repo ids.
 
-Example
+Example:
 -------
     python crisp_gym/scripts/migrate_euler_delta_to_rot6d.py \\
         --input  /path/to/old_euler_delta_demo \\
@@ -132,7 +132,8 @@ def load_info(dataset_dir: Path) -> dict:
 
 def state_subfeature_order(features: dict) -> list[str]:
     """Sub-features that make up the concatenated ``observation.state`` vector,
-    in info.json order (matches how recording concatenated them)."""
+    in info.json order (matches how recording concatenated them).
+    """
     return [
         k for k in features
         if k.startswith("observation.state.") and k != STATE_KEY
@@ -212,7 +213,8 @@ def _compute_stats(values: np.ndarray, stat_names) -> dict:
 
 def update_stats_json(out_dir: Path, agg: dict[str, np.ndarray]):
     """Patch aggregate meta/stats.json for the rewritten keys (preserving each
-    key's existing set of stat names, incl. quantiles)."""
+    key's existing set of stat names, incl. quantiles).
+    """
     stats_path = out_dir / "meta" / "stats.json"
     if not stats_path.exists():
         return
@@ -233,7 +235,8 @@ def update_stats_json(out_dir: Path, agg: dict[str, np.ndarray]):
 
 def update_v3_episode_stats(out_dir: Path, per_ep: dict[int, dict[str, np.ndarray]]):
     """Patch v3.0 meta/episodes/**/*.parquet per-episode stats columns
-    (``stats/<key>/<stat>``) for the rewritten keys."""
+    (``stats/<key>/<stat>``) for the rewritten keys.
+    """
     ep_files = sorted((out_dir / "meta" / "episodes").rglob("*.parquet"))
     if not ep_files:
         return
@@ -293,7 +296,8 @@ def update_v3_episode_stats(out_dir: Path, per_ep: dict[int, dict[str, np.ndarra
 
 def update_stats_files(out_dir: Path, per_ep: dict[int, dict[str, np.ndarray]]):
     """Update aggregate (stats.json) and per-episode stats (v3.0 episodes
-    parquet, or v2.x episodes_stats.jsonl) for the rewritten keys."""
+    parquet, or v2.x episodes_stats.jsonl) for the rewritten keys.
+    """
     keys = [CARTESIAN_KEY, STATE_KEY, ACTION_KEY]
     agg = {
         k: np.concatenate([per_ep[e][k] for e in sorted(per_ep) if k in per_ep[e]], axis=0)

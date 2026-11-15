@@ -20,8 +20,8 @@ from typing import Optional, Tuple
 
 import rclpy
 from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import Float32
 from rclpy.qos import qos_profile_sensor_data
+from std_msgs.msg import Float32
 
 try:
     import pyspacemouse

@@ -17,7 +17,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location(
@@ -53,7 +52,8 @@ def make_dataset(root: Path, *, episodes=4, length=120, relative=False,
             action = (np.concatenate([nxt - pos, np.array(IDENTITY6) + rng.normal(0, 5e-3, 6), [grip]])
                       if relative else np.concatenate([nxt, rot + rng.normal(0, 1e-3, 6), [grip]]))
             if nan and ep == 0 and t == 3:
-                action = action.copy(); action[0] = np.nan
+                action = action.copy()
+                action[0] = np.nan
             rows.append({"episode_index": ep, "frame_index": t,
                          "index": ep * length + t, "task_index": 0,
                          "observation.state": state.tolist(), "action": action.tolist()})

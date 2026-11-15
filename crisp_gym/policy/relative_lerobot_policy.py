@@ -1129,6 +1129,7 @@ class RelativeLerobotPolicy(Policy):
                 # for readability). This is the RAW absolute obs in the record
                 # frame, BEFORE the server-side relative conversion.
                 from scipy.spatial.transform import Rotation
+
                 from crisp_gym.util.rot6d import rot6d_to_mat
 
                 cart = np.asarray(frame["observation.state.cartesian"], dtype=np.float64)
