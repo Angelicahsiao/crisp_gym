@@ -1346,8 +1346,10 @@ numpy + pandas + pyarrow (+ pyyaml for `--control-config`); no ROS, no lerobot.
 
 Record with `umi_robot_full_record.yaml` on a CARTESIAN-driven env (streamed
 teleop → CIC): it stores the command (`extra.target_cartesian`,
-`extra.gripper_target`), the joints and the external joint torques. On FACTR/JIC
-data the Cartesian command is a constant and the script refuses.
+`extra.gripper_target`), the joints and the external joint torques. The script
+refuses, and says which case it is, when there is no command to audit:
+HANDHELD data (the robot columns are zero placeholders) and FACTR/JIC data (the
+Cartesian command is a constant). Use `--tactile-only` on those (below).
 
 ```bash
 python crisp_gym/scripts/audit_command_residual.py /path/to/dataset \
@@ -1373,11 +1375,14 @@ Things to know when reading it:
   those in `config/control/default_cartesian_impedance.yaml`. Pass the file the
   controller was really launched with, or `--k-pos/--k-rot`. Step C tells you
   what the arm delivered either way.
-- **Tactile columns** default to `left_tactile` / `right_tactile`; a bare name
-  matches a unique dotted suffix (`extra.left_tactile`). Any shape works — the
-  values are flattened. `--tactile-shape 8 10` only checks the stored size.
-  The zero is the mean of the first `--baseline-frames` frames of each episode,
-  so an episode that starts in contact hides that contact.
+- **Tactile columns** are found without a flag: `extra.tactile.left` /
+  `.right` (the handheld recorder's layout), else `left_tactile` /
+  `right_tactile`. `--tactile-keys` overrides; a bare name matches a unique
+  dotted suffix (`extra.left_tactile`). Any shape works — the values are
+  flattened. `--tactile-shape 8 9` only checks the stored size. The zero is the
+  mean of the first `--baseline-frames` frames of each episode, so an episode
+  that starts in contact hides that contact. Frames whose
+  `<tactile>.sync_valid` is false are left out of steps C and D.
 - **Contact flag** comes from tactile when present, else from the TCP force.
   The "torque only" percentage is contact the arm felt and the skin did not see.
 - **Step D is a lower bound**: one 15 Hz frame, linear. A velocity-only row and
@@ -1386,3 +1391,41 @@ Things to know when reading it:
 - **Step C** uses built-in Franka FR3/Panda kinematics with the Jacobian taken
   at the recorded TCP position, so no tool model is needed. It is skipped, with
   a note, if the recorded TCP is not rigid w.r.t. the computed flange.
+
+### Tactile signal alone (`--tactile-only`) — handheld data too
+
+```bash
+python crisp_gym/scripts/audit_command_residual.py /path/to/dataset --tactile-only --out tactile.json
+```
+
+Needs no command and no robot. Per sensor, in the sensor's own units: taxel
+count, dead taxels, raw level, noise at rest, how much the zero drifts between
+episodes, the share of frames in contact (overall and per episode), and how
+strong and how wide a contact is (norm, strongest taxel, number of active
+taxels). When the contact frames show a clear grid, a **layout hint** gives the
+row width of a skin stored row by row (the taxel below taxel `i` is `i + width`,
+so that index offset correlates best); confirm it by pressing one corner.
+**Run it on the handheld dataset and on the robot dataset and put the
+two reports side by side**: a tactile model trained on one only carries over to
+the other if noise, contact strength and active-taxel counts agree.
+
+When `<dataset>/tactile_raw/` exists (or `--tactile-raw-dir` points to it), the
+high-rate CSVs are checked as well: mean rate, interval median / p99 / max, the
+share of time spent inside gaps, and whether every dataset frame is found in
+its CSV by `source_stamp_ns` with identical taxel values. A CSV that was not
+pulled (only its `.dvc` pointer is there) is counted as missing, not fatal.
+
+To USE the CSVs, `crisp_gym/util/tactile_raw.py` (numpy + pandas, no ROS):
+
+```python
+from crisp_gym.util import tactile_raw as tr
+
+stamps, taxels = tr.load_csv(tr.csv_path(root / "tactile_raw", episode, "left"))
+# frame_stamps: the episode's extra.tactile.left.source_stamp_ns, as int64
+values, age_ms = tr.windows(stamps, taxels, frame_stamps, length=32, rate_hz=200.0)
+# values [frames, 32, taxels]: the last column is the frame's own sample.
+# age_ms [frames, 32]: large = a gap in the stream, negative = before its start.
+```
+
+The window is a causal hold on a time grid (never a later sample), because the
+stream has gaps and a model run online can only see the past.

@@ -24,17 +24,29 @@ convention in lerobot_relative_pose.py, so it is independent of the world frame
 and comparable between the robot and a handheld device.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ONLY MEANINGFUL FOR CARTESIAN-DRIVEN DATA (streamed pose -> CIC).
-On a joint-driven dataset (FACTR -> JIC) extra.target_cartesian is constant per
-episode; the script refuses, like train_action_from_target_cartesian.py does.
+STEPS A-E ARE ONLY MEANINGFUL FOR CARTESIAN-DRIVEN ROBOT DATA (pose -> CIC).
+The script refuses, like train_action_from_target_cartesian.py does, when the
+command is not a command:
+  * HANDHELD data: no robot, so extra.target_cartesian / extra.joints are
+    placeholders (all zeros, never moving);
+  * joint-driven data (FACTR -> JIC): extra.target_cartesian is constant.
+For those, --tactile-only reports the tactile signal alone (no command needed):
+baseline, noise, dead taxels, contact share and, with the high-rate CSVs, the
+rate and gaps of the stream. Run it on the handheld AND the robot dataset and
+compare — a model trained on one only transfers if these agree.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Columns (each overridable; a bare name also matches a unique dotted suffix, so
 `left_tactile` finds `extra.left_tactile` or `observation.state.left_tactile`):
 
   observation.state.cartesian   measured TCP pose, 9-D pos + rot6d   REQUIRED
-  extra.target_cartesian        commanded TCP pose, 9-D              REQUIRED
-  left_tactile / right_tactile  tactile skins, ANY shape (flattened) optional
+  extra.target_cartesian        commanded TCP pose, 9-D              REQUIRED (A-E)
+  tactile skins, ANY shape      extra.tactile.left / .right, or      optional
+                                left_tactile / right_tactile
+  <tactile>.sync_valid          per-frame flag; false frames are     optional
+                                left out of steps C, D and the tactile report
+  <tactile>.source_stamp_ns     stamp of the sample used, joins the  optional
+                                frame to <dataset>/tactile_raw/*.csv
   extra.ext_torque              external joint torque, 7 (Franka)    optional (C)
   extra.joints                  joint positions, 7                   optional (C)
   observation.state.gripper     measured gripper                     optional (E)
@@ -61,6 +73,9 @@ Usage:
     python audit_command_residual.py /path/to/dataset \
         --control-config .../config/fr3/controllers.yaml \
         --controller cartesian_impedance_controller
+
+    # handheld (or any) dataset: the tactile signal alone
+    python audit_command_residual.py /path/to/dataset --tactile-only
 """
 
 from __future__ import annotations
@@ -81,7 +96,12 @@ logger = logging.getLogger(__name__)
 
 POSE_KEY = "observation.state.cartesian"
 TARGET_KEY = "extra.target_cartesian"
-TACTILE_KEYS = ("left_tactile", "right_tactile")
+# Tried in order, per sensor, when --tactile-keys is not given. The first is
+# the layout written by the handheld recorder (extra.tactile.left + sync columns).
+TACTILE_KEY_CANDIDATES = (("tactile.left", "left_tactile"), ("tactile.right", "right_tactile"))
+SYNC_VALID_SUFFIX = ".sync_valid"
+SOURCE_STAMP_SUFFIX = ".source_stamp_ns"
+RAW_DIR_NAME = "tactile_raw"
 EXT_TORQUE_KEY = "extra.ext_torque"
 JOINTS_KEY = "extra.joints"
 GRIPPER_KEY = "observation.state.gripper"
@@ -331,6 +351,194 @@ def ridge_cv(
 
 # ── the analysis (pure arrays in, plain dict out — unit-tested) ──────────────
 
+class NoCommandError(ValueError):
+    """The dataset carries no usable Cartesian command (handheld or joint-driven)."""
+
+
+def check_command(
+    episode: np.ndarray,
+    pose9: np.ndarray,
+    target9: np.ndarray,
+    joints: np.ndarray | None,
+    notes: list[str],
+) -> None:
+    """Refuse a command column that is not a command. Runs BEFORE any pose math.
+
+    Two cases look alike (the command never moves while the TCP does) and mean
+    different things, so they are told apart:
+      * handheld: no robot at all — the command is a placeholder (all zeros,
+        which is not even a valid rot6d) and the joints never move either;
+      * joint-driven robot (FACTR -> JIC): the joints move, the Cartesian
+        command is simply not what drives the arm.
+    """
+    episode = np.asarray(episode)
+    pose9 = np.asarray(pose9, dtype=np.float64)
+    target9 = np.asarray(target9, dtype=np.float64)
+    eps = np.unique(episode)
+
+    # all-zero rot6d = a placeholder; pose9d_to_mat would turn it into NaN
+    placeholder = np.linalg.norm(target9[:, 3:9], axis=1) < 1e-9
+    frozen = []
+    for ep in eps:
+        m = episode == ep
+        moved = np.ptp(pose9[m, :3], axis=0).max()
+        if np.ptp(target9[m, :3], axis=0).max() < 1e-6 and moved > 1e-3:
+            frozen.append(int(ep))
+
+    if placeholder.all() or len(frozen) == len(eps):
+        joints_still = joints is None or all(
+            np.ptp(np.asarray(joints, dtype=np.float64)[episode == ep], axis=0).max() < 1e-6
+            for ep in eps
+        )
+        hint = " Use --tactile-only to report the tactile signal of this dataset."
+        if placeholder.all() or (joints is not None and joints_still):
+            raise NoCommandError(
+                "no command was recorded: the command column is a placeholder ("
+                + ("all zeros" if placeholder.all() else "constant")
+                + ") and "
+                + ("there is no joints column" if joints is None else "the joints never move")
+                + ". This is HANDHELD data (no robot). Steps A-E need Cartesian-driven "
+                "robot teleop data." + hint
+            )
+        raise NoCommandError(
+            "the commanded pose is CONSTANT within every episode while the arm moves: "
+            "this is a joint-driven dataset (FACTR -> JIC), where target_cartesian is "
+            "not a command. Steps A-E only apply to Cartesian-driven data." + hint
+        )
+    if placeholder.any():
+        bad = sorted({int(e) for e in episode[placeholder]})
+        raise NoCommandError(
+            f"{len(bad)} of {len(eps)} episodes carry a placeholder command (all-zero "
+            f"rotation), e.g. {bad[:10]}: robot and handheld episodes are mixed. Pass "
+            "--episodes with the robot episodes only."
+        )
+    if frozen:
+        notes.append(f"{len(frozen)} episode(s) have a frozen command and were kept: {frozen[:10]}")
+
+
+def remove_baseline(raw: np.ndarray, episode: np.ndarray, baseline_frames: int,
+                    valid: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Subtract each episode's own zero: the mean of its first frames.
+
+    Returns (baseline-removed [N, T], per-episode baselines [E, T], a bool [N]
+    marking the frames the baselines were taken from). With `valid`, the first
+    `baseline_frames` VALID frames of each episode are used.
+    """
+    raw = np.asarray(raw, dtype=np.float64)
+    out = np.empty_like(raw)
+    is_base = np.zeros(len(raw), dtype=bool)
+    baselines = []
+    for ep in np.unique(episode):
+        idx = np.flatnonzero(episode == ep)
+        pool = idx if valid is None or not valid[idx].any() else idx[valid[idx]]
+        first = pool[:min(baseline_frames, len(pool))]
+        base = raw[first].mean(axis=0)
+        out[idx] = raw[idx] - base
+        is_base[first] = True
+        baselines.append(base)
+    return out, np.asarray(baselines), is_base
+
+
+def row_width_hint(feat: np.ndarray, min_frames: int = 50) -> dict | None:
+    """Guess the grid width of a skin stored ROW BY ROW, from the data alone.
+
+    Neighbouring taxels are pressed together. In a row-major array of width W
+    the taxel directly below taxel i is i + W, so the mean correlation between
+    taxels i and i + k peaks at k = W (next to k = 1, the neighbour in the same
+    row). Only widths that divide the taxel count are scored. This is a hint to
+    confirm by pressing one corner, not a measurement.
+    """
+    feat = np.asarray(feat, dtype=np.float64)
+    n, taxels = feat.shape
+    live = feat.std(axis=0) > 0
+    if n < min_frames or live.sum() < 4:
+        return None
+    with np.errstate(divide="ignore", invalid="ignore"):
+        corr = np.corrcoef(feat, rowvar=False)
+    scores = {}
+    for width in range(2, taxels // 2 + 1):
+        if taxels % width:
+            continue
+        pair = np.diagonal(corr, offset=width)
+        pair = pair[np.isfinite(pair)]
+        if len(pair):
+            scores[width] = float(pair.mean())
+    if not scores:
+        return None
+    best = max(scores, key=scores.get)
+    others = [v for k, v in scores.items() if k != best]
+    # a guess is only offered when one width clearly stands out
+    confident = scores[best] > 0.3 and (not others or scores[best] - max(others) > 0.05)
+    same_row = np.diagonal(corr, offset=1)
+    same_row = same_row[np.isfinite(same_row)]
+    return {"width": int(best), "rows": int(taxels // best), "confident": bool(confident),
+            "correlation_by_width": {str(k): round(v, 3) for k, v in scores.items()},
+            "correlation_next_index": float(same_row.mean()) if len(same_row) else float("nan")}
+
+
+def tactile_report(
+    episode: np.ndarray,
+    tactile: dict[str, np.ndarray],
+    *,
+    baseline_frames: int = 10,
+    tactile_threshold: float | None = None,
+    valid: dict[str, np.ndarray] | None = None,
+) -> dict:
+    """The tactile signal on its own, PER SENSOR. Needs no command and no robot.
+
+    Meant to be run on two datasets (handheld, robot) and compared: taxel count,
+    raw level, noise, dead taxels, how often and how hard the skin is in
+    contact. All values are in the sensor's own units.
+    """
+    episode = np.asarray(episode)
+    n = len(episode)
+    eps = np.unique(episode)
+    out: dict = {}
+    for name, arr in tactile.items():
+        raw = np.asarray(arr, dtype=np.float64).reshape(n, -1)
+        ok = np.ones(n, dtype=bool) if not valid or name not in valid else np.asarray(valid[name], bool)
+        feat, baselines, is_base = remove_baseline(raw, episode, baseline_frames, ok)
+        mag = np.linalg.norm(feat, axis=1)
+        base_mag = mag[is_base]
+        thr = float(base_mag.mean() + 6.0 * base_mag.std()) if tactile_threshold is None \
+            else float(tactile_threshold)
+        contact = (mag > thr) & ok
+        taxel_noise = feat[is_base].std(axis=0)
+        per_ep = np.array([contact[(episode == ep) & ok].mean() if ((episode == ep) & ok).any()
+                           else 0.0 for ep in eps])
+        # a taxel counts as active above 6 sigma of its own rest noise, and never
+        # below an even share of the contact threshold (quantized sensors read an
+        # exact 0 noise at rest)
+        taxel_thr = np.maximum(6.0 * taxel_noise, thr / np.sqrt(raw.shape[1]))
+        active = (np.abs(feat[contact]) > taxel_thr).sum(axis=1)
+        entry = {
+            "taxels": int(raw.shape[1]),
+            "frames": int(n),
+            "invalid_frames": int((~ok).sum()),
+            "dead_taxels": np.flatnonzero(np.ptp(raw[ok], axis=0) == 0).tolist() if ok.any() else [],
+            "raw": {"min": float(raw[ok].min()), "median": float(np.median(raw[ok])),
+                    "max": float(raw[ok].max())} if ok.any() else {},
+            "baseline_drift": float(np.median(baselines.std(axis=0))) if len(baselines) > 1 else 0.0,
+            "taxel_noise": float(np.median(taxel_noise)),
+            "noise_floor": float(base_mag.mean()),
+            "threshold": thr,
+            "contact_fraction": float(contact[ok].mean()) if ok.any() else 0.0,
+            "contact_fraction_per_episode": {
+                "min": float(per_ep.min()), "median": float(np.median(per_ep)),
+                "max": float(per_ep.max())},
+            "episodes_without_contact": int((per_ep == 0).sum()),
+            "contact_magnitude": _percentiles(mag[contact]),
+            "peak_taxel_in_contact": _percentiles(np.abs(feat[contact]).max(axis=1))
+            if contact.any() else _percentiles(np.empty(0)),
+            "active_taxels_in_contact": _percentiles(active.astype(np.float64)),
+        }
+        hint = row_width_hint(feat[contact])
+        if hint:
+            entry["row_width_hint"] = hint
+        out[name] = entry
+    return out
+
+
 def analyze(
     *,
     episode: np.ndarray,
@@ -352,6 +560,7 @@ def analyze(
     ridge_lambda: float = 1.0,
     folds: int = 5,
     max_tool_offset_std: float = 0.005,
+    tactile_valid: np.ndarray | None = None,
 ) -> tuple[dict, dict]:
     """Run every step. Rows must be sorted by (episode, frame).
 
@@ -364,24 +573,9 @@ def analyze(
     report: dict = {"frames": n, "episodes": int(len(np.unique(episode))), "fps": float(fps)}
     notes: list[str] = []
 
+    check_command(episode, pose9, target9, joints, notes)
     T_tcp = pose9d_to_mat(pose9)
     T_cmd = pose9d_to_mat(target9)
-
-    # Guard: a joint-driven dataset carries a frozen target_cartesian.
-    dead = []
-    for ep in np.unique(episode):
-        m = episode == ep
-        moved = np.ptp(np.asarray(pose9)[m, :3], axis=0).max()
-        if np.ptp(np.asarray(target9)[m, :3], axis=0).max() < 1e-6 and moved > 1e-3:
-            dead.append(int(ep))
-    if dead and len(dead) == report["episodes"]:
-        raise ValueError(
-            "the commanded pose is CONSTANT within every episode while the arm moves: "
-            "this is a joint-driven dataset (FACTR -> JIC), where target_cartesian is "
-            "not a command. The audit only applies to Cartesian-driven data."
-        )
-    if dead:
-        notes.append(f"{len(dead)} episode(s) have a frozen command and were kept: {dead[:10]}")
 
     res_pos, res_rot = tcp_frame_residual(T_tcp, T_cmd)
     vel, omega = body_velocity(T_tcp, episode, dt)
@@ -398,15 +592,9 @@ def analyze(
             shapes[name] = int(arr.shape[1])
             cols.append(arr)
         raw = np.concatenate(cols, axis=1)
-        tac_feat = np.empty_like(raw)
-        base_mag = []
-        for ep in np.unique(episode):
-            idx = np.flatnonzero(episode == ep)
-            k = min(baseline_frames, len(idx))
-            tac_feat[idx] = raw[idx] - raw[idx[:k]].mean(axis=0)
-            base_mag.append(np.linalg.norm(tac_feat[idx[:k]], axis=1))
+        tac_feat, _, is_base = remove_baseline(raw, episode, baseline_frames, tactile_valid)
         tac_mag = np.linalg.norm(tac_feat, axis=1)
-        base_mag = np.concatenate(base_mag)
+        base_mag = tac_mag[is_base]
         auto_thr = float(base_mag.mean() + 6.0 * base_mag.std())
         report["tactile"] = {
             "taxels": shapes,
@@ -448,6 +636,11 @@ def analyze(
                 report["kinematics_check"]["near_singular_frames"] = int((~good).sum())
     elif joints is not None or ext_torque is not None:
         notes.append("system identification skipped: needs BOTH joints and ext_torque.")
+    if tactile and tactile_valid is not None and not np.all(tactile_valid):
+        bad = int((~np.asarray(tactile_valid, bool)).sum())
+        good = good & np.asarray(tactile_valid, bool)
+        notes.append(f"{bad} frame(s) with tactile sync_valid = false were left out of "
+                     "steps C and D (they still count in A, B and the contact share).")
 
     # ── contact flag ────────────────────────────────────────────────────────
     source = contact_from
@@ -613,24 +806,54 @@ def _to_array(series: "pd.Series") -> np.ndarray:
     )
 
 
+def _data_files(root: Path) -> list[Path]:
+    files = sorted((root / "data").rglob("*.parquet"))
+    if not files:
+        raise FileNotFoundError(f"no parquet files under {root / 'data'} — not a LeRobot dataset?")
+    return files
+
+
+def dataset_columns(root: Path) -> list[str]:
+    """Column names of the data parquets (read from the first file's schema)."""
+    import pyarrow.parquet as pq
+
+    return pq.ParquetFile(_data_files(root)[0]).schema_arrow.names
+
+
+def default_tactile_keys(columns: list[str]) -> list[str]:
+    """The tactile columns present, per sensor, from TACTILE_KEY_CANDIDATES."""
+    found = []
+    for candidates in TACTILE_KEY_CANDIDATES:
+        for key in candidates:
+            col = resolve_key(columns, key, required=False)
+            if col:
+                found.append(col)
+                break
+    return found
+
+
+def _first_scalar(series: "pd.Series", dtype: type) -> np.ndarray:
+    """A scalar or length-1 list column -> [N] of `dtype`, without a float detour.
+
+    An int64 nanosecond stamp does not survive float64 exactly.
+    """
+    return np.asarray([np.asarray(v).reshape(-1)[0] for v in series.to_numpy()], dtype=dtype)
+
+
 def load_dataset(
     root: Path, wanted: dict[str, tuple[str, bool]], episodes: list[int] | None
 ) -> tuple[dict, dict, float, dict]:
     """Read only the needed low-dim columns from every data parquet.
 
     wanted: {role: (key, required)}. Returns (arrays by role, resolved column
-    names, fps, the declared features from meta/info.json).
+    names, fps, the declared features from meta/info.json). Roles starting with
+    `stamp:` are returned as int64 [N], roles starting with `valid:` as bool [N].
     """
     import pandas as pd
 
-    files = sorted((root / "data").rglob("*.parquet"))
-    if not files:
-        raise FileNotFoundError(f"no parquet files under {root / 'data'} — not a LeRobot dataset?")
+    files = _data_files(root)
     info = json.loads((root / "meta" / "info.json").read_text())
-
-    import pyarrow.parquet as pq
-
-    columns = pq.ParquetFile(files[0]).schema_arrow.names
+    columns = dataset_columns(root)
     resolved = {role: resolve_key(columns, key, required=req) for role, (key, req) in wanted.items()}
     read_cols = ["episode_index", "frame_index"] + [c for c in resolved.values() if c]
     df = pd.concat([pd.read_parquet(f, columns=read_cols) for f in files], ignore_index=True)
@@ -642,9 +865,86 @@ def load_dataset(
 
     arrays = {"episode": df["episode_index"].to_numpy()}
     for role, col in resolved.items():
-        if col:
+        if not col:
+            continue
+        if role.startswith("stamp:"):
+            arrays[role] = _first_scalar(df[col], np.int64)
+        elif role.startswith("valid:"):
+            arrays[role] = _first_scalar(df[col], bool)
+        else:
             arrays[role] = _to_array(df[col])
     return arrays, resolved, float(info["fps"]), info.get("features", {})
+
+
+def _tactile_raw_module():  # noqa: ANN202 - a module object
+    """Load crisp_gym/util/tactile_raw.py by PATH.
+
+    This script keeps working without importing the crisp_gym package (GPU PC,
+    no ROS).
+    """
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[1] / "util" / "tactile_raw.py"
+    if not path.exists():
+        raise FileNotFoundError(f"{path} not found (needed to read the tactile CSVs)")
+    spec = importlib.util.spec_from_file_location("tactile_raw", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def raw_stream_report(
+    raw_dir: Path,
+    episode: np.ndarray,
+    tactile: dict[str, np.ndarray],
+    stamps: dict[str, np.ndarray],
+) -> dict:
+    """Report the high-rate CSVs per sensor.
+
+    Rate, gaps, and whether every dataset frame is found in its CSV by stamp
+    with the same taxel values.
+    """
+    tr = _tactile_raw_module()
+    episode = np.asarray(episode)
+    out: dict = {}
+    for name, values in tactile.items():
+        side = tr.side_of(name)
+        dts, missing, steps = [], [], []
+        frames = matched = equal = 0
+        n_eps = 0
+        for ep in np.unique(episode):
+            path = tr.csv_path(raw_dir, int(ep), side)
+            if not path.exists():
+                missing.append(int(ep))
+                continue
+            n_eps += 1
+            csv_stamps, csv_taxels = tr.load_csv(path)
+            dts.append(np.diff(csv_stamps) / 1e6)
+            if name not in stamps:
+                continue
+            m = episode == ep
+            row = tr.match_frames(csv_stamps, stamps[name][m])
+            hit = row >= 0
+            frames += int(m.sum())
+            matched += int(hit.sum())
+            frame_values = np.asarray(values)[m].reshape(int(m.sum()), -1)
+            if hit.any() and csv_taxels.shape[1] == frame_values.shape[1]:
+                equal += int(np.isclose(csv_taxels[row[hit]], frame_values[hit], atol=1e-3)
+                             .all(axis=1).sum())
+            if hit.sum() > 1:
+                steps.append(np.diff(row[hit]))
+        entry: dict = {"side": side, "episodes_with_csv": n_eps, "episodes_missing_csv": len(missing)}
+        if missing:
+            entry["missing_examples"] = missing[:10]
+        if dts:
+            entry.update(tr.interval_stats(np.concatenate(dts)))
+        if frames:
+            entry["frames_joined_by_stamp"] = matched / frames
+            entry["taxels_equal_at_joined_row"] = equal / matched if matched else 0.0
+            if steps:
+                entry["rows_per_frame_median"] = float(np.median(np.concatenate(steps)))
+        out[name] = entry
+    return out
 
 
 def load_gains(path: Path, controller: str) -> tuple[float | None, float | None]:
@@ -772,6 +1072,62 @@ def format_report(r: dict) -> str:
     return "\n".join(out)
 
 
+def format_tactile_report(r: dict) -> str:
+    """Render the --tactile-only report."""
+    out = []
+    add = out.append
+    add(f"Dataset: {r['episodes']} episodes, {r['frames']} frames at {r['fps']:g} Hz")
+    add(f"Tactile signal per sensor, in sensor units. Zero = mean of the first "
+        f"{r['baseline_frames']} valid frames of each episode.")
+    if not r["tactile"]:
+        add("  (no tactile column found — pass --tactile-keys)")
+    for name, t in r["tactile"].items():
+        dead = t["dead_taxels"]
+        add(f"\n  {name}: {t['taxels']} taxels, {t['frames']} frames "
+            f"({t['invalid_frames']} with sync_valid false), dead taxels: "
+            f"{dead if dead else 'none'}")
+        if t["raw"]:
+            add(f"    raw level       min {t['raw']['min']:.4g}  median {t['raw']['median']:.4g}  "
+                f"max {t['raw']['max']:.4g}")
+        add(f"    noise           per taxel {t['taxel_noise']:.4g} | norm at rest "
+            f"{t['noise_floor']:.4g} -> contact threshold {t['threshold']:.4g}")
+        add(f"    baseline drift  {t['baseline_drift']:.4g} between episodes (median taxel)")
+        pe = t["contact_fraction_per_episode"]
+        add(f"    in contact      {100 * t['contact_fraction']:.1f}% of frames | per episode "
+            f"min {100 * pe['min']:.0f}% median {100 * pe['median']:.0f}% max {100 * pe['max']:.0f}%"
+            f" | {t['episodes_without_contact']} episode(s) never in contact")
+        add(f"    contact norm    {_fmt_p(t['contact_magnitude'], '')}")
+        add(f"    strongest taxel {_fmt_p(t['peak_taxel_in_contact'], '')}")
+        add(f"    active taxels   {_fmt_p(t['active_taxels_in_contact'], '')}")
+        h = t.get("row_width_hint")
+        if h and not h["confident"]:
+            add("    layout hint     no clear grid structure in the contact frames (too little or "
+                "too uniform contact)")
+        elif h:
+            ranked = sorted(h["correlation_by_width"].items(), key=lambda kv: -kv[1])[:3]
+            add(f"    layout hint     if stored row by row: {h['rows']} rows x {h['width']} "
+                f"(neighbour correlation by width: "
+                + ", ".join(f"{k}: {v:.2f}" for k, v in ranked)
+                + f"; next index {h['correlation_next_index']:.2f}) — confirm by pressing a corner")
+        s = r.get("raw_stream", {}).get(name)
+        if s:
+            add(f"    high-rate CSV   '{s['side']}': {s['episodes_with_csv']} episode(s) found, "
+                f"{s['episodes_missing_csv']} missing")
+            if "dt_ms_median" in s:
+                add(f"                    mean {s['mean_rate_hz']:.0f} Hz | interval median "
+                    f"{s['dt_ms_median']:.2f} ms  p99 {s['dt_ms_p99']:.2f}  max {s['dt_ms_max']:.2f}"
+                    f" | {100 * s['gap_time_fraction']:.0f}% of the time inside gaps (>2x median)")
+            if "frames_joined_by_stamp" in s:
+                add(f"                    frames joined by stamp {100 * s['frames_joined_by_stamp']:.1f}%"
+                    f" | taxels equal at the joined row {100 * s['taxels_equal_at_joined_row']:.1f}%"
+                    f" | rows per frame, median {s.get('rows_per_frame_median', float('nan')):.0f}")
+    if r.get("notes"):
+        add("\nNotes")
+        for note in r["notes"]:
+            add(f"  - {note}")
+    return "\n".join(out)
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -783,8 +1139,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--episodes", type=int, nargs="*", help="only these episode indices")
     p.add_argument("--pose-key", default=POSE_KEY)
     p.add_argument("--target-key", default=TARGET_KEY)
-    p.add_argument("--tactile-keys", nargs="*", default=list(TACTILE_KEYS),
-                   help="tactile columns, any shape (default: left_tactile right_tactile)")
+    p.add_argument("--tactile-keys", nargs="*", default=None,
+                   help="tactile columns, any shape (default: extra.tactile.left/right, "
+                        "else left_tactile/right_tactile, whichever the dataset has)")
+    p.add_argument("--tactile-only", action="store_true",
+                   help="report the tactile signal alone; needs no command, so it also runs on "
+                        "handheld and joint-driven data")
+    p.add_argument("--tactile-raw-dir", type=Path, default=None,
+                   help="directory with the high-rate CSVs episode_<NNNNNN>_<side>.csv "
+                        "(default: <dataset>/tactile_raw when it exists)")
     p.add_argument("--tactile-shape", type=int, nargs="+", default=None,
                    help="expected per-sensor shape, e.g. 8 10 — only CHECKED against the data; "
                         "the script itself adapts to whatever shape is stored")
@@ -821,20 +1184,34 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     args = build_parser().parse_args(argv)
 
-    wanted = {
-        "pose9": (args.pose_key, True),
-        "target9": (args.target_key, True),
-        "joints": (args.joints_key, False),
-        "ext_torque": (args.ext_torque_key, False),
-        "gripper": (args.gripper_key, False),
-        "gripper_target": (args.gripper_target_key, False),
-    }
-    for key in args.tactile_keys:
+    wanted: dict[str, tuple[str, bool]] = {}
+    if not args.tactile_only:
+        wanted = {
+            "pose9": (args.pose_key, True),
+            "target9": (args.target_key, True),
+            "joints": (args.joints_key, False),
+            "ext_torque": (args.ext_torque_key, False),
+            "gripper": (args.gripper_key, False),
+            "gripper_target": (args.gripper_target_key, False),
+        }
+    columns = dataset_columns(args.dataset)
+    keys = default_tactile_keys(columns) if args.tactile_keys is None else args.tactile_keys
+    for key in keys:
         wanted[f"tactile:{key}"] = (key, False)
+        col = resolve_key(columns, key, required=False)
+        for role, suffix in (("valid", SYNC_VALID_SUFFIX), ("stamp", SOURCE_STAMP_SUFFIX)):
+            if col and col + suffix in columns:
+                wanted[f"{role}:{key}"] = (col + suffix, False)
     arrays, resolved, fps, features = load_dataset(args.dataset, wanted, args.episodes)
 
-    tactile = {role.split(":", 1)[1]: arr for role, arr in arrays.items()
-               if role.startswith("tactile:")}
+    def by_role(prefix: str) -> dict[str, np.ndarray]:
+        return {role.split(":", 1)[1]: arr for role, arr in arrays.items()
+                if role.startswith(prefix + ":")}
+
+    tactile, valid, stamps = by_role("tactile"), by_role("valid"), by_role("stamp")
+    raw_dir = args.tactile_raw_dir
+    if raw_dir is None and (args.dataset / RAW_DIR_NAME).is_dir():
+        raw_dir = args.dataset / RAW_DIR_NAME
     if args.tactile_shape:
         want = int(np.prod(args.tactile_shape))
         for name, arr in tactile.items():
@@ -851,6 +1228,32 @@ def main(argv: list[str] | None = None) -> int:
         k_pos = k_pos if k_pos is not None else cfg_pos
         k_rot = k_rot if k_rot is not None else cfg_rot
 
+    if args.tactile_only:
+        episode = arrays["episode"]
+        report = {
+            "frames": int(len(episode)), "episodes": int(len(np.unique(episode))), "fps": fps,
+            "baseline_frames": args.baseline_frames, "columns": resolved, "notes": [],
+            "tactile": tactile_report(
+                episode, tactile, baseline_frames=args.baseline_frames,
+                tactile_threshold=args.tactile_threshold, valid=valid),
+        }
+        if tactile and raw_dir is not None:
+            report["raw_stream"] = raw_stream_report(raw_dir, episode, tactile, stamps)
+        elif tactile:
+            report["notes"].append(
+                f"no high-rate CSVs: {args.dataset / RAW_DIR_NAME} does not exist "
+                "(pass --tactile-raw-dir).")
+        report["notes"].append(
+            "an episode that STARTS in contact hides that contact (its zero is taken there).")
+        print(format_tactile_report(report))
+        if args.out:
+            args.out.write_text(json.dumps(report, indent=2))
+            print(f"\nwrote {args.out}")
+        return 0
+
+    all_valid = None
+    if valid:
+        all_valid = np.all(np.column_stack(list(valid.values())), axis=1)
     report, frames = analyze(
         episode=arrays["episode"], pose9=arrays["pose9"], target9=arrays["target9"], fps=fps,
         tactile=tactile, joints=arrays.get("joints"), ext_torque=arrays.get("ext_torque"),
@@ -858,7 +1261,7 @@ def main(argv: list[str] | None = None) -> int:
         k_pos=k_pos, k_rot=k_rot, baseline_frames=args.baseline_frames,
         contact_from=args.contact_from, tactile_threshold=args.tactile_threshold,
         force_threshold=args.force_threshold, min_sigma=args.min_sigma,
-        ridge_lambda=args.ridge_lambda, folds=args.folds,
+        ridge_lambda=args.ridge_lambda, folds=args.folds, tactile_valid=all_valid,
     )
     report["columns"] = resolved
     report["nominal_gains"] = {"k_pos": k_pos, "k_rot": k_rot}
@@ -874,4 +1277,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except NoCommandError as e:      # an expected outcome, not a crash: no traceback
+        sys.exit(f"audit_command_residual: {e}")

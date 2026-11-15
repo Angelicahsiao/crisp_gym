@@ -334,6 +334,208 @@ def test_frozen_command_is_refused():
         assert "joint-driven" in str(e)
 
 
+def test_handheld_placeholder_command_is_refused_as_handheld():
+    """A handheld recording pads the robot-only columns with zeros. That must be
+    named for what it is, and must not reach the pose math (all-zero rot6d -> NaN)."""
+    import warnings
+
+    mod = _load()
+    kwargs, _ = synth(mod, episodes=2)
+    kwargs["target9"] = np.zeros_like(kwargs["target9"])
+    kwargs["joints"] = np.zeros_like(kwargs["joints"])
+    kwargs["ext_torque"] = np.zeros_like(kwargs["ext_torque"])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        try:
+            mod.analyze(**kwargs)
+            raise AssertionError("placeholder command not refused")
+        except mod.NoCommandError as e:
+            assert "HANDHELD" in str(e) and "all zeros" in str(e) and "--tactile-only" in str(e)
+            assert "joint-driven" not in str(e)
+
+    # constant but valid command + joints that never move: still handheld
+    kwargs, _ = synth(mod, episodes=2)
+    kwargs["target9"][:] = kwargs["target9"][0]
+    kwargs["joints"][:] = kwargs["joints"][0]
+    try:
+        mod.analyze(**kwargs)
+        raise AssertionError("constant command with still joints not refused")
+    except mod.NoCommandError as e:
+        assert "HANDHELD" in str(e) and "joints never move" in str(e)
+
+
+def test_mixed_robot_and_handheld_episodes_are_named():
+    mod = _load()
+    kwargs, _ = synth(mod, episodes=3)
+    kwargs["target9"][kwargs["episode"] == 1] = 0.0
+    try:
+        mod.analyze(**kwargs)
+        raise AssertionError("mixed placeholder episodes not refused")
+    except mod.NoCommandError as e:
+        assert "1 of 3 episodes" in str(e) and "--episodes" in str(e)
+
+
+def test_tactile_report_per_sensor():
+    """Known answers: contact share, a dead taxel, noise, frames flagged invalid."""
+    mod = _load()
+    rng = np.random.default_rng(0)
+    eps, n, taxels = 4, 100, 12
+    episode = np.repeat(np.arange(eps), n)
+    press = np.tile(np.r_[np.zeros(40), np.ones(60)], eps)            # 60% in contact
+    offset = np.repeat(rng.normal(0, 5.0, (eps, taxels)), n, axis=0)  # per-episode zero
+    left = offset + rng.normal(0, 0.02, (eps * n, taxels))
+    left[:, :4] += 3.0 * press[:, None]                               # 4 taxels respond
+    left[:, 11] = 7.0                                                 # dead taxel
+    right = offset + rng.normal(0, 0.02, (eps * n, taxels))           # never touched
+    rep = mod.tactile_report(episode, {"l": left, "r": right})
+    assert rep["l"]["taxels"] == taxels and rep["l"]["dead_taxels"] == [11]
+    assert abs(rep["l"]["contact_fraction"] - 0.6) < 1e-9
+    assert rep["l"]["episodes_without_contact"] == 0
+    assert rep["l"]["active_taxels_in_contact"]["p50"] == 4
+    assert 0.015 < rep["l"]["taxel_noise"] < 0.025
+    assert rep["l"]["baseline_drift"] > 1.0                           # the zero differs per episode
+    assert abs(rep["l"]["peak_taxel_in_contact"]["p50"] - 3.0) < 0.1
+    assert rep["r"]["contact_fraction"] < 0.01 and rep["r"]["episodes_without_contact"] >= 3
+
+    # invalid frames: not counted, and not used for the zero even at the episode start
+    valid = np.ones(eps * n, dtype=bool)
+    valid[:5] = False
+    left2 = left.copy()
+    left2[:5] += 100.0                                                # garbage while invalid
+    rep2 = mod.tactile_report(episode, {"l": left2}, valid={"l": valid})
+    assert rep2["l"]["invalid_frames"] == 5
+    assert abs(rep2["l"]["contact_fraction"] - 240 / 395) < 1e-9
+    mod.format_tactile_report({"episodes": eps, "frames": eps * n, "fps": FPS,
+                               "baseline_frames": 10, "tactile": rep2, "notes": []})
+
+
+def test_row_width_hint_recovers_a_row_major_grid():
+    """Smooth pressure blobs on an 8 x 9 grid stored row by row -> width 9, not 8."""
+    mod = _load()
+    rng = np.random.default_rng(0)
+    for rows, width in ((8, 9), (9, 8), (6, 12)):
+        yy, xx = np.mgrid[:rows, :width]
+        frames = []
+        for _ in range(400):
+            cy, cx = rng.uniform(0, rows - 1), rng.uniform(0, width - 1)
+            blob = np.exp(-((yy - cy) ** 2 + (xx - cx) ** 2) / (2 * 1.2 ** 2))
+            frames.append((rng.uniform(1, 3) * blob).reshape(-1) + rng.normal(0, 0.02, rows * width))
+        hint = mod.row_width_hint(np.asarray(frames))
+        assert (hint["rows"], hint["width"]) == (rows, width) and hint["confident"], hint
+    # taxels that respond with no spatial structure: no confident guess
+    assert not mod.row_width_hint(rng.normal(size=(400, 72)))["confident"]
+    assert mod.row_width_hint(np.zeros((10, 72))) is None      # too few frames: no guess
+
+
+def test_invalid_tactile_frames_are_left_out_of_the_probe():
+    mod = _load()
+    kwargs, _ = synth(mod, episodes=4)
+    n = len(kwargs["episode"])
+    base, _ = mod.analyze(**kwargs)
+    valid = np.ones(n, dtype=bool)
+    valid[60:90] = False
+    kwargs["tactile"]["left_tactile"][60:90] = 1e3                   # garbage where invalid
+    report, _ = mod.analyze(**kwargs, tactile_valid=valid)
+    assert report["system_identification"]["frames_used"] == \
+        base["system_identification"]["frames_used"] - 30
+    assert any("sync_valid" in note for note in report["notes"])
+    r2 = report["residual_probe"]["tactile+velocity"]["all"]["r2_pos"]
+    assert min(r2) > 0.9, r2
+
+
+def _write_handheld_dataset(root, *, taxels=72, episodes=3, n=60, seed=0, stamp_dtype=np.int64):
+    """A dataset laid out like a handheld recording: zero robot columns,
+    extra.tactile.<side> + sync columns, and the ~200 Hz stream in tactile_raw/."""
+    import pandas as pd
+
+    rng = np.random.default_rng(seed)
+    (root / "meta").mkdir()
+    (root / "data" / "chunk-000").mkdir(parents=True)
+    (root / "tactile_raw").mkdir()
+    (root / "meta" / "info.json").write_text(json.dumps({"fps": FPS, "features": {}}))
+    rows = []
+    t0 = 1_794_190_351_560_399_616
+    for ep in range(episodes):
+        m = n * 14
+        per_side = {}
+        for side in ("left", "right"):
+            stamps = t0 + ep * 10**11 + np.cumsum(rng.integers(4_000_000, 6_000_000, m))
+            values = rng.normal(0, 0.02, (m, taxels)).astype(np.float32)
+            values[m // 2:, :6] += 2.0
+            csv = pd.DataFrame({"episode_index": ep, "raw_episode_index": ep,
+                                "source_stamp_ns": stamps, "frame_id": side})
+            for j in range(taxels):
+                csv[f"taxel_{j}"] = values[:, j]
+            csv.to_csv(root / "tactile_raw" / f"episode_{ep:06d}_{side}.csv", index=False)
+            pick = np.arange(n) * 14 + 3
+            per_side[side] = (stamps[pick], values[pick])
+        for i in range(n):
+            row = {"episode_index": ep, "frame_index": i,
+                   "observation.state.cartesian": np.r_[0.4 + 0.001 * i, 0, 0.3, 1, 0, 0, 0, 1, 0]
+                   .astype(np.float32),
+                   "extra.target_cartesian": np.zeros(9, np.float32),
+                   "extra.joints": np.zeros(7, np.float32)}
+            for side, (stamps, values) in per_side.items():
+                k = f"extra.tactile.{side}"
+                row[k] = values[i]
+                row[k + ".source_stamp_ns"] = np.array([stamps[i]]).astype(stamp_dtype)
+                row[k + ".sync_valid"] = np.array([not (ep == 0 and i == 30)])
+                row[k + ".sync_offset_ms"] = np.array([0.0], np.float32)
+            rows.append(row)
+    pd.DataFrame(rows).to_parquet(root / "data" / "chunk-000" / "file-000.parquet")
+    return episodes * n
+
+
+def test_tactile_only_end_to_end_on_a_handheld_dataset():
+    try:
+        import pandas  # noqa: F401
+        import pyarrow  # noqa: F401
+    except ImportError:
+        print("skip: pandas/pyarrow not installed")
+        return
+    mod = _load()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        n = _write_handheld_dataset(root)
+
+        # the full audit names the dataset for what it is ...
+        try:
+            mod.main([str(root)])
+            raise AssertionError("handheld dataset not refused")
+        except mod.NoCommandError as e:
+            assert "HANDHELD" in str(e)
+
+        # ... and --tactile-only runs on it, finding columns, sync flags and CSVs itself
+        out = root / "tactile.json"
+        assert mod.main([str(root), "--tactile-only", "--out", str(out)]) == 0
+        report = json.loads(out.read_text())
+        assert set(report["tactile"]) == {"extra.tactile.left", "extra.tactile.right"}
+        left = report["tactile"]["extra.tactile.left"]
+        assert left["taxels"] == 72 and left["frames"] == n and left["invalid_frames"] == 1
+        assert 0.45 < left["contact_fraction"] < 0.55
+        stream = report["raw_stream"]["extra.tactile.left"]
+        assert stream["episodes_with_csv"] == 3 and stream["episodes_missing_csv"] == 0
+        assert stream["frames_joined_by_stamp"] == 1.0
+        assert stream["taxels_equal_at_joined_row"] == 1.0
+        assert stream["rows_per_frame_median"] == 14
+        assert 190 < stream["mean_rate_hz"] < 210
+
+        # a CSV that was not pulled (DVC pointer only) is reported, not fatal
+        (root / "tactile_raw" / "episode_000001_left.csv").unlink()
+        assert mod.main([str(root), "--tactile-only", "--out", str(out)]) == 0
+        stream = json.loads(out.read_text())["raw_stream"]["extra.tactile.left"]
+        assert stream["episodes_missing_csv"] == 1 and stream["missing_examples"] == [1]
+
+    # stamps that went through float32 cannot be joined, and that is SAID
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _write_handheld_dataset(root, stamp_dtype=np.float32)
+        out = root / "tactile.json"
+        assert mod.main([str(root), "--tactile-only", "--out", str(out)]) == 0
+        stream = json.loads(out.read_text())["raw_stream"]["extra.tactile.left"]
+        assert stream["frames_joined_by_stamp"] == 0.0
+
+
 def test_kinematics_mismatch_skips_sysid_instead_of_lying():
     mod = _load()
     kwargs, _ = synth(mod, episodes=3)
@@ -446,8 +648,9 @@ def test_end_to_end_on_a_parquet_dataset():
                        "--tactile-shape", "8", "10", "--out", str(out), "--dump-npz", str(npz)])
         assert rc == 0
         report = json.loads(out.read_text())
-        assert report["columns"]["tactile:left_tactile"] == "extra.left_tactile"
-        assert report["tactile"]["taxels"] == {"left_tactile": 80, "right_tactile": 80}
+        # no --tactile-keys: the columns the dataset has are found and named in full
+        assert report["columns"]["tactile:extra.left_tactile"] == "extra.left_tactile"
+        assert report["tactile"]["taxels"] == {"extra.left_tactile": 80, "extra.right_tactile": 80}
         k = report["system_identification"]["translation"]["z"]["stiffness"]
         assert abs(k - K_POS) / K_POS < 0.03, k          # float32 storage
         assert np.load(npz)["res_pos"].shape == (n, 3)
