@@ -77,6 +77,7 @@ from crisp_gym.policy.policy import Action, Observation, Policy, register_policy
 
 if TYPE_CHECKING:
     from crisp_gym.envs.manipulator_env import ManipulatorBaseEnv
+    from crisp_gym.policy.remote_worker import RemoteWorkerConnection
 
 logger = logging.getLogger(__name__)
 
@@ -357,11 +358,117 @@ def build_obs_frame(
     return frame
 
 
+# ── where the model runs: the `server` setting ────────────────────────────────
+
+_SERVER_KEYS = ("uri", "host", "port", "scheme", "connect_timeout_s",
+                "infer_timeout_s", "reconnect_attempts")
+
+
+def parse_server_setting(server: str | dict | None) -> dict | None:
+    """The policy config's `server` value -> connection settings, or None for local.
+
+    Accepts None / "" (local worker), a websocket address
+    ("ws://192.168.1.50:8765", or "192.168.1.50:8765"), or a mapping with
+    `uri`, or `host` (+ `port`, default 8765), and optionally
+    `connect_timeout_s`, `infer_timeout_s`, `reconnect_attempts`.
+
+    Raises:
+        ValueError: an unknown key (a typo must not silently mean "defaults"),
+            or a mapping that names no server.
+    """
+    if server is None or server == "" or server is False:
+        return None
+    if isinstance(server, str):
+        server = {"uri": server}
+    if not isinstance(server, dict):
+        raise ValueError(
+            f"server must be a websocket address or a mapping, got {type(server).__name__}"
+        )
+    unknown = sorted(set(server) - set(_SERVER_KEYS))
+    if unknown:
+        raise ValueError(
+            f"unknown key(s) in server: {unknown}. Known: {list(_SERVER_KEYS)}"
+        )
+    uri = server.get("uri")
+    if not uri:
+        host = server.get("host")
+        if not host:
+            raise ValueError("server: give `uri`, or `host` (and `port`)")
+        uri = f"{server.get('scheme', 'ws')}://{host}:{int(server.get('port', 8765))}"
+    elif "://" not in uri:
+        uri = f"ws://{uri}"
+    return {
+        "uri": uri,
+        "connect_timeout": float(server.get("connect_timeout_s", 10.0)),
+        "infer_timeout": float(server.get("infer_timeout_s", 5.0)),
+        "reconnect_attempts": int(server.get("reconnect_attempts", 3)),
+    }
+
+
+def connect_remote_worker(remote: dict, *, pretrained_path: str, state_input: str,
+                          overrides: dict | None, num_inference_steps: int | None,
+                          scheduler: str | None) -> "RemoteWorkerConnection":
+    """Connect to a policy server and return its WorkerConnection.
+
+    The server holds the checkpoint, so the settings that shape the MODEL are
+    its own (`policy_server.py --state-input / --num-inference-steps /
+    --scheduler / --set`). A value given on this side is not applied; it is
+    checked where the server reports the fact, and reported loudly where it
+    does not — never dropped in silence.
+
+    Raises:
+        ValueError: `state_input` was set explicitly and the server runs the
+            checkpoint in another mode.
+    """
+    from crisp_gym.policy.remote_worker import RemoteWorkerConnection
+
+    conn = RemoteWorkerConnection(
+        remote["uri"],
+        connect_timeout=remote["connect_timeout"],
+        infer_timeout=remote["infer_timeout"],
+        reconnect_attempts=remote["reconnect_attempts"],
+    )
+    served = (conn.client.server_meta.get("meta") or {}).get("state_input")
+    if state_input != "auto" and served != state_input:
+        conn.close()
+        raise ValueError(
+            f"state_input={state_input!r} here, but the policy server at "
+            f"{remote['uri']} runs the checkpoint as {served!r}. The server "
+            "owns that conversion: restart it with --state-input "
+            f"{state_input}, or set state_input: auto here."
+        )
+    logger.info(
+        "Model runs on the policy server %s, serving %s. The local path %r is "
+        "not used (infer timeout %.1f s).",
+        remote["uri"], conn.model_id, pretrained_path, remote["infer_timeout"],
+    )
+    not_applied = {
+        name: value
+        for name, value in (("num_inference_steps", num_inference_steps),
+                            ("scheduler", scheduler), ("overrides", overrides))
+        if value
+    }
+    if not_applied:
+        logger.warning(
+            "NOT APPLIED, because the model runs on the policy server: %s. Set "
+            "them where the server is started (policy_server.py "
+            "--num-inference-steps / --scheduler / --set KEY=VALUE).",
+            not_applied,
+        )
+    return conn
+
+
 # ── the policy ────────────────────────────────────────────────────────────────
 
 @register_policy("relative_lerobot_policy")
 class RelativeLerobotPolicy(Policy):
-    """In-process inference for a checkpoint trained via lerobot_relative_pose.py.
+    """Deploys a lerobot checkpoint trained via lerobot_relative_pose.py.
+
+    This class is the robot-side half: observation history, gripper units,
+    state / image checks, command composition, prefetch. The model lives in an
+    inference worker reached through a WorkerConnection (worker_connection.py)
+    — a subprocess on this machine by default, or a policy server on another
+    machine when `server` is set.
 
     Args:
         env: Manipulator env (rotation_6d obs, use_relative_actions=false).
@@ -401,6 +508,19 @@ class RelativeLerobotPolicy(Policy):
             known to declare slots that were blank during training — every
             padded key is logged once at startup.
         overrides: Optional lerobot policy-config overrides (as LerobotPolicy).
+        server: Where the model runs. None (default): in a subprocess on this
+            machine, which then needs torch, lerobot and the checkpoint. A
+            websocket address ("ws://192.168.1.50:8765") or a mapping
+            {host, port, infer_timeout_s, connect_timeout_s,
+            reconnect_attempts}: on a GPU machine running
+            scripts/policy_server.py — this machine then needs neither torch
+            nor lerobot nor the checkpoint, and `pretrained_path` is only a
+            label. The server owns the checkpoint, so `state_input`,
+            `num_inference_steps`, `scheduler` and `overrides` are set THERE
+            (its command line); given here they are checked or reported, never
+            silently dropped. Everything else in this class — history, gripper
+            units, checks, command composition, prefetch — is the same code in
+            both modes. See REMOTE_INFERENCE.md.
     """
 
     # Zero-fill targets for declared image inputs the robot cannot produce.
@@ -433,6 +553,7 @@ class RelativeLerobotPolicy(Policy):
         prefetch_lead: int | None = None,
         pad_missing_images: bool = False,
         overrides: dict | None = None,
+        server: str | dict | None = None,
     ):
         if compose_mode not in ("coupled", "decoupled"):
             raise ValueError(
@@ -473,14 +594,46 @@ class RelativeLerobotPolicy(Policy):
         self.compose_mode = compose_mode
         self.invert_gripper = bool(invert_gripper)
 
+        # log_actions = how many steps to log PER CHUNK (reset every new
+        # inference), so later chunks are logged too — not just the first.
+        self._log_actions = int(log_actions) > 0
+        self._log_actions_n = int(log_actions)
+        self._action_log_left = int(log_actions)
+        self._requested_n_action_steps = n_action_steps
+
+        # Where the model runs is decided in ONE place, _start_worker. From
+        # here on this class only sees a WorkerConnection (worker_connection.py)
+        # and behaves the same whether the worker is a local subprocess or sits
+        # behind a policy server on another machine.
+        self.parent_conn, self.inf_proc = self._start_worker(
+            server=server,
+            pretrained_path=pretrained_path,
+            state_input=state_input,
+            overrides=overrides,
+            num_inference_steps=num_inference_steps,
+            scheduler=scheduler,
+        )
+
+        meta = self.parent_conn.recv()
+        if isinstance(meta, tuple) and meta[0] == "error":
+            raise RuntimeError(f"Inference worker failed to load: {meta[1]}")
+        self.meta = meta
+
         # ACTION representation: does the checkpoint output an ABSOLUTE pose
         # (train_absolute_next_pose.py / train_action_from_target_cartesian.py)
         # or a RELATIVE one (lerobot_relative_pose.py)? Relative composes
         # T_cmd = T_base @ T_rel; absolute sends the pose straight through. Auto
         # reads action_repr.json (absolute marker) next to the checkpoint and
         # falls back to relative, preserving every existing deployment.
+        # Resolved AFTER the worker's metadata is in, because a remote worker
+        # reports it there (the stamp file is on the server's disk, not here).
         if action_repr == "auto":
-            ar = find_action_repr(pretrained_path)
+            served = meta.get("action_pose_repr")
+            ar = (
+                {"action": {"pose_repr": served, "source": "policy server handshake"}}
+                if served
+                else find_action_repr(pretrained_path)
+            )
             if ar and ar.get("action", {}).get("pose_repr") == "absolute":
                 self.action_repr = "absolute"
                 logger.info(
@@ -498,48 +651,6 @@ class RelativeLerobotPolicy(Policy):
         else:
             self.action_repr = action_repr
             logger.info("action_repr=%s (explicit).", self.action_repr)
-        # log_actions = how many steps to log PER CHUNK (reset every new
-        # inference), so later chunks are logged too — not just the first.
-        self._log_actions = int(log_actions) > 0
-        self._log_actions_n = int(log_actions)
-        self._action_log_left = int(log_actions)
-        self._requested_n_action_steps = n_action_steps
-
-        # num_inference_steps / scheduler are applied worker-side on the loaded
-        # DIFFUSION model (its step count + scheduler are cached at load time,
-        # so a policy.config setattr alone does NOT take effect) — passed
-        # explicitly, separate from the generic policy-config overrides.
-        #
-        # SPAWN, not fork: the worker initializes CUDA (loads the model on the
-        # GPU). Linux defaults multiprocessing to 'fork', but CUDA cannot be
-        # re-initialized in a forked child once the parent has touched CUDA
-        # ("Cannot re-initialize CUDA in forked subprocess") — deploy_policy runs
-        # in the ROS process, which does. A spawn context starts a fresh
-        # interpreter that initializes CUDA cleanly. inference_worker is a
-        # module-level function and every kwarg is picklable, so spawn works;
-        # deploy_policy.py has the required `if __name__ == "__main__"` guard.
-        import multiprocessing as mp
-
-        ctx = mp.get_context("spawn")
-        self.parent_conn, child_conn = ctx.Pipe()
-        self.inf_proc = ctx.Process(
-            target=inference_worker,
-            kwargs={
-                "conn": child_conn,
-                "pretrained_path": pretrained_path,
-                "state_input": state_input,
-                "overrides": dict(overrides or {}),
-                "num_inference_steps": num_inference_steps,
-                "scheduler": scheduler,
-            },
-            daemon=True,
-        )
-        self.inf_proc.start()
-
-        meta = self.parent_conn.recv()
-        if isinstance(meta, tuple) and meta[0] == "error":
-            raise RuntimeError(f"Inference worker failed to load: {meta[1]}")
-        self.meta = meta
 
         # Which declared image inputs get zero-filled. Empty unless the caller
         # opted in, so the default path keeps raising on a missing camera.
@@ -623,6 +734,68 @@ class RelativeLerobotPolicy(Policy):
         self._last_infer_ms: float = 0.0
         self._rate_log_every = 15                     # log the rate every N ticks
         self._tick_count = 0
+
+    # ── where the model runs ──────────────────────────────────────────────────
+
+    def _start_worker(self, *, server, pretrained_path: str, state_input: str,  # noqa: ANN001
+                      overrides: dict | None, num_inference_steps: int | None,
+                      scheduler: str | None) -> tuple:
+        """Start the inference worker, or reach one that is already running.
+
+        THE one place that decides where the model runs. Everything else in
+        this class talks to the returned connection and cannot tell the
+        difference.
+
+        Returns:
+            (connection, process): a WorkerConnection (worker_connection.py),
+            and the local subprocess to join at shutdown — None when the
+            worker is on a policy server, which keeps running after we leave.
+        """
+        remote = parse_server_setting(server)
+        if remote is not None:
+            return (
+                connect_remote_worker(
+                    remote,
+                    pretrained_path=pretrained_path,
+                    state_input=state_input,
+                    overrides=overrides,
+                    num_inference_steps=num_inference_steps,
+                    scheduler=scheduler,
+                ),
+                None,
+            )
+
+        # num_inference_steps / scheduler are applied worker-side on the loaded
+        # DIFFUSION model (its step count + scheduler are cached at load time,
+        # so a policy.config setattr alone does NOT take effect) — passed
+        # explicitly, separate from the generic policy-config overrides.
+        #
+        # SPAWN, not fork: the worker initializes CUDA (loads the model on the
+        # GPU). Linux defaults multiprocessing to 'fork', but CUDA cannot be
+        # re-initialized in a forked child once the parent has touched CUDA
+        # ("Cannot re-initialize CUDA in forked subprocess") — deploy_policy runs
+        # in the ROS process, which does. A spawn context starts a fresh
+        # interpreter that initializes CUDA cleanly. inference_worker is a
+        # module-level function and every kwarg is picklable, so spawn works;
+        # deploy_policy.py has the required `if __name__ == "__main__"` guard.
+        import multiprocessing as mp
+
+        ctx = mp.get_context("spawn")
+        parent_conn, child_conn = ctx.Pipe()
+        inf_proc = ctx.Process(
+            target=inference_worker,
+            kwargs={
+                "conn": child_conn,
+                "pretrained_path": pretrained_path,
+                "state_input": state_input,
+                "overrides": dict(overrides or {}),
+                "num_inference_steps": num_inference_steps,
+                "scheduler": scheduler,
+            },
+            daemon=True,
+        )
+        inf_proc.start()
+        return parent_conn, inf_proc
 
     # ── client-side geometry ──────────────────────────────────────────────────
 
@@ -1107,12 +1280,20 @@ class RelativeLerobotPolicy(Policy):
         self.parent_conn.send(("reset", None))
 
     def shutdown(self):
-        """Stop the inference worker."""
+        """Stop the inference worker (local) or say goodbye to the server (remote)."""
         try:
             self.parent_conn.send(None)
         except Exception:
             pass
-        self.inf_proc.join(timeout=10.0)
+        if self.inf_proc is not None:
+            self.inf_proc.join(timeout=10.0)
+        else:
+            # Remote: the server and its model keep running. Wait for the
+            # goodbye to go out so the server is free for the next process.
+            try:
+                self.parent_conn.close()
+            except Exception:
+                pass
 
 
 # ── worker (subprocess: torch + lerobot live only here) ───────────────────────

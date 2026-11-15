@@ -78,10 +78,10 @@ class WorkerDied(RuntimeError):
 class Worker:
     """The inference worker and the pipe to it.
 
-    Speaks exactly what RelativeLerobotPolicy speaks to its local worker:
-    the worker sends its `meta` once it has loaded, then `("infer", window)`
-    is answered with a chunk or `("error", message)`, `("reset", None)` has no
-    reply, and `None` stops it.
+    Speaks the worker's message vocabulary, defined once in
+    crisp_gym/policy/worker_connection.py: the worker sends its `meta` once it
+    has loaded, then `("infer", window)` is answered with a chunk or
+    `("error", message)`, `("reset", None)` has no reply, and `None` stops it.
 
     Args:
         target: the worker function, called as ``target(conn=..., **kwargs)``.

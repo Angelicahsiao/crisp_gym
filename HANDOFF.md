@@ -368,10 +368,15 @@ a from-scratch policy has no priors to unlearn.
    logic into the server. `crisp_gym/policy/remote_worker.py`
    (`RemoteWorkerConnection`) is the pipe-compatible network transport;
    `crisp_gym.policy` imports without ROS, torch or lerobot so the GPU machine
-   needs only a clone. OPEN (owner's decision): which robot-side class uses
-   the transport — finish `RemotePolicy` or point `RelativeLerobotPolicy` at
-   it. See REMOTE_INFERENCE.md §4 and §4.5; tests in
-   `tests/test_policy_server.py`.
+   needs only a clone. DECIDED (owner, 2026-11): the robot side is
+   `RelativeLerobotPolicy` with `server:` set — one robot-side implementation
+   for local and remote. `_start_worker` is the ONLY place that knows where
+   the model runs; the rest of the class sees a `WorkerConnection`
+   (`crisp_gym/policy/worker_connection.py`, the interface and message
+   vocabulary). Do not add `if remote` elsewhere in the class, and do not
+   grow `RemotePolicy` toward lerobot deployment: it stays the minimal client
+   for servers that are not `policy_server.py`. See REMOTE_INFERENCE.md §4
+   and §4.5; tests in `tests/test_policy_server.py`.
 2. **(IMPLEMENTED) `pose_repr.json` stamping**: `lerobot_relative_pose.py`
    writes it into the training output dir (pose layout, relative convention,
    rot6d convention, fps, window sizes, and per-key `observation.state`

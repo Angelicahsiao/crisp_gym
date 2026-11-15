@@ -518,6 +518,9 @@ def test_the_first_recv_is_the_worker_metadata(tmp_path):
         assert meta["n_obs_steps"] == 2 and meta["n_action_steps"] == 8
         assert meta["state_input"] == "relative_wrt_start" and meta["state_dim"] == 16
         assert meta["image_keys"] == [CAM]
+        # ... plus the one fact a local deployment reads from disk
+        assert meta["action_pose_repr"] == "relative"
+        assert conn.model_id.endswith("pretrained_model")
         assert conn.poll(0) is False
         conn.send(None)
 
@@ -737,46 +740,18 @@ class _Env:
         self._sync()
 
 
-def _policy_on(env, conn, *, async_inference: bool):
-    """RelativeLerobotPolicy as its constructor leaves it, minus the part that
-    starts a local worker: `conn` is whatever stands where the pipe would."""
-    pol = object.__new__(rlp.RelativeLerobotPolicy)
-    pol.env = env
-    pol.reference_width = pol.device_max_width = 0.085
-    pol.target_to_euler = False
-    pol.compose_mode = "coupled"
-    pol.action_repr = "relative"
-    pol.invert_gripper = False
-    pol._log_actions = False
-    pol._log_actions_n = 0
-    pol._action_log_left = 0
-    pol.meta = conn.recv()                       # exactly what __init__ does
-    pol.n_obs_steps = int(pol.meta["n_obs_steps"])
-    pol.n_action_steps = int(pol.meta["n_action_steps"])
-    pol._history = deque(maxlen=pol.n_obs_steps)
-    pol._state_dim_checked = False
-    pol._chunk = None
-    pol._chunk_idx = 0
-    pol._chunk_base = None
-    pol._async = async_inference
-    pol._prefetch_lead = 3
-    pol._pending = False
-    pol._pending_base = None
-    pol._pending_t0 = None
-    pol._pending_offset = 0
-    pol._next_chunk = None
-    pol._tick_times = deque(maxlen=30)
-    pol._last_infer_ms = 0.0
-    pol._rate_log_every = 15
-    pol._tick_count = 0
-    pol.parent_conn = conn
-    return pol
-
-
 GT_META = {"n_obs_steps": 2, "n_action_steps": 8, "state_input": "relative",
            "state_dim": 10, "image_keys": ["observation.images.primary"],
            "policy_type": "diffusion", "rename_map": {},
            "image_shapes": {"observation.images.primary": (3, 4, 4)}}
+
+
+def _deploy(env, server, **kwargs):
+    """The policy exactly as deploy_policy builds it: through its constructor,
+    with `server` set. `pretrained_path` is only a label on this side."""
+    return rlp.RelativeLerobotPolicy(
+        env=env, pretrained_path="remote", device_max_width=0.085,
+        reference_width=0.085, server=server.uri, **kwargs)
 
 
 @pytest.mark.parametrize(("async_inference", "delay"), [
@@ -784,14 +759,16 @@ GT_META = {"n_obs_steps": 2, "n_action_steps": 8, "state_input": "relative",
     (True, 0.0),       # prefetch, the answer is back before the swap
     (True, 0.05),      # prefetch, the answer is late: the loop stalls, then swaps
 ])
-def test_the_real_policy_loop_commands_ground_truth_over_the_network(
+def test_the_real_policy_commands_ground_truth_over_the_network(
         tmp_path, async_inference, delay):
     GT = _random_traj(60, seed=41)
     with serving(tmp_path, meta=GT_META, target=ground_truth_worker,
                  extra={"GT": GT, "delay": delay}) as server:
         env = _Env(GT)
-        conn = RemoteWorkerConnection(server.uri)
-        pol = _policy_on(env, conn, async_inference=async_inference)
+        pol = _deploy(env, server, async_inference=async_inference, prefetch_lead=3)
+        assert pol.inf_proc is None                 # nothing local to stop
+        assert isinstance(pol.parent_conn, RemoteWorkerConnection)
+        assert pol.n_obs_steps == 2 and pol.n_action_steps == 8
         fn = pol.make_data_fn()
         for _ in range(28):                      # three and a half chunks
             _, action = fn()
@@ -817,4 +794,164 @@ def test_the_real_policy_loop_commands_ground_truth_over_the_network(
         pol.reset()
         assert wait_for(lambda: ("reset", None) in server.seen[before:])
         assert pol._chunk is None and len(pol._history) == 0
-        conn.send(None)                          # what shutdown() sends
+
+        # shutdown says goodbye; the server and its model stay up for the next process
+        pol.shutdown()
+        assert wait_for(lambda: not server._busy.locked())
+        again = _deploy(_Env(GT), server)
+        assert again.make_data_fn()()[1] is not None
+        again.shutdown()
+
+
+# ── 6. the seam: one place decides where the model runs ──────────────────────
+
+def test_both_kinds_of_connection_satisfy_the_one_interface(tmp_path):
+    import multiprocessing as mp
+
+    from crisp_gym.policy.worker_connection import WorkerConnection, is_error
+
+    ours, theirs = mp.get_context("spawn").Pipe()
+    assert isinstance(ours, WorkerConnection)
+    ours.close()
+    theirs.close()
+    with serving(tmp_path) as server:
+        conn = RemoteWorkerConnection(server.uri)
+        assert isinstance(conn, WorkerConnection)
+        conn.close()
+    assert is_error(("error", "boom")) and not is_error(np.zeros((8, 10)))
+    assert not is_error({"n_obs_steps": 2})
+
+
+@pytest.mark.parametrize(("setting", "uri"), [
+    ("ws://192.168.1.50:8765", "ws://192.168.1.50:8765"),
+    ("192.168.1.50:8765", "ws://192.168.1.50:8765"),
+    ({"host": "gpu", "port": 9000}, "ws://gpu:9000"),
+    ({"host": "gpu"}, "ws://gpu:8765"),
+    ({"uri": "wss://gpu:1"}, "wss://gpu:1"),
+])
+def test_the_server_setting_names_a_server(setting, uri):
+    parsed = rlp.parse_server_setting(setting)
+    assert parsed["uri"] == uri
+    assert parsed["infer_timeout"] == 5.0 and parsed["connect_timeout"] == 10.0
+
+
+def test_no_server_setting_means_a_local_worker():
+    assert rlp.parse_server_setting(None) is None
+    assert rlp.parse_server_setting("") is None
+
+
+def test_the_server_setting_carries_its_timeouts():
+    parsed = rlp.parse_server_setting(
+        {"host": "gpu", "infer_timeout_s": 2, "connect_timeout_s": 3, "reconnect_attempts": 7})
+    assert (parsed["infer_timeout"], parsed["connect_timeout"],
+            parsed["reconnect_attempts"]) == (2.0, 3.0, 7)
+
+
+def test_a_misspelt_server_key_is_refused_not_ignored():
+    with pytest.raises(ValueError, match="infer_timeout"):
+        rlp.parse_server_setting({"host": "gpu", "infer_timeout": 2})   # missing _s
+    with pytest.raises(ValueError, match="uri.*host"):
+        rlp.parse_server_setting({"port": 8765})
+    with pytest.raises(ValueError, match="address or a mapping"):
+        rlp.parse_server_setting(8765)
+
+
+@pytest.mark.parametrize(("absolute", "expected"), [(False, "relative"), (True, "absolute")])
+def test_remote_action_repr_auto_comes_from_the_servers_stamp(tmp_path, absolute, expected):
+    """Locally `auto` reads action_repr.json next to the checkpoint. That file
+    is on the GPU machine now; the server has read it and says so."""
+    GT = _random_traj(20, seed=3)
+    with serving(tmp_path, meta=GT_META, target=ground_truth_worker,
+                 extra={"GT": GT}, absolute=absolute) as server:
+        pol = _deploy(_Env(GT), server)
+        assert pol.meta["action_pose_repr"] == expected
+        assert pol.action_repr == expected
+        pol.shutdown()
+        # an explicit setting still wins, as it does locally
+        assert wait_for(lambda: not server._busy.locked())
+        forced = _deploy(_Env(GT), server, action_repr="relative")
+        assert forced.action_repr == "relative"
+        forced.shutdown()
+
+
+def test_a_state_input_the_server_does_not_run_refuses_to_start(tmp_path):
+    GT = _random_traj(20, seed=3)
+    with serving(tmp_path, meta=GT_META, target=ground_truth_worker, extra={"GT": GT}) as server:
+        with pytest.raises(ValueError, match=r"state_input='absolute'.*runs the checkpoint as 'relative'"):
+            _deploy(_Env(GT), server, state_input="absolute")
+        # the refused attempt did not leave the server occupied
+        assert wait_for(lambda: not server._busy.locked())
+        agreeing = _deploy(_Env(GT), server, state_input="relative")
+        agreeing.shutdown()
+
+
+def test_model_settings_given_on_the_robot_side_are_reported_as_not_applied(tmp_path, caplog):
+    GT = _random_traj(20, seed=3)
+    with serving(tmp_path, meta=GT_META, target=ground_truth_worker, extra={"GT": GT}) as server:
+        with caplog.at_level(logging.WARNING):
+            pol = _deploy(_Env(GT), server, num_inference_steps=10, scheduler="ddim")
+        message = " ".join(r.getMessage() for r in caplog.records)
+        assert "NOT APPLIED" in message
+        assert "num_inference_steps" in message and "scheduler" in message
+        pol.shutdown()
+        caplog.clear()
+        assert wait_for(lambda: not server._busy.locked())
+        with caplog.at_level(logging.WARNING):
+            quiet = _deploy(_Env(GT), server)
+        assert not any("NOT APPLIED" in r.getMessage() for r in caplog.records)
+        quiet.shutdown()
+
+
+def test_an_unreachable_server_fails_at_construction_not_in_the_control_loop():
+    GT = _random_traj(20, seed=3)
+    with pytest.raises(Exception, match="."):  # noqa: B017, PT011 — refused, by platform
+        rlp.RelativeLerobotPolicy(
+            env=_Env(GT), pretrained_path="remote", device_max_width=0.085,
+            server={"uri": "ws://127.0.0.1:9", "connect_timeout_s": 1.0, "reconnect_attempts": 1})
+
+
+def local_stand_in(conn, pretrained_path, state_input, overrides, num_inference_steps, scheduler):
+    """Stands where inference_worker stands in a LOCAL deployment (module-level,
+    so the spawned process can import it). Reports the arguments it was started
+    with, then answers like the stand-in above."""
+    conn.send({**GT_META, "started_with": {
+        "pretrained_path": pretrained_path, "state_input": state_input,
+        "overrides": overrides, "num_inference_steps": num_inference_steps,
+        "scheduler": scheduler}})
+    while True:
+        try:
+            message = conn.recv()
+        except (EOFError, OSError):
+            return
+        if message is None:
+            return
+        if message[0] == "infer":
+            conn.send(chunk_for(message[1], GT_META["n_action_steps"]))
+
+
+def test_without_a_server_the_constructor_starts_a_local_worker_as_before(tmp_path, monkeypatch):
+    """The default path, through the real constructor: a spawned process on a
+    multiprocessing pipe, started with the same arguments as ever, the action
+    representation read from the stamp on disk, and joined at shutdown."""
+    from crisp_gym.policy.worker_connection import WorkerConnection
+
+    monkeypatch.setattr(rlp, "inference_worker", local_stand_in)
+    ckpt = make_checkpoint(tmp_path, absolute=True)
+    GT = _random_traj(20, seed=3)
+    pol = rlp.RelativeLerobotPolicy(
+        env=_Env(GT), pretrained_path=str(ckpt), device_max_width=0.085,
+        num_inference_steps=10, scheduler="ddim", overrides={"a": 1})
+    try:
+        assert pol.inf_proc is not None and pol.inf_proc.is_alive()
+        assert pol.inf_proc.daemon
+        assert isinstance(pol.parent_conn, WorkerConnection)
+        assert not isinstance(pol.parent_conn, RemoteWorkerConnection)
+        assert pol.meta["started_with"] == {
+            "pretrained_path": str(ckpt), "state_input": "auto", "overrides": {"a": 1},
+            "num_inference_steps": 10, "scheduler": "ddim"}
+        assert pol.action_repr == "absolute"         # action_repr.json, from disk
+        _, action = pol.make_data_fn()()
+        assert action is not None and action.shape == (10,)
+    finally:
+        pol.shutdown()
+    assert not pol.inf_proc.is_alive()

@@ -1,7 +1,8 @@
-"""A network stand-in for the pipe to the inference worker.
+"""The remote `WorkerConnection`: an inference worker on another machine.
 
-`RelativeLerobotPolicy` keeps the model in a worker and talks to it over a
-multiprocessing pipe with four calls:
+`RelativeLerobotPolicy` talks to its inference worker through a
+`WorkerConnection` (worker_connection.py — the interface and the message
+vocabulary are defined there, once):
 
     recv()                      -> the worker's metadata (once, after loading)
     send(("infer", window))     -> later recv() gives a chunk, or ("error", msg)
@@ -9,8 +10,9 @@ multiprocessing pipe with four calls:
     send(None)                  -> stop
     poll(timeout)               -> is a reply waiting?  (used by the prefetch)
 
-`RemoteWorkerConnection` answers the same four calls, but the worker runs
-behind `scripts/policy_server.py` on another machine. The window that goes into
+Locally that is a multiprocessing pipe. `RemoteWorkerConnection` answers the
+same calls, but the worker runs behind `scripts/policy_server.py` on another
+machine. The window that goes into
 `send` is the window the worker receives; the chunk it produces is the chunk
 `recv` returns. Nothing about the observation, the relative conversion or the
 command composition lives here — this is transport only, so a policy that
@@ -76,7 +78,17 @@ class RemoteWorkerConnection:
                 f"{uri} did not send inference-worker metadata in its handshake. "
                 "RemoteWorkerConnection needs scripts/policy_server.py on the other end."
             )
-        self._replies: collections.deque = collections.deque([dict(meta)])
+        meta = dict(meta)
+        # One fact the robot side needs that only the machine holding the
+        # checkpoint can read: whether the model outputs an absolute or a
+        # relative pose. A local deployment reads action_repr.json from disk;
+        # here the server has read it and says so in its handshake.
+        pose_repr = (self.client.server_meta.get("action") or {}).get("pose_repr")
+        if pose_repr in ("absolute", "relative"):
+            meta.setdefault("action_pose_repr", pose_repr)
+        #: The checkpoint the server says it is serving (its path over there).
+        self.model_id = self.client.server_meta.get("model_id")
+        self._replies: collections.deque = collections.deque([meta])
         self._requests: collections.deque = collections.deque()
         self._cond = threading.Condition()
         self._closed = False

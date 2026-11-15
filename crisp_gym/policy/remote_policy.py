@@ -10,6 +10,22 @@ REMOTE_INFERENCE.md for the contract. Every frame carries (v, t, id) and
 the client keeps exactly one outstanding id, so a late reply after a
 timeout is discarded instead of being composed against the wrong base
 pose. v0 (untagged {"type": ...} frames) is not accepted.
+
+TWO THINGS LIVE HERE, AND ONLY ONE IS THE PATH FOR LEROBOT CHECKPOINTS
+
+`WebsocketPolicyClient` is the protocol client. Everything remote uses it.
+
+`RemotePolicy` is a minimal policy on top of it, for a server that is NOT
+`scripts/policy_server.py` — one that takes a single observation frame and
+keeps its own history (an openpi-style server, say), described by a contract
+YAML. It sends the current frame only, converts no gripper units, runs no
+state / image checks and blocks the control loop while it waits.
+
+To deploy a lerobot checkpoint from a GPU machine, do NOT extend RemotePolicy
+toward those features: use `relative_lerobot_policy` with `server:` set. That
+is the same robot-side code as local deployment (history window, gripper
+units, checks, prefetch), reaching the model through `RemoteWorkerConnection`
+(remote_worker.py) instead of a local pipe. See REMOTE_INFERENCE.md §4.5.
 """
 
 from __future__ import annotations
@@ -265,7 +281,12 @@ class WebsocketPolicyClient:
 
 @register_policy("remote_policy")
 class RemotePolicy(Policy):
-    """Policy that delegates inference to a websocket policy server.
+    """Minimal policy for a websocket server that is not `policy_server.py`.
+
+    For lerobot checkpoints served by `scripts/policy_server.py`, use
+    `relative_lerobot_policy` with `server:` instead (see the module
+    docstring): this class sends one frame per request and has no gripper
+    unit conversion, no input checks and no prefetch.
 
     No torch/lerobot imports — safe to run in any ROS2-pinned Python.
 

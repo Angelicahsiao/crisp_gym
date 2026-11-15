@@ -17,9 +17,8 @@ runs on any Python with torch + lerobot.
 **Both halves exist.** The server is `scripts/policy_server.py` (§4): it puts
 this protocol in front of the same `inference_worker` that `deploy_policy.py`
 runs in a local subprocess, unmodified, so a checkpoint that deploys
-in-process is served with the same numbers. The robot side has the protocol
-client and a pipe-compatible transport; which policy class uses them is
-described in §4.5.
+in-process is served with the same numbers. On the robot side the same policy
+class as local deployment is used, with `server:` set (§4.5).
 
 The client half lives in crisp_gym (`crisp_gym/policy/remote_policy.py`) and
 speaks **protocol v1**, defined below. The wire format itself is a single
@@ -277,37 +276,68 @@ websocket pings, up to ~40 s, and refuses a new client until then.
 
 ### 4.5 The robot side
 
-Two pieces exist, both free of torch, lerobot and ROS:
+A lerobot checkpoint is deployed remotely with the SAME policy class as
+locally — `relative_lerobot_policy` — plus one setting in its YAML
+(`crisp_gym/config/policy/relative_lerobot_policy.yaml`):
 
-- `WebsocketPolicyClient` (`crisp_gym/policy/remote_policy.py`) — the protocol
-  client of §2 and §5.
-- `RemoteWorkerConnection` (`crisp_gym/policy/remote_worker.py`) — the same
-  client behind the four calls of the multiprocessing pipe that
-  `RelativeLerobotPolicy` uses to talk to its local worker (`send`, `recv`,
-  `poll`, and `send(None)` to stop). A timeout or a dropped socket becomes the
-  pipe's `("error", message)` reply, on which that policy already holds pose.
-  `tests/test_policy_server.py` runs the unmodified `RelativeLerobotPolicy`
-  control loop on it — synchronous, with prefetch, and with a late answer —
-  and every commanded pose matches ground truth.
+```yaml
+server: "ws://192.168.1.50:8765"     # null (default) = a subprocess on this machine
+```
 
-**What is not wired yet** is which policy class a deploy config selects to use
-them:
+```bash
+# robot machine: pip install websockets msgpack      (no torch, no lerobot, no checkpoint)
+python -m crisp_gym.scripts.deploy_policy \
+    --env-config YOUR_DEPLOY_ENV --policy-config relative_lerobot_policy --path remote
+```
 
-- `RemotePolicy` (`name: remote_policy`) connects and runs, but still sends
-  only the current frame (not the window), does no gripper unit conversion,
-  has no state/image checks and blocks the control loop during inference.
-- `RelativeLerobotPolicy` has all of those, but always starts a local worker.
+`--path` is only a label then; the log names the checkpoint the server serves.
 
-Pointing `RelativeLerobotPolicy` at `RemoteWorkerConnection` instead of its
-pipe is a small change (the constructor's worker start-up, `action_repr: auto`
-reading the handshake instead of a local file, and `shutdown`). It has not
-been made: it changes the class the robot is deployed with today, and is the
-owner's call.
+**Structure.** The robot-side half (observation history, gripper units, state
+and image checks, command composition, prefetch) and the inference worker
+talk only through a `WorkerConnection`
+(`crisp_gym/policy/worker_connection.py` — four calls and a small message
+vocabulary, defined there and nowhere else). Where the worker runs is decided
+in one method, `RelativeLerobotPolicy._start_worker`:
+
+| `server` | connection | worker |
+|---|---|---|
+| `null` | the `multiprocessing` pipe itself | subprocess on this machine |
+| address | `RemoteWorkerConnection` (`remote_worker.py`) | behind `policy_server.py`, same worker function |
+
+Nothing else in the class knows which it got. A third way to reach a worker is
+a third `WorkerConnection`, not a third policy class.
+
+**What moves to the server.** It holds the checkpoint, so the settings that
+shape the model are its command line: `--state-input`,
+`--num-inference-steps`, `--scheduler`, `--set`. On the robot side:
+
+| setting | with `server` set |
+|---|---|
+| `state_input: auto` | the server's mode is used |
+| `state_input:` explicit | must equal the server's, or the policy refuses to start |
+| `num_inference_steps`, `scheduler`, `overrides` | logged as NOT APPLIED |
+| `action_repr: auto` | read from the server's handshake (it has read `action_repr.json`) instead of from local disk |
+| everything else (`device_max_width`, `n_action_steps`, `compose_mode`, `async_inference`, ...) | unchanged — robot-side |
+
+**Checked.** `tests/test_policy_server.py` builds the policy through its real
+constructor in both modes: remote, it commands the ground-truth trajectory
+synchronously, with prefetch, and with a late answer; local, it starts the
+subprocess with the same arguments as before and joins it at shutdown. With a
+real lerobot 0.6.1 checkpoint, the policy built by `make_policy` from the
+shipped YAML ran an episode in both modes with no held tick.
+
+**`RemotePolicy` (`name: remote_policy`) is not this path.** It is a minimal
+client for a server that is not `policy_server.py` — one that takes a single
+frame and keeps its own history, described by a contract YAML (§1). It sends
+the current frame only, converts no gripper units, has no input checks and
+blocks while it waits. Do not grow it toward lerobot deployment; that is what
+`server:` is for.
 
 Two consequences of a network that a local pipe does not have:
 
-- `infer_timeout` must be longer than the slowest inference plus transfer. A
+- `infer_timeout_s` must be longer than the slowest inference plus transfer. A
   shorter one never recovers: each retry is answered after its own deadline.
+  On a timeout the robot holds pose and asks again.
 - After a dropped socket the server is reset, so a `relative_wrt_start`
   checkpoint measures its start rotation from the next observation, not from
   the episode start. It is logged; restart the episode.
