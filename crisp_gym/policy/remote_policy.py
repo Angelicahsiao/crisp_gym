@@ -39,7 +39,10 @@ class WebsocketPolicyClient:
         connect_timeout: seconds to wait for the socket AND the handshake.
         infer_timeout: seconds to wait for the matching `actions` frame.
         contract: the client's view of the contract (from the policy YAML),
-            sent in `hello` and compared against the server's answer.
+            sent in `hello` and compared against the server's answer. None
+            means this client declares no contract of its own: nothing is
+            compared here, and the caller is expected to verify the server's
+            `hello_ok.meta` against the robot instead (RemoteWorkerConnection).
         verify_handshake: refuse to run when the contracts disagree. Leave it
             on — a wrong rotation layout or gripper scale does not crash, it
             moves the robot wrongly.
@@ -58,6 +61,7 @@ class WebsocketPolicyClient:
         self.uri = uri
         self.connect_timeout = connect_timeout
         self.infer_timeout = infer_timeout
+        self._declares_contract = contract is not None
         self.contract = proto.contract_fields(contract or {})
         self.verify_handshake = verify_handshake
         self.reconnect_attempts = reconnect_attempts
@@ -70,6 +74,8 @@ class WebsocketPolicyClient:
         #: so a chunk computed from the previous episode's state can never be
         #: executed in this one.
         self._reset_acked = False
+        #: Server-side timing of the last `infer`, when the server reports it.
+        self.last_timing: dict | None = None
 
     # ── framing ──────────────────────────────────────────────────────────
     def _id(self) -> int:
@@ -127,9 +133,12 @@ class WebsocketPolicyClient:
     def connect(self) -> None:
         from websockets.sync.client import connect
 
+        # __enter__ returns the connection itself; it is closed explicitly in
+        # close() / _drop_connection(). websockets >= 17.1 deprecates using the
+        # result of connect() without entering it; older versions do not care.
         self._conn = connect(
             self.uri, open_timeout=self.connect_timeout, max_size=None
-        )
+        ).__enter__()
         hid = self._id()
         self._send(proto.hello(hid, self.contract))
         meta = self._await(hid, proto.T_HELLO_OK, self.connect_timeout)
@@ -138,7 +147,10 @@ class WebsocketPolicyClient:
         self._reset_acked = False
 
         server_contract = meta.get("contract") or {}
-        diffs = proto.compare_contracts(self.contract, server_contract)
+        diffs = (
+            proto.compare_contracts(self.contract, server_contract)
+            if self._declares_contract else []
+        )
         if diffs:
             detail = "\n  ".join(diffs)
             if self.verify_handshake:
@@ -192,22 +204,33 @@ class WebsocketPolicyClient:
         self._reset_acked = False
 
     # ── requests ─────────────────────────────────────────────────────────
-    def infer(self, obs: dict, task: str | None = None,
+    def infer(self, obs: dict | list, task: str | None = None,
               obs_t: float | None = None) -> np.ndarray:
-        """Send one observation, return its action chunk (steps, action_dim)."""
+        """Send an observation, return its action chunk (steps, action_dim).
+
+        `obs` is one frame, or the whole observation window: a list of frames,
+        oldest first.
+        """
         self._ensure_connected()
         if not self._reset_acked:
             # A server that has not been reset still holds the previous
             # episode's queues; its chunk would be meaningless here.
             self.reset()
-        payload = {}
-        for key, value in obs.items():
-            if key == "task":
-                continue  # travels as its own field, not as an obs array
-            if key.startswith("observation.images") and value is not None:
-                payload[key] = proto.encode_image(np.asarray(value), self.image_spec)
-            else:
-                payload[key] = value
+        if isinstance(obs, (list, tuple)):
+            # The window keeps each frame's own `task`: the inference worker
+            # reads it per frame, exactly as it does over the local pipe.
+            payload = proto.encode_window(list(obs), self.image_spec)
+            if task is None and obs:
+                task = obs[-1].get("task")
+        else:
+            payload = {}
+            for key, value in obs.items():
+                if key == "task":
+                    continue  # travels as its own field, not as an obs array
+                if key.startswith("observation.images") and value is not None:
+                    payload[key] = proto.encode_image(np.asarray(value), self.image_spec)
+                else:
+                    payload[key] = value
         rid = self._id()
         try:
             self._send(proto.infer(rid, payload, task,
@@ -218,6 +241,7 @@ class WebsocketPolicyClient:
         except Exception:
             self._drop_connection()
             raise
+        self.last_timing = frame.get("timing")
         actions = np.asarray(frame["actions"])
         return actions[None] if actions.ndim == 1 else actions
 

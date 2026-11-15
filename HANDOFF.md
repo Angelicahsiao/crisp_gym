@@ -350,7 +350,7 @@ a from-scratch policy has no priors to unlearn.
 ## 4. Roadmap / pending work (agreed with the owner; do not re-litigate)
 
 1. **WebSocket inference client** (`crisp_gym/policy/remote_policy.py`,
-   `@register_policy("remote")`): msgpack-numpy over websocket (openpi-style).
+   `@register_policy("remote_policy")`): msgpack-numpy over websocket (openpi-style).
    NO torch/lerobot/rclpy imports in the client. Client sends ABSOLUTE poses +
    images (uint8 HWC) + task string; SERVER does the relative conversion
    (must reuse/verbatim-match `RelativePoseDataset.convert_item`) and
@@ -360,8 +360,18 @@ a from-scratch policy has no priors to unlearn.
    specified in session notes — key fields: obs keys/shapes/dtypes, n_obs_steps,
    pose_convention, action layout/pose_repr/chunking/dt, gripper semantics,
    normalization="server_side", reset message support.
-   **The server itself is NOT this project's job** — the owner builds it; we
-   provide the client + the metadata contract.
+   **The server now exists** (owner's request, 2026-11):
+   `scripts/policy_server.py` puts protocol v1 in front of the UNMODIFIED
+   `inference_worker` from `relative_lerobot_policy.py`, in a subprocess, so
+   there is one implementation of loading / relative conversion / image
+   scaling / queue handling for local and remote deployment. Do not fork that
+   logic into the server. `crisp_gym/policy/remote_worker.py`
+   (`RemoteWorkerConnection`) is the pipe-compatible network transport;
+   `crisp_gym.policy` imports without ROS, torch or lerobot so the GPU machine
+   needs only a clone. OPEN (owner's decision): which robot-side class uses
+   the transport — finish `RemotePolicy` or point `RelativeLerobotPolicy` at
+   it. See REMOTE_INFERENCE.md §4 and §4.5; tests in
+   `tests/test_policy_server.py`.
 2. **(IMPLEMENTED) `pose_repr.json` stamping**: `lerobot_relative_pose.py`
    writes it into the training output dir (pose layout, relative convention,
    rot6d convention, fps, window sizes, and per-key `observation.state`

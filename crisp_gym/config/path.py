@@ -27,9 +27,17 @@ def _parse_config_paths(path_str: str) -> List[Path]:
     return paths
 
 
-default_path = Path(str(files("crisp_py").joinpath("config")))
-CRISP_CONFIG_PATHS = [default_path]
 default_gym_path = Path(str(files("crisp_gym").joinpath("config")))
+try:
+    default_path = Path(str(files("crisp_py").joinpath("config")))
+    CRISP_CONFIG_PATHS = [default_path]
+except ModuleNotFoundError:
+    # crisp_py is the ROS-side package. The GPU machine that only runs
+    # scripts/policy_server.py does not have it, and must still be able to
+    # import crisp_gym.policy; there, crisp_gym's own configs are all there is.
+    # On a robot machine crisp_py is installed and nothing changes.
+    default_path = default_gym_path
+    CRISP_CONFIG_PATHS = []
 CRISP_CONFIG_PATHS.append(default_gym_path)
 CRISP_CONFIG_PATH = default_path
 
