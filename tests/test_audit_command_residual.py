@@ -609,6 +609,61 @@ def test_the_shipped_fr3_controllers_yaml_layout_parses():
     assert k_pos and k_pos > 0 and k_rot and k_rot > 0
 
 
+def test_gains_from_an_env_config():
+    """--env-config follows the env's own lookup: first match wins, null = bring-up."""
+    try:
+        import yaml  # noqa: F401
+    except ImportError:
+        print("skip: pyyaml not installed")
+        return
+    mod = _load()
+    control = "task.k_pos_x: 200.0\ntask.k_pos_y: 200.0\ntask.k_pos_z: 200.0\n" \
+              "task.k_rot_x: 60.0\ntask.k_rot_y: 60.0\ntask.k_rot_z: 60.0\n"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        first, second = root / "robot_pc", root / "repo"
+        for d, text in ((first, control.replace("200.0", "350.0")), (second, control)):
+            (d / "control").mkdir(parents=True)
+            (d / "control" / "ur_ci.yaml").write_text(text)
+        env = root / "env.yaml"
+        env.write_text('cartesian_control_param_config: "control/ur_ci.yaml"\n')
+
+        path, note = mod.control_file_from_env_config(env, [second])
+        assert path == second / "control" / "ur_ci.yaml" and "SHADOWED" not in note
+        assert mod.load_gains(path, "x") == (200.0, 60.0)
+        # two copies: the FIRST directory wins, and the note says so
+        path, note = mod.control_file_from_env_config(env, [first, second])
+        assert path == first / "control" / "ur_ci.yaml" and "SHADOWED" in note
+        assert mod.load_gains(path, "x") == (350.0, 60.0)
+        # not found anywhere / null / key absent: no file, and a reason
+        path, note = mod.control_file_from_env_config(env, [root])
+        assert path is None and "--config-path" in note
+        env.write_text("cartesian_control_param_config: null\n")
+        path, note = mod.control_file_from_env_config(env, [first])
+        assert path is None and "bring-up" in note
+        env.write_text("control_frequency: 15.0\n")
+        path, note = mod.control_file_from_env_config(env, [first])
+        assert path is None and "CLASS default" in note
+
+
+def test_the_shipped_env_configs_resolve():
+    """The UR envs name 200/60; the dric Franka env leaves the bring-up gains."""
+    try:
+        import yaml  # noqa: F401
+    except ImportError:
+        print("skip: pyyaml not installed")
+        return
+    mod = _load()
+    envs = REPO / "crisp_gym" / "config" / "envs"
+    search = [REPO / "crisp_gym" / "config"]
+    path, _ = mod.control_file_from_env_config(envs / "ur7e_robotiq.yaml", search)
+    assert mod.load_gains(path, "x") == (200.0, 60.0)
+    path, note = mod.control_file_from_env_config(envs / "dric_dual_rscam_franka_umi.yaml", search)
+    assert path is None and "bring-up" in note
+    assert (REPO / "crisp_gym" / "config") in mod.config_search_paths()
+    assert mod.config_search_paths([envs])[0] == envs
+
+
 def test_end_to_end_on_a_parquet_dataset():
     try:
         import pandas as pd
@@ -654,6 +709,25 @@ def test_end_to_end_on_a_parquet_dataset():
         k = report["system_identification"]["translation"]["z"]["stiffness"]
         assert abs(k - K_POS) / K_POS < 0.03, k          # float32 storage
         assert np.load(npz)["res_pos"].shape == (n, 3)
+
+        # gains from the env config; an explicit --k-pos still wins over it
+        cfg = root / "cfg"
+        (cfg / "control").mkdir(parents=True)
+        (cfg / "control" / "ci.yaml").write_text(
+            "".join(f"task.k_{kind}_{ax}: {val}\n" for kind, val in (("pos", K_POS), ("rot", K_ROT))
+                    for ax in "xyz"))
+        env = root / "env.yaml"
+        env.write_text('cartesian_control_param_config: "control/ci.yaml"\n')
+        assert mod.main([str(root), "--env-config", str(env), "--config-path", str(cfg),
+                         "--out", str(out)]) == 0
+        report = json.loads(out.read_text())
+        assert report["nominal_gains"]["k_pos"] == K_POS and report["nominal_gains"]["k_rot"] == K_ROT
+        assert report["nominal_gains"]["source"].endswith("ci.yaml")
+        assert any("nominal gains read from" in note for note in report["notes"])
+        assert mod.main([str(root), "--env-config", str(env), "--config-path", str(cfg),
+                         "--k-pos", "123", "--out", str(out)]) == 0
+        gains = json.loads(out.read_text())["nominal_gains"]
+        assert gains["k_pos"] == 123 and gains["k_rot"] == K_ROT
 
         try:
             mod.main([str(root), "--tactile-shape", "4", "4"])

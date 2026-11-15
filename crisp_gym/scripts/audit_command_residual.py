@@ -83,6 +83,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -450,8 +451,7 @@ def row_width_hint(feat: np.ndarray, min_frames: int = 50) -> dict | None:
     """
     feat = np.asarray(feat, dtype=np.float64)
     n, taxels = feat.shape
-    live = feat.std(axis=0) > 0
-    if n < min_frames or live.sum() < 4:
+    if n < min_frames or (feat.std(axis=0) > 0).sum() < 4:
         return None
     with np.errstate(divide="ignore", invalid="ignore"):
         corr = np.corrcoef(feat, rowvar=False)
@@ -989,6 +989,79 @@ def load_gains(path: Path, controller: str) -> tuple[float | None, float | None]
     return mean("k_pos"), mean("k_rot")
 
 
+ENV_GAINS_KEY = "cartesian_control_param_config"
+
+
+def config_search_paths(extra: list[Path] | None = None) -> list[Path]:
+    """Directories a config name like `control/x.yaml` is looked up in.
+
+    The SAME order as crisp_gym.config.path.CRISP_CONFIG_PATHS (`find_config`
+    loads the first match), rebuilt here so this script needs neither crisp_gym
+    nor crisp_py imported: crisp_py's config dir, then crisp_gym's; with
+    CRISP_CONFIG_PATH set, its directories first, then crisp_gym's, then
+    crisp_py's. `extra` directories (--config-path) go in front of everything.
+    """
+    import importlib.util
+
+    gym = Path(__file__).resolve().parents[1] / "config"
+    py = None
+    try:
+        spec = importlib.util.find_spec("crisp_py")       # locates, does not import
+        if spec and spec.submodule_search_locations:
+            py = Path(list(spec.submodule_search_locations)[0]) / "config"
+    except (ImportError, ValueError):
+        pass
+    if py is None:                                        # a checkout next to crisp_gym
+        py = Path(__file__).resolve().parents[3] / "crisp_py" / "crisp_py" / "config"
+    user = [Path(part.strip()) for part in os.environ.get("CRISP_CONFIG_PATH", "").split(":")
+            if part.strip()]
+    paths = list(extra or []) + (user + [gym, py] if user else [py, gym])
+    return [path for path in paths if path.is_dir()]
+
+
+def control_file_from_env_config(
+    env_yaml: Path, search: list[Path] | None = None
+) -> tuple[Path | None, str]:
+    """The control YAML an env config pushes to the Cartesian controller.
+
+    Returns (path or None, a sentence saying where the gains come from). None
+    means the env does not set the gains: the controller then keeps whatever
+    the robot bring-up started it with, and no file in this repo knows that.
+    """
+    import yaml
+
+    search = config_search_paths() if search is None else search
+    data = yaml.safe_load(Path(env_yaml).read_text()) or {}
+    name = Path(env_yaml).name
+    if ENV_GAINS_KEY not in data:
+        return None, (
+            f"{name} has no '{ENV_GAINS_KEY}' key, so the env CLASS default applies (Franka: "
+            "control/default_cartesian_impedance.yaml). Pass that file with --control-config."
+        )
+    value = data[ENV_GAINS_KEY]
+    if value is None:
+        return None, (
+            f"{name} sets {ENV_GAINS_KEY}: null — the controller keeps the gains of the robot "
+            "bring-up. Pass the bring-up's controllers.yaml with --control-config, or "
+            "--k-pos/--k-rot."
+        )
+    matches = [d / str(value) for d in search if (d / str(value)).is_file()]
+    if not matches and Path(str(value)).is_file():
+        matches = [Path(str(value))]
+    if not matches:
+        return None, (
+            f"{name} names '{value}', which is in none of {[str(d) for d in search]}. "
+            "Add its directory with --config-path, or pass the file with --control-config."
+        )
+    note = (f"nominal gains read from {matches[0]} (named by {name}). The copy on the PC that "
+            "RECORDED the data is the one that ran; check it is the same file.")
+    if len(matches) > 1:
+        note += (" SHADOWED: the same name also exists in "
+                 + ", ".join(str(m.parent.parent) for m in matches[1:])
+                 + " and was ignored, as find_config does.")
+    return matches[0], note
+
+
 # ── report ───────────────────────────────────────────────────────────────────
 
 def _fmt_p(d: dict, unit: str) -> str:
@@ -1006,6 +1079,10 @@ def format_report(r: dict) -> str:
     if "columns" in r:
         for role, col in r["columns"].items():
             add(f"  {role:<16s} <- {col if col else '(not found)'}")
+    g = r.get("nominal_gains") or {}
+    if g.get("k_pos") is not None or g.get("k_rot") is not None:
+        add(f"Nominal gains: k_pos {g.get('k_pos')} N/m, k_rot {g.get('k_rot')} Nm/rad"
+            f"  ({g.get('source', 'given')})")
     c = r["contact"]
     add(f"Contact flag: {c['source']}, {100 * c.get('fraction', 0):.1f}% of frames in contact")
     if "tactile" in r:
@@ -1162,6 +1239,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "ros2_control controllers.yaml); --k-pos/--k-rot override it")
     p.add_argument("--controller", default="cartesian_impedance_controller",
                    help="controller block to read in a controllers.yaml")
+    p.add_argument("--env-config", type=Path,
+                   help="crisp_gym env YAML the data was recorded with: the gains are read from "
+                        "the control file its cartesian_control_param_config names, found the "
+                        "way the env finds it. --control-config and --k-pos/--k-rot override it")
+    p.add_argument("--config-path", type=Path, action="append", default=None,
+                   help="extra config directory searched FIRST for that control file (repeatable); "
+                        "CRISP_CONFIG_PATH is honoured too")
     p.add_argument("--baseline-frames", type=int, default=10,
                    help="frames at the start of each episode averaged as the tactile zero")
     p.add_argument("--contact-from", choices=("auto", "tactile", "wrench", "none"), default="auto")
@@ -1223,10 +1307,20 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
     k_pos, k_rot = args.k_pos, args.k_rot
-    if args.control_config:
-        cfg_pos, cfg_rot = load_gains(args.control_config, args.controller)
+    gain_notes: list[str] = []
+    source = "--k-pos/--k-rot" if (k_pos is not None or k_rot is not None) else None
+    control_config = args.control_config
+    if args.env_config:
+        found, note = control_file_from_env_config(
+            args.env_config, config_search_paths(args.config_path))
+        if control_config is None:
+            control_config = found
+            gain_notes.append(note)
+    if control_config and (k_pos is None or k_rot is None):
+        cfg_pos, cfg_rot = load_gains(control_config, args.controller)
         k_pos = k_pos if k_pos is not None else cfg_pos
         k_rot = k_rot if k_rot is not None else cfg_rot
+        source = f"{source} + {control_config}" if source else str(control_config)
 
     if args.tactile_only:
         episode = arrays["episode"]
@@ -1264,7 +1358,8 @@ def main(argv: list[str] | None = None) -> int:
         ridge_lambda=args.ridge_lambda, folds=args.folds, tactile_valid=all_valid,
     )
     report["columns"] = resolved
-    report["nominal_gains"] = {"k_pos": k_pos, "k_rot": k_rot}
+    report["nominal_gains"] = {"k_pos": k_pos, "k_rot": k_rot, "source": source}
+    report["notes"] = gain_notes + report["notes"]
 
     print(format_report(report))
     if args.out:

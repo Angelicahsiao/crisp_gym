@@ -1369,12 +1369,24 @@ It reports:
 
 Things to know when reading it:
 
-- **Nominal gains.** `dric_dual_rscam_franka_umi.yaml` sets
-  `cartesian_control_param_config: null`, so the CIC keeps the gains of the
-  robot bring-up (`controllers.yaml`, `cartesian_impedance_controller`), NOT
-  those in `config/control/default_cartesian_impedance.yaml`. Pass the file the
-  controller was really launched with, or `--k-pos/--k-rot`. Step C tells you
-  what the arm delivered either way.
+- **Nominal gains.** The simplest way is `--env-config <the env YAML you
+  recorded with>`: the gains are read from the control file its
+  `cartesian_control_param_config` names, looked up the way the env looks it up
+  (`CRISP_CONFIG_PATH`, crisp_py's and crisp_gym's config dirs; add the robot
+  PC's directory with `--config-path` if it is elsewhere). The report prints
+  which file was used and warns when a second copy of that name was shadowed.
+  ```bash
+  python crisp_gym/scripts/audit_command_residual.py /path/to/dataset \
+      --env-config crisp_gym/config/envs/ur7e_robotiq.yaml      # -> 200 N/m, 60 Nm/rad
+  ```
+  When the env sets that field to `null` — every dric Franka env does — the
+  controller keeps the gains of the robot bring-up (`controllers.yaml`,
+  `cartesian_impedance_controller`: 400 / 30), NOT those in
+  `config/control/default_cartesian_impedance.yaml`. The script says so and
+  uses no gains; pass the bring-up file with `--control-config`, or
+  `--k-pos/--k-rot`. Priority: `--k-pos/--k-rot`, then `--control-config`, then
+  `--env-config`. Gains are deliberately not stored in the dataset. Step C tells
+  you what the arm delivered either way.
 - **Tactile columns** are found without a flag: `extra.tactile.left` /
   `.right` (the handheld recorder's layout), else `left_tactile` /
   `right_tactile`. `--tactile-keys` overrides; a bare name matches a unique

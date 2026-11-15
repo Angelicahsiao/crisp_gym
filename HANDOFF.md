@@ -866,14 +866,25 @@ established so far — verify before contradicting them:
   recorded by the owner's setup, NOT by anything in this repo — crisp_gym has
   no tactile sensor config and no record source for the stamp or the CSV. It
   lacks `extra.ext_torque` and `extra.gripper_target`, so step C (stiffness)
-  and step E (gripper) cannot run on it. Whether "ur" is a UR arm (then the
-  FR3 gains and the built-in FR3 kinematics do not apply) is NOT confirmed.
-- **First audit of that robot data (owner's run, k_pos 400 assumed):** the
-  residual is large even in FREE motion — median 13 mm (≈5 N), contact 24 mm
-  (≈10 N), only 12 % of frames in contact (336 frames). Tracking lag
+  and step E (gripper) cannot run on it. It IS a UR arm (owner confirmed):
+  6 joints, so the built-in FR3 kinematics of step C do not apply; a recorded
+  wrist wrench (`force_torque` sensor -> `robot.sensor`) would be the way in,
+  and the audit has no `--wrench-key` yet.
+- **First audit of that robot data (owner's run):** the residual is large even
+  in FREE motion — median 13 mm, contact 24 mm; at the real 200 N/m that is
+  ≈2.7 N and ≈4.9 N (the run itself assumed 400 and printed double). Only 12 %
+  of frames are in contact (336 frames). Tracking lag
   (tau 130–290 ms) explains R2 0.14–0.53 of the free residual; 6–11 mm rms is
   left over (static sag / friction / a frame offset are the candidates, not
   yet separated). So the trajectory term matters at least as much as tactile.
+- **Tactile is ON HOLD by owner decision (2026-11):** a closed gripper makes
+  the skins read (finger-on-finger), which is being fixed in hardware — the
+  handheld set shows "contact" in 81–86 % of frames against 7–12 % on the
+  robot. Do not tune the tactile probe or the layout hint until that is
+  settled. Also seen: the robot dataset has no `<tactile>.source_stamp_ns`
+  column, so its CSVs cannot be joined to frames yet; and `row_width_hint`
+  mistakes same-row neighbours for a row width (it printed 36 x 2; the
+  untouched taxels repeat every 6 indices, so the width is probably 6).
 - **KNOWN WEAKNESS of step D on sparse-contact data — do not read its tactile
   rows as evidence.** That run printed R2 of −300 for tactile. `ridge_cv`
   scales each taxel by its spread over ALL training frames; with 88 % of them
@@ -895,6 +906,13 @@ established so far — verify before contradicting them:
   `factr_franka_robotiq.yaml`. Gains are deliberately NOT stored in the dataset
   (owner decision); read them from the config the controller was launched with
   and trust `audit_command_residual.py` step C over either file.
+  The UR envs DO set the field: `control/ur_cartesian_impedance.yaml`,
+  **200 N/m / 60 Nm/rad** (owner confirmed this is what `ur_electricbox` ran
+  with). Agreed convention: the env's `cartesian_control_param_config` is the
+  one place gains live — it is pushed to the controller at start-up, so it is
+  what ran; do NOT add a second copy to the crisp_py robot config. The audit's
+  `--env-config` follows that field with the same search order as
+  `find_config` (§6.1) and reports a shadowed duplicate.
 - **The residual only means something together with the stiffness it was
   recorded at.** Recordings so far use ONE gain, so no model can learn the
   dependence on stiffness from them; use `K × residual` as the gain-independent
