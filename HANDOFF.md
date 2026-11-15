@@ -861,12 +861,27 @@ established so far — verify before contradicting them:
   (`extra.target_cartesian`, `extra.joints`, ...) exist but are ZERO
   placeholders; there is no `extra.gripper_target`. It is written by the
   owner's `umi_data_collection` tool, which is in none of these repos.
-- **No ROBOT dataset with tactile has been seen yet, and crisp_gym cannot
-  record tactile today** (no sensor config, no record source for the stamp or
-  the CSV). The residual model needs exactly that data; when the robot side is
-  built it must write the SAME schema as the handheld recorder (column names,
-  taxel count and order, units, stamp clock), or nothing transfers.
-
+- **A robot dataset with the same tactile columns exists: `ur_electricbox`**
+  (10 episodes, 2778 frames, `extra.tactile.left/right` 72 taxels). It is
+  recorded by the owner's setup, NOT by anything in this repo — crisp_gym has
+  no tactile sensor config and no record source for the stamp or the CSV. It
+  lacks `extra.ext_torque` and `extra.gripper_target`, so step C (stiffness)
+  and step E (gripper) cannot run on it. Whether "ur" is a UR arm (then the
+  FR3 gains and the built-in FR3 kinematics do not apply) is NOT confirmed.
+- **First audit of that robot data (owner's run, k_pos 400 assumed):** the
+  residual is large even in FREE motion — median 13 mm (≈5 N), contact 24 mm
+  (≈10 N), only 12 % of frames in contact (336 frames). Tracking lag
+  (tau 130–290 ms) explains R2 0.14–0.53 of the free residual; 6–11 mm rms is
+  left over (static sag / friction / a frame offset are the candidates, not
+  yet separated). So the trajectory term matters at least as much as tactile.
+- **KNOWN WEAKNESS of step D on sparse-contact data — do not read its tactile
+  rows as evidence.** That run printed R2 of −300 for tactile. `ridge_cv`
+  scales each taxel by its spread over ALL training frames; with 88 % of them
+  out of contact that spread is the rest noise, so a firm contact in a
+  held-out episode lands far outside the training range and the prediction
+  explodes. 144 inputs against 336 contact frames is also too few. Fix agreed
+  as a proposal, not done: fit/score on contact frames, a few PCA components
+  instead of raw taxels, ridge strength chosen by inner validation.
 - **Why `next_tcp_pose` is a weak action in contact.** Under the CIC the force
   is `K (x_cmd − x)`. In contact the measured pose barely moves, so replaying it
   commands ~zero force. The command (`extra.target_cartesian`) is ACP's "virtual
