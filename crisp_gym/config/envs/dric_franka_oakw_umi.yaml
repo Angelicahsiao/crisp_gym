@@ -1,22 +1,25 @@
-# Streamed pose teleop (phone/VIVE) -> dric Franka FR3 + Robotiq 2F-85 + dual RealSense.
+# Streamed pose teleop (phone/VIVE) -> dric Franka FR3 + Robotiq 2F-85 + OAK-W
+# wrist camera.
 #
-# Cartesian-space RECORDING env for the UMI rot6d contract. Third member of the
-# dric_dual_rscam_franka family, one per job — they differ only where a single
-# file cannot be right for two jobs at once:
+# Cartesian-space RECORDING env for the UMI rot6d contract. One of a family of
+# dric_franka_oakw files, one per job — they differ only where a single file
+# cannot be right for two jobs at once:
 #
-#   dric_dual_rscam_franka.yaml            LEGACY streamed teleop: Euler
-#       (the default orientation_representation), absolute_binary gripper. Kept
-#       for reproducing the old datasets; do not record new UMI data with it.
-#   dric_dual_rscam_franka_umi.yaml        THIS FILE — streamed teleop, rot6d.
-#   factr_dric_dual_rscam_franka.yaml      FACTR leader, JOINT space, absolute.
-#   dric_dual_rscam_franka_deploy_umi.yaml DEPLOYMENT of a trained relative-pose
+#   dric_franka_oakw_umi.yaml           THIS FILE — streamed teleop, rot6d.
+#   factr_dric_franka_oakw.yaml         FACTR leader, JOINT space, absolute.
+#   dric_franka_oakw_deploy_umi.yaml    DEPLOYMENT of a trained relative-pose
 #       model. Identical to this file EXCEPT use_relative_actions: false, and
 #       that difference is load-bearing — see the note on the flag below.
+#   dric_franka_oakw_deploy_groot.yaml  DEPLOYMENT of a GR00T checkpoint.
+#
+# Replaces dric_dual_rscam_franka_umi.yaml (two RealSense cameras), removed
+# 2026-11 with the other dual-camera configs. Everything except the camera is
+# unchanged from that file.
 #
 # Use with:
 #   python crisp_gym/scripts/record_lerobot_format_leader_follower.py \
 #       --use-streamed-teleop \
-#       --follower-config dric_dual_rscam_franka_umi \
+#       --follower-config dric_franka_oakw_umi \
 #       --record-config crisp_gym/config/recording/umi_robot_full_record.yaml \
 #       --repo-id <org>/<name> --fps 15
 #
@@ -26,9 +29,9 @@
 # is directly mixable. Only extra.target_cartesian / extra.target_joints differ
 # in which one carries a live command (see the record config).
 #
-# Everything not called out below (cameras, gripper, home poses, effort
-# feedback) is a copy of dric_dual_rscam_franka_deploy_umi.yaml — keep them in
-# sync, since a recording/deployment mismatch in camera keys or gripper scaling
+# Everything not called out below (camera, gripper, home poses, effort
+# feedback) is a copy of dric_franka_oakw_deploy_umi.yaml — keep them in sync,
+# since a recording/deployment mismatch in camera keys or gripper scaling
 # silently degrades the policy rather than raising. The one addition is the
 # ext_torque sensor: recording needs it for the record config's extra column,
 # deployment does not, so the deploy file leaves sensor_configs empty.
@@ -40,7 +43,7 @@ control_frequency: 15.0
 # The recorded (measured) gripper width must stay continuous. absolute_binary
 # thresholds the command, so the width column comes out bimodal — poor training
 # data for the continuous-gripper policy this data is for. This is the setting
-# dric_dual_rscam_franka.yaml gets wrong for UMI recording.
+# legacy dric_dual_rscam_franka.yaml (removed) got wrong for UMI recording.
 gripper_mode: "absolute_continuous"
 
 # 9D [pos3, rot6d-rows] pose in the action vector and the obs the relative
@@ -119,21 +122,16 @@ gripper_config:
   max_effort: 5.0
 
 # Camera names define the observation.images.* keys and MUST match both the
-# record config's `camera:` fields and the keys the checkpoint is trained on.
-# The historical "wirst_cam"/"wirst_link" misspelling is corrected here (the ROS
-# topics always used the correct spelling); a checkpoint trained on
-# observation.images.wirst_cam will not find its input under the corrected key.
+# record config's `camera:` field and the keys the checkpoint is trained on.
+# ONE camera, the OAK-W on the wrist, at its native 800x1280: the same key and
+# size as the handheld datasets (umi_electricbox), so robot and handheld data
+# share observation.images.oakw_cam.
 camera_configs:
-  - camera_name: "env_cam"
-    camera_frame: "env_link"
-    resolution: [256, 256]
-    camera_color_image_topic: "/env/env_cam/color/image_raw"
-    camera_color_info_topic: "/env/env_cam/color/camera_info"
-  - camera_name: "wrist_cam"
+  - camera_name: "oakw_cam"          # -> observation.images.oakw_cam
     camera_frame: "wrist_link"
-    camera_color_image_topic: "/wrist/wrist_cam/color/image_rect_raw"
-    camera_color_info_topic: "/wrist/wrist_cam/color/camera_info"
-    resolution: [256, 256]
+    resolution: [800, 1280]          # (HEIGHT, WIDTH), native: nothing cropped
+    camera_color_image_topic: "/wrist/oakw_cam/rgb/image_raw"
+    camera_color_info_topic: "/wrist/oakw_cam/rgb/camera_info"
 
 # EXTERNAL joint torque from franka_ros2's franka_robot_state_broadcaster:
 # tau_ext with gravity and arm dynamics already removed by the robot firmware,

@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List
 
-import numpy as np
 import yaml
 from crisp_py.camera.camera_config import CameraConfig
 from crisp_py.gripper.gripper import GripperConfig
@@ -16,6 +15,7 @@ from crisp_py.utils.geometry import OrientationRepresentation
 
 from crisp_gym.config.path import CRISP_CONFIG_PATH, find_config, list_configs_in_folder
 from crisp_gym.util.gripper_mode import GripperMode, HomeGripper
+from crisp_gym.util.safety import workspace_box
 
 
 class ObservationKeys:
@@ -114,13 +114,30 @@ class ManipulatorEnvConfig(ABC):
     # use_relative_actions is True (deltas cannot jump on the first step).
     max_startup_joint_offset: float | None = 0.15
 
-    # Safety limits
+    # Workspace box for the commanded TCP POSITION, in metres in the robot base
+    # frame; None = unbounded (the default for all six). Cartesian control only.
+    # 0.0 is a real bound. The default used to be min_z = 0.0 ("table height"),
+    # but a bug read every bound as `value or inf`, so 0.0 meant "no bound" and
+    # that floor never applied; the default is now None, i.e. the same
+    # behaviour, stated honestly. A robot on a mobile base or a table edge can
+    # legitimately reach below z = 0, so set a floor per rig, not here.
     min_x: None | float = None
     min_y: None | float = None
-    min_z: None | float = 0.0  # e.g., table height
+    min_z: None | float = None
     max_x: None | float = None
     max_y: None | float = None
     max_z: None | float = None
+
+    # How far a new Cartesian TARGET may move from the previous target in one
+    # env.step, in metres and degrees; None = no limit (the default). A longer
+    # step keeps its direction and is cut to the limit, with a warning on the
+    # first cut of each episode. Measured target-to-target, so it limits how
+    # fast the command moves, not the target-minus-measured gap (the contact
+    # force under impedance control). At 15 Hz, 0.03 m and 5 deg per step are
+    # 0.45 m/s and 75 deg/s. Set in the deploy env YAMLs. Cartesian control
+    # only; joint control has max_joint_speed.
+    max_target_step_m: float | None = None
+    max_target_step_deg: float | None = None
 
     max_episode_steps: int | None = None  # FIXME: This is not used. Remove?
 
@@ -222,22 +239,9 @@ class ManipulatorEnvConfig(ABC):
                 f"Supported: {supported_representations}"
             )
 
-        self.safety_box = {
-            "lower": np.array(
-                [
-                    self.min_x or -float("inf"),
-                    self.min_y or -float("inf"),
-                    self.min_z or -float("inf"),
-                ]
-            ),
-            "upper": np.array(
-                [
-                    self.max_x or float("inf"),
-                    self.max_y or float("inf"),
-                    self.max_z or float("inf"),
-                ]
-            ),
-        }
+        self.safety_box = workspace_box(
+            self.min_x, self.min_y, self.min_z, self.max_x, self.max_y, self.max_z
+        )
 
     def get_metadata(self) -> dict:
         """Get metadata about the environment configuration.
@@ -260,6 +264,9 @@ class ManipulatorEnvConfig(ABC):
             "use_relative_actions": self.use_relative_actions,
             "max_joint_speed": self.max_joint_speed,
             "max_startup_joint_offset": self.max_startup_joint_offset,
+            "workspace_box": {k: v.tolist() for k, v in self.safety_box.items()},
+            "max_target_step_m": self.max_target_step_m,
+            "max_target_step_deg": self.max_target_step_deg,
         }
 
     @classmethod

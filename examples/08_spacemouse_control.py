@@ -33,7 +33,7 @@ def control_robot_with_spacemouse(env_config: str = "default", namespace: str = 
     """Control a robot using SpaceMouse streamed input.
 
     Args:
-        env_config: Name of the environment configuration (e.g., 'default', 'left_robot_env', etc.)
+        env_config: Name of the environment configuration (e.g., 'dric_franka_oakw_umi')
         namespace: ROS namespace for the streamed topics (should match spacemouse_node.py namespace)
     """
     # Initialize the environment

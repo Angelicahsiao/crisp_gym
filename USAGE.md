@@ -711,7 +711,7 @@ python crisp_gym/scripts/train_absolute_next_pose.py \
 `extra.target_cartesian` (the pose commanded to the CIC), keeping the gripper —
 so the policy learns the command stream, not the achieved trajectory. Same args
 as above. **Only valid for Cartesian-driven data** (streamed pose → CIC, e.g.
-`dric_dual_rscam_franka_umi`): on FACTR/JIC joint-space data `target_cartesian`
+`dric_franka_oakw_umi`): on FACTR/JIC joint-space data `target_cartesian`
 is constant per episode, and the script REFUSES with a message rather than
 training a constant. Recomputes the action stats and stamps
 `action_repr.json` (source `extra.target_cartesian`).
@@ -911,6 +911,35 @@ first inference the exact `observation.state` it fed the policy together with an
 absolute/relative heuristic — use it to sanity-check what a checkpoint was
 trained on.
 
+### Safety limits on the commanded pose
+
+Two settings in the env YAML guard every Cartesian command, from a policy or a
+teleop device (joint control has `max_joint_speed` instead):
+
+```yaml
+# workspace box for the commanded TCP position, metres, robot base frame;
+# leave out (or null) for no bound. Any of min_x, min_y, min_z, max_x, max_y, max_z.
+min_z: -0.20
+
+# how far a new target may move from the previous one per env.step;
+# null = no limit. At 15 Hz: 0.45 m/s and 75 deg/s.
+max_target_step_m: 0.03
+max_target_step_deg: 5.0
+```
+
+- **No floor by default.** A robot on a mobile base or at a table edge can
+  reach below z = 0, so set the box per rig. (Before 2026-11 a bound of exactly
+  0.0 was silently ignored; it is a real bound now.)
+- **The step limit** is on by default only in the deploy envs
+  (`dric_franka_oakw_deploy_umi`, `dric_franka_oakw_deploy_groot`,
+  `ur7e_robotiq_deploy_umi`). A longer step keeps its direction and is cut to
+  the limit; the first cut of each episode logs `Target step limit acted`.
+  Several cuts per episode mean the arm is being slowed on purpose — check the
+  model before raising the limit. It is measured target-to-target, so it does
+  not cap the target-minus-measured gap that carries the contact force.
+- Order inside `step`: step limit first, workspace box last, so the box always
+  holds.
+
 ### Deploy an ABSOLUTE checkpoint (train_absolute_next_pose.py)
 
 A checkpoint from `train_absolute_next_pose.py` (or the target-cartesian swap)
@@ -921,7 +950,7 @@ the `action_repr.json` stamped next to the checkpoint):
 
 ```bash
 python -m crisp_gym.scripts.deploy_policy \
-    --env-config dric_dual_rscam_franka_deploy_umi \
+    --env-config dric_franka_oakw_deploy_umi \
     --policy-config absolute_lerobot_policy \
     --path outputs/train/<run>/checkpoints/<step>/pretrained_model
 ```
@@ -1535,7 +1564,7 @@ success count does.
 
 **The Franka needs no force-torque sensor for any of this.** Training uses only
 poses and the command. The audit's stiffness step reads the external JOINT
-torques (`extra.ext_torque`, recorded by `dric_dual_rscam_franka_umi.yaml` from
+torques (`extra.ext_torque`, recorded by `dric_franka_oakw_umi.yaml` from
 the Franka state broadcaster) and turns them into a TCP force with built-in
 Franka kinematics.
 

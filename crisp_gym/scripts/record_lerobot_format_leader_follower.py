@@ -95,7 +95,7 @@ def main():
     parser.add_argument(
         "--follower-config",
         type=str,
-        default="left_robot_env",
+        default="dric_franka_oakw_umi",
         help="Configuration name for the follower robot. You can define your own configurations, please check https://utiasdsl.github.io/crisp_controllers/misc/create_own_config/.",
     )
     parser.add_argument(

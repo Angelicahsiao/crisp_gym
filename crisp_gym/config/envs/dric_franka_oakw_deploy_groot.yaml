@@ -2,9 +2,9 @@
 # checkpoint fine-tuned on franka_electricbox (umi_robot_full_record.yaml
 # contract: rot6d cartesian 9 + gripper 1 = 10-D state and action).
 #
-# Derived from dric_dual_rscam_franka_deploy_umi.yaml. The settings below that
-# differ from it are the GR00T-specific ones; everything else is carried over
-# because the robot and the data contract are the same.
+# The GR00T counterpart of dric_franka_oakw_deploy_umi.yaml. The settings below
+# that differ from it are the GR00T-specific ones; everything else is the same
+# robot and the same data contract (dric_franka_oakw_umi.yaml at recording).
 #
 # GR00T DIFFERS FROM THE RELATIVE-POSE CHECKPOINTS IN ONE IMPORTANT WAY: it
 # returns ABSOLUTE poses. GrootN17PackInputsStep caches the raw state and
@@ -79,7 +79,7 @@ camera_configs:
   # the dataset's — the checkpoint resolves its video views by those keys, so
   # a mismatch leaves GR00T with no image.
   - camera_name: "oakw_cam"          # -> observation.images.oakw_cam
-    camera_frame: "oakw_cam_link"
+    camera_frame: "wrist_link"
     # NATIVE resolution, deliberately. GR00T resizes to 256x256 itself inside
     # GrootN17VLMEncodeStep, so this is not about detail — it is about FRAMING.
     # crisp_py's _resize_with_aspect_ratio (camera.py:317) scales by
@@ -90,9 +90,16 @@ camera_configs:
     # Training kept ~90% of the frame (GR00T's own 230/256 crop), so anything
     # that crops here is a train/serve mismatch with no error to reveal it.
     resolution: [800, 1280]         # (HEIGHT, WIDTH) — camera_config.py:21
-    # TODO SET THIS to the topic you recorded observation.images.oakw_cam from.
-    # Find it with:  ros2 topic list | grep -i oak
-    camera_color_image_topic: "/oakw_cam/color/image_raw"
-    image_transport: "compressed"
+    # The rig's topics, as in dric_franka_oakw_umi.yaml (owner, 2026-11).
+    camera_color_image_topic: "/wrist/oakw_cam/rgb/image_raw"
+    camera_color_info_topic: "/wrist/oakw_cam/rgb/camera_info"
 
 sensor_configs: []
+
+# Per-step limit on the commanded target (ManipulatorEnvConfig, util/safety.py):
+# a new target may move at most this far from the previous one per env.step.
+# At 15 Hz: 0.45 m/s and 75 deg/s. A step that is longer keeps its direction
+# and is cut, with a warning the first time in each episode. Raise only after
+# checking the demonstrations' own step sizes.
+max_target_step_m: 0.03
+max_target_step_deg: 5.0

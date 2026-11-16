@@ -24,7 +24,7 @@ so extra.target_cartesian is the measured pose re-seeded after each home() and
 then CONSTANT for the whole episode. Training on a constant "action" is
 worthless, and it looks like normal data — so this script REFUSES to run when
 target_cartesian does not vary within episodes (see _assert_target_varies).
-Record the arm in Cartesian space (dric_dual_rscam_franka_umi) if you want this.
+Record the arm in Cartesian space (dric_franka_oakw_umi) if you want this.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Runs on the GPU PC (lerobot >= 0.5 / 0.6.x). ROS-free, crisp-import-free.
@@ -161,7 +161,7 @@ class TargetCartesianActionDataset:
                 "by Cartesian control (set_target), so on joint-driven data it "
                 "is the post-home pose frozen for the episode. Training would "
                 "learn a constant. Use a Cartesian-driven dataset "
-                "(dric_dual_rscam_franka_umi), or train the recorded action with "
+                "(dric_franka_oakw_umi), or train the recorded action with "
                 "train_absolute_next_pose.py instead."
             )
         logger.info(

@@ -779,7 +779,7 @@ def test_the_shipped_env_configs_resolve():
     search = [REPO / "crisp_gym" / "config"]
     path, _ = mod.control_file_from_env_config(envs / "ur7e_robotiq.yaml", search)
     assert mod.load_gains(path, "x") == (200.0, 60.0)
-    path, note = mod.control_file_from_env_config(envs / "dric_dual_rscam_franka_umi.yaml", search)
+    path, note = mod.control_file_from_env_config(envs / "dric_franka_oakw_umi.yaml", search)
     assert path is None and "bring-up" in note
     assert (REPO / "crisp_gym" / "config") in mod.config_search_paths()
     assert mod.config_search_paths([envs])[0] == envs

@@ -1,7 +1,8 @@
-# dric Franka + Robotiq 2F-85 + dual RealSense — DEPLOYMENT env for a
-# relative-pose rot6d model (e.g. franka_open_electricbox_rot6d_relativepose).
+# dric Franka + Robotiq 2F-85 + OAK-W wrist camera — DEPLOYMENT env for a
+# relative-pose rot6d model trained on data recorded with dric_franka_oakw_umi
+# + umi_robot_full_record.yaml.
 #
-# Copy of dric_dual_rscam_franka.yaml with the deployment-required settings
+# Copy of dric_franka_oakw_umi.yaml with the deployment-required settings
 # (do not "simplify" these away):
 #   orientation_representation: rotation_6d  -> obs cartesian is the 9D
 #       [pos3, rot6d-rows] absolute pose the relative pipeline expects
@@ -9,14 +10,12 @@
 #       T_cmd = T_base(obs time) @ T_rel itself and sends ABSOLUTE commands
 #   gripper_mode: absolute_continuous        -> the model outputs a continuous
 #       gripper value; binary thresholding would round it
+#   max_target_step_m / _deg                 -> a wrong model output cannot
+#       jump the arm; see the note at the bottom
 #
-# Camera names must match the recording config: they define the
-# observation.images.* keys and must match the keys the checkpoint was trained
-# on. The historical "wirst_cam"/"wirst_link" misspelling has been corrected to
-# "wrist_cam"/"wrist_link" (the ROS topics below always used the correct
-# spelling). A checkpoint trained on observation.images.wirst_cam will NOT find
-# its input under the corrected key — retrain, remap the key at load time, or
-# pin this file back to the old spelling for that checkpoint.
+# Replaces dric_dual_rscam_franka_deploy_umi.yaml (two RealSense cameras),
+# removed 2026-11. A checkpoint trained on the old env_cam/wrist_cam data needs
+# that file back (git history) — its camera keys are not oakw_cam.
 #
 # Gripper units for models trained on MIGRATED legacy dric data: the old
 # recorder stored the device-normalized gripper value, so in
@@ -90,15 +89,21 @@ gripper_config:
   max_effort: 5.0
 
 camera_configs:
-  - camera_name: "env_cam"
-    camera_frame: "env_link"
-    resolution: [224, 224]   # MUST equal the trained image size (dataset is 224x224)
-    camera_color_image_topic: "/env/env_cam/color/image_raw"
-    camera_color_info_topic: "/env/env_cam/color/camera_info"
-  - camera_name: "wrist_cam"
+  - camera_name: "oakw_cam"          # -> observation.images.oakw_cam
     camera_frame: "wrist_link"
-    camera_color_image_topic: "/wrist/wrist_cam/color/image_rect_raw"
-    camera_color_info_topic: "/wrist/wrist_cam/color/camera_info"
-    resolution: [224, 224]   # MUST equal the trained image size (dataset is 224x224)
+    # MUST equal the image size of the dataset the checkpoint was trained on:
+    # 800x1280 as umi_robot_full_record.yaml records it. Change it if that
+    # dataset was re-encoded with reencode_dataset_videos.py --resize.
+    resolution: [800, 1280]          # (HEIGHT, WIDTH)
+    camera_color_image_topic: "/wrist/oakw_cam/rgb/image_raw"
+    camera_color_info_topic: "/wrist/oakw_cam/rgb/camera_info"
 
 sensor_configs: []
+
+# Per-step limit on the commanded target (ManipulatorEnvConfig, util/safety.py):
+# a new target may move at most this far from the previous one per env.step.
+# At 15 Hz: 0.45 m/s and 75 deg/s. A step that is longer keeps its direction
+# and is cut, with a warning the first time in each episode. Raise only after
+# checking the demonstrations' own step sizes.
+max_target_step_m: 0.03
+max_target_step_deg: 5.0

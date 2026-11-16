@@ -28,7 +28,9 @@ where a finding depends on them.
 | 2026-11-16 | A5 | `lerobot_policy`, `async_lerobot_policy` and their configs `0_default_config.yaml`, `1_async_default_config.yaml` removed (owner). Their tests went with them. |
 | 2026-11-16 | C10 | `scripts/dataset_conversions/` deleted (owner). `scripts/training_configs/act_umilike.yaml` and `diffusion_umilike.yaml` still describe datasets made by the deleted `add_umilike_state_observation.py`; owner to decide. |
 | 2026-11-16 | C2 (part) | The five config files identical in crisp_py and crisp_gym now live in crisp_py only. The four that DIFFER are still in both; which copy is in effect on the robot PC depends on `CRISP_CONFIG_PATH` (see HANDOFF §6.1) and must be checked there before moving. |
-| 2026-11-16 | D2 (part) | Of the unreferenced configs, the two legacy policy YAMLs are gone. The owner asked to delete "all configs with dual camera"; that set includes the Franka recording env and `umi_robot_full_record.yaml`, so it waits for confirmation. |
+| 2026-11-16 | D2 (part) | Of the unreferenced configs, the two legacy policy YAMLs are gone, and so are all eight dual-camera configs (owner): the four `dric_dual_rscam_*` / `factr_dric_dual_rscam_*` Franka envs, `ur7e_robotiq_dual_cam`, `left_robot_env`, `right_robot_env`, `umi_robot_dual_cam_record`. The Franka rig's single-camera replacements are `dric_franka_oakw_umi`, `factr_dric_franka_oakw`, `dric_franka_oakw_deploy_umi`; `umi_robot_full_record.yaml` records `oakw_cam` only. The recording script's default follower config is now `dric_franka_oakw_umi` (was `left_robot_env`). |
+| 2026-11-16 | S1 | Fixed: 0.0 is a real workspace bound (`util/safety.workspace_box`). Default `min_z` is now `None` — the same behaviour as before, since the old 0.0 default was dropped — because a robot on a mobile base may reach below its base. |
+| 2026-11-16 | S2 | Done: `max_target_step_m` / `max_target_step_deg` (target-to-target, per env.step), default off, set to 0.03 m / 5 deg in the three deploy envs. Tested on the pure function and on the real env methods exec'd from source; not run on a robot. |
 
 ---
 
@@ -134,8 +136,8 @@ everywhere (A3).
 
 | ID | finding | priority | effort | status |
 |---|---|---|---|---|
-| S1 | Safety box silently drops any bound equal to 0.0; the default z floor never applies | P0 | S | VERIFIED |
-| S2 | No limit on how far the commanded pose may jump in one tick | P0 | M | VERIFIED (absence) |
+| S1 | Safety box silently drops any bound equal to 0.0; the default z floor never applies | P0 | S | DONE |
+| S2 | No limit on how far the commanded pose may jump in one tick | P0 | M | DONE (not run on a robot) |
 | C1 | Env names defined both as a Python class and a YAML: the class wins, the YAML is never read | P1 | S | VERIFIED |
 | C2 | Config files shadowed between crisp_py and crisp_gym; search order flips with an env var | P1 | S–M | PART DONE |
 | C3 | `observation.state` concatenated in dict insertion order | P1 | S | FROM HANDOFF |

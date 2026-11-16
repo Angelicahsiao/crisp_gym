@@ -481,7 +481,7 @@ Select the policy behavior with `--policy-config`.
 
 ```bash
 python -m crisp_gym.scripts.deploy_policy \
-    --env-config dric_dual_rscam_franka_deploy_umi \
+    --env-config dric_franka_oakw_deploy_umi \
     --policy-config <relative_lerobot_policy | absolute_lerobot_policy> \
     --path outputs/train/<run>/checkpoints/<step>/pretrained_model
 ```

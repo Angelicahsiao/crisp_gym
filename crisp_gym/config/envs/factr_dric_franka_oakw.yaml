@@ -1,7 +1,9 @@
-# FACTR leader -> dric Franka FR3 + Robotiq 2F-85 + dual RealSense.
+# FACTR leader -> dric Franka FR3 + Robotiq 2F-85 + OAK-W wrist camera.
 #
-# Joint-space RECORDING env for the FACTR leader arm, split off from
-# dric_dual_rscam_franka.yaml so the two teleop modes stop sharing one config:
+# Joint-space RECORDING env for the FACTR leader arm. Replaces
+# factr_dric_dual_rscam_franka.yaml (two RealSense cameras), removed 2026-11
+# with the other dual-camera configs; only the camera changed. It was split
+# off the streamed-teleop env so the two teleop modes stop sharing one config:
 # that one is driven in CARTESIAN space (streamed phone pose, relative deltas),
 # this one in JOINT space by FACTR. The differences below are exactly the
 # settings that cannot be right for both at once.
@@ -9,7 +11,7 @@
 # Use with:
 #   python crisp_gym/scripts/record_lerobot_format_leader_follower.py \
 #       --use-factr --factr-name right --joint-control \
-#       --follower-config factr_dric_dual_rscam_franka \
+#       --follower-config factr_dric_franka_oakw \
 #       --record-config crisp_gym/config/recording/umi_robot_full_record.yaml \
 #       --repo-id <org>/<name> --fps 15
 #
@@ -18,8 +20,8 @@
 # MEASURED gripper width, neither of which depends on how the arm was driven.
 # Only the arm's behaviour differs.
 #
-# Everything not listed here (cameras, gripper, ext_torque sensor, effort
-# feedback) is a copy of dric_dual_rscam_franka.yaml — keep them in sync.
+# Everything not listed here (camera, gripper, ext_torque sensor, effort
+# feedback) is a copy of dric_franka_oakw_umi.yaml — keep them in sync.
 control_frequency: 30.0
 
 # Continuous, NOT absolute_binary. FACTR publishes a continuous trigger; binary
@@ -95,16 +97,11 @@ gripper_config:
   max_effort: 5.0
 
 camera_configs:
-  - camera_name: "env_cam"
-    camera_frame: "env_link"
-    resolution: [256, 256]
-    camera_color_image_topic: "/env/env_cam/color/image_raw"
-    camera_color_info_topic: "/env/env_cam/color/camera_info"
-  - camera_name: "wrist_cam"
+  - camera_name: "oakw_cam"          # -> observation.images.oakw_cam
     camera_frame: "wrist_link"
-    camera_color_image_topic: "/wrist/wrist_cam/color/image_rect_raw"
-    camera_color_info_topic: "/wrist/wrist_cam/color/camera_info"
-    resolution: [256, 256]
+    resolution: [800, 1280]          # (HEIGHT, WIDTH), native: nothing cropped
+    camera_color_image_topic: "/wrist/oakw_cam/rgb/image_raw"
+    camera_color_info_topic: "/wrist/oakw_cam/rgb/camera_info"
 
 # EXTERNAL joint torque from franka_ros2's franka_robot_state_broadcaster:
 # tau_ext with gravity and arm dynamics already removed by the robot firmware,

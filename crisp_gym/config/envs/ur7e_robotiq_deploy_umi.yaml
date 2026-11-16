@@ -58,3 +58,11 @@ sensor_configs: []
 
 cartesian_control_param_config: "control/ur_cartesian_impedance.yaml"
 joint_control_param_config: "control/ur_joint_control.yaml"
+
+# Per-step limit on the commanded target (ManipulatorEnvConfig, util/safety.py):
+# a new target may move at most this far from the previous one per env.step.
+# At 15 Hz: 0.45 m/s and 75 deg/s. A step that is longer keeps its direction
+# and is cut, with a warning the first time in each episode. Raise only after
+# checking the demonstrations' own step sizes.
+max_target_step_m: 0.03
+max_target_step_deg: 5.0

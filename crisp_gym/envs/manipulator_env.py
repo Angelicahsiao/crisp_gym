@@ -53,6 +53,7 @@ from crisp_gym.util.gripper_mode import (
     max_action_for_gripper_mode,
     min_action_for_gripper_mode,
 )
+from crisp_gym.util.safety import limit_target_step
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,7 @@ class ManipulatorBaseEnv(gym.Env):
 
         self.task = task
         self.timestep = 0
+        self.target_step_cuts = 0  # env.steps whose target the step limit shortened
         self.ctrl_type = ControlType.UNDEFINED
 
         logger.debug(f"ManipulatorBaseEnv initialized with config: {self.config}")
@@ -512,6 +514,7 @@ class ManipulatorBaseEnv(gym.Env):
         super().reset(seed=seed, options=options)
 
         self.timestep = 0
+        self.target_step_cuts = 0  # env.steps whose target the step limit shortened
 
         self.initialize()
         logger.debug("[DEBUG reset] initialize() done")
@@ -729,6 +732,42 @@ class ManipulatorBaseEnv(gym.Env):
                 f"Unsupported orientation representation: {self.config.orientation_representation}"
             )
 
+    def _limit_target_step(
+        self, position: np.ndarray, orientation: Rotation
+    ) -> tuple[np.ndarray, Rotation]:
+        """Apply max_target_step_m / max_target_step_deg against the previous target.
+
+        The previous target is the robot's current target: seeded with the
+        measured pose after reset() and home(), then whatever was last sent.
+        """
+        max_m = self.config.max_target_step_m
+        max_deg = self.config.max_target_step_deg
+        if max_m is None and max_deg is None:
+            return position, orientation
+        previous = self.robot.target_pose
+        new_position, new_orientation, cut_t, cut_r = limit_target_step(
+            previous.position, previous.orientation, position, orientation, max_m, max_deg
+        )
+        if cut_t or cut_r:
+            self.target_step_cuts += 1
+            if self.target_step_cuts == 1:
+                asked_m = float(np.linalg.norm(np.asarray(position) - previous.position))
+                asked_deg = float(
+                    np.degrees(
+                        np.linalg.norm((orientation * previous.orientation.inv()).as_rotvec())
+                    )
+                )
+                logger.warning(
+                    "Target step limit acted (first time this episode): the command moved "
+                    "%.1f mm and %.1f deg in one step; limits are %s mm and %s deg. Repeated "
+                    "cuts mean the arm is being slowed down on purpose.",
+                    asked_m * 1e3,
+                    asked_deg,
+                    "none" if max_m is None else f"{max_m * 1e3:.0f}",
+                    "none" if max_deg is None else f"{max_deg:g}",
+                )
+        return new_position, new_orientation
+
     def clip_position_for_safety(self, position: np.ndarray) -> np.ndarray:
         """Clip the position to ensure safety.
 
@@ -852,13 +891,17 @@ class ManipulatorCartesianEnv(ManipulatorBaseEnv):
             translation = action[:3]
             rotation = self.action_to_rotation(action[3:-1])
 
-            target_position = self.clip_position_for_safety(
-                self.robot.target_pose.position + translation
-            )
+            target_position = self.robot.target_pose.position + translation
             target_orientation = rotation * self.robot.target_pose.orientation
         else:
-            target_position = self.clip_position_for_safety(action[:3])
+            target_position = np.asarray(action[:3], dtype=np.float64)
             target_orientation = self.action_to_rotation(action[3:-1])
+
+        # Step limit first, workspace box last, so the box always holds.
+        target_position, target_orientation = self._limit_target_step(
+            target_position, target_orientation
+        )
+        target_position = self.clip_position_for_safety(target_position)
 
         target_pose = Pose(position=target_position, orientation=target_orientation)
         self.robot.set_target(pose=target_pose)
