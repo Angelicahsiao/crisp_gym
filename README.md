@@ -23,6 +23,7 @@ Each document answers one question. Start with the one that matches what you are
 | [crisp_gym/scripts/README.md](crisp_gym/scripts/README.md) | *what does this script or flag do?* — training and deployment script reference | you know the step, you need the flags |
 | **[GUIDE_REMOTE_SERVER_AND_TACTILE.md](GUIDE_REMOTE_SERVER_AND_TACTILE.md)** | *how do I run the policy server, and the tactile report / residual audit / tactile CSV loader?* — commands, settings, how to read the output, what to do when it fails | serving a model from the GPU machine, or working with tactile data |
 | [REMOTE_INFERENCE.md](REMOTE_INFERENCE.md) | the websocket contract and wire protocol for serving a policy from the GPU machine | building or debugging the server |
+| [CODE_REVIEW.md](CODE_REVIEW.md) | *what should be improved, and in which order?* — architecture map and a prioritised backlog with file:line evidence | planning work on the codebase |
 | [HANDOFF.md](HANDOFF.md) | *what must I not break?* — pose/data conventions, invariants, verification procedure | before changing pose math, recording, or the data schema |
 | [CHANGELOG.md](CHANGELOG.md) | released versions | — |
 
