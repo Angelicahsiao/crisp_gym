@@ -399,19 +399,20 @@ def ratio_of_means(numerators, denominators) -> float:
     return float(np.mean(numerators)) / den
 
 
-def _find_action_repr(pretrained_path):
-    """Load action_repr.json stamped by the absolute training launchers, if any.
+def _find_action_repr(pretrained_path, name="action_repr.json"):
+    """Load a stamp file written next to the checkpoints by a training launcher.
 
-    Walks up from the checkpoint dir (usually <out>/checkpoints/<step>/
-    pretrained_model) to the training output root, like the deploy policy's
-    find_action_repr. Returns the parsed dict or None.
+    action_repr.json (absolute launchers) by default; pose_repr.json (relative
+    launcher) with `name`. Walks up from the checkpoint dir (usually
+    <out>/checkpoints/<step>/pretrained_model) to the training output root,
+    like the deploy policy's find_action_repr. Returns the parsed dict or None.
     """
     import json
     from pathlib import Path
 
     p = Path(pretrained_path).resolve()
     for cand in (p, *list(p.parents)[:4]):
-        f = cand / "action_repr.json"
+        f = cand / name
         if f.exists():
             try:
                 return json.loads(f.read_text())
@@ -421,6 +422,21 @@ def _find_action_repr(pretrained_path):
 
 
 def main():
+    """Run the check; repeat an action-source mismatch at the very end.
+
+    The mismatch warning is also logged where it is found, but pages of numbers
+    follow it — and it is the one line that says those numbers do not mean what
+    they appear to.
+    """
+    closing: list[str] = []
+    try:
+        _run(closing)
+    finally:
+        for line in closing:
+            logger.warning(line)
+
+
+def _run(closing: list[str]) -> None:
     p = argparse.ArgumentParser(description="Open-loop action-prediction error vs the demos")
     p.add_argument("--path", required=True, help="checkpoint pretrained_model dir")
     p.add_argument("--repo-id", required=True, help="dataset repo id or local path")
@@ -537,6 +553,19 @@ def main():
         "ABSOLUTE (no relative wrap)" if is_absolute else "RELATIVE",
     )
     wrapped = ds if is_absolute else lrp.RelativePoseDataset(ds)
+
+    # Is this the dataset KIND the model was trained on? A command-trained
+    # checkpoint against a measured-pose dataset (or the reverse) still runs
+    # and prints plausible numbers.
+    mismatch = lrp.action_source_mismatch(
+        lrp.checkpoint_action_source(
+            _find_action_repr(args.path, "pose_repr.json"), _find_action_repr(args.path)
+        ),
+        lrp.read_action_source(getattr(train_config.dataset, "root", None)),
+    )
+    if mismatch:
+        logger.warning("[openloop] " + mismatch)
+        closing.append("[openloop] " + mismatch)
 
     image_features = list(getattr(policy.config, "image_features", []) or [])
     n_obs = int(getattr(policy.config, "n_obs_steps", 1))

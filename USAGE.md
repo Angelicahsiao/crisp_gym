@@ -1505,6 +1505,40 @@ Two policies, identical in everything except what the arm action is:
 Both are trained RELATIVE with the same launcher, so only the action source
 differs, and both deploy with the same `relative_lerobot_policy` config.
 
+**How much data.** Both models train on the SAME recordings (the command copy
+is derived), so the comparison costs one data collection, not two.
+
+| stage | episodes | what it is for |
+|---|---|---|
+| pilot | 10–20 | run the audit: is the command far enough from the measured pose in contact to matter (step F), and what stiffness does the arm deliver (step C)? No training. |
+| first pair of models | 50 | enough to see whether each policy does the task at all, with the box in roughly one place |
+| the comparison proper | 100–200 | reference point: the Adaptive Compliance Policy paper used about 200–230 demonstrations per contact-rich task |
+
+Keep the scene narrow at first (box position within a few centimetres, one
+lighting): variation is what multiplies the data a policy needs, and it would
+hit both models alike without telling them apart.
+
+Rollout trials decide how small a difference you can see. Chance of detecting a
+true difference in success rate (two-sided Fisher exact test, 5 %):
+
+| true success rates | 10 trials each | 20 each | 30 each | 50 each |
+|---|---|---|---|---|
+| 90 % vs 30 % | 67 % | 98 % | 100 % | 100 % |
+| 90 % vs 50 % | 30 % | 74 % | 91 % | 99 % |
+| 80 % vs 50 % | 13 % | 41 % | 60 % | 85 % |
+| 90 % vs 70 % | 6 % | 24 % | 37 % | 64 % |
+
+So 10 trials each only show a very large gap; plan 20–30 each, and lean on the
+continuous measurements from recorded rollouts (contact gap in audit step A,
+time to finish), which separate two policies with far fewer trials than a
+success count does.
+
+**The Franka needs no force-torque sensor for any of this.** Training uses only
+poses and the command. The audit's stiffness step reads the external JOINT
+torques (`extra.ext_torque`, recorded by `dric_dual_rscam_franka_umi.yaml` from
+the Franka state broadcaster) and turns them into a TCP force with built-in
+Franka kinematics.
+
 **0. Look at the labels first (no training).** Step F of the audit prints the
 gap between the command and the measured pose `L` frames ahead. The row marked
 "the recorded `action`" is what the two training targets differ by. If the gap
@@ -1532,8 +1566,12 @@ python crisp_gym/scripts/lerobot_relative_pose.py \
     --output_dir=outputs/train/cmp_command --batch_size=64 --steps=200000
 ```
 
-Keep the two output directories apart by name: nothing inside a relative
-checkpoint records which action it was trained on.
+Each checkpoint records which action it was trained on: `pose_repr.json` next
+to the checkpoints gets `action.source` (`kind: measured` or `command`), read
+from the dataset's own metadata. The deploy log prints it at start-up ("The
+served checkpoint's arm action is the COMMANDED pose ...", also through a
+policy server), so a mixed-up directory shows before the arm moves. Still name
+the two output directories clearly.
 
 **3. Check each model learned its own target** (GPU PC, no robot):
 
@@ -1548,7 +1586,9 @@ python crisp_gym/scripts/check_policy_openloop.py \
 
 Each is compared against ITS OWN dataset. The two errors are not comparable
 with each other (the command moves more than the pose does); this step only
-rules out a model that failed to train.
+rules out a model that failed to train. Given the wrong dataset — the command
+model against the recorded one, or the reverse — the script still runs, and
+prints `ACTION SOURCE MISMATCH` where it notices and again after the numbers.
 
 **4. Roll out both on the robot**, same deploy env, same policy YAML, same
 controller gains as the recording:

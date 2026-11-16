@@ -1000,11 +1000,24 @@ established so far — verify before contradicting them:
   Protocol in USAGE §14. Added for it: audit step F (`lookahead_gap`) — the gap
   between command[t] and pose[t+L], free vs contact, which separates plain lag
   (closes at some L) from what only the command carries (stays open in
-  contact). Not done, and worth doing before many runs exist: a relative
-  checkpoint does not record its action source (`pose_repr.json` has no field
-  for it; the dataset copy's `meta/action_repr.json` is not carried over), so
-  the two checkpoints are told apart by directory name only. `ur_electricbox`
-  (10 episodes) is too small to train either policy.
+  contact). A relative checkpoint now RECORDS its action source:
+  `lerobot_relative_pose.read_action_source` reads the dataset
+  (`meta/action_repr.json` from the swap wins over `meta/record_config.json`,
+  which a swapped copy still carries) and `stamp_pose_repr` writes it to
+  `pose_repr.json` -> `action.source` (`kind`: measured / command / unknown).
+  The inference worker puts it in its metadata (`action_source`) and both
+  sides log it; `check_policy_openloop.py` warns `ACTION SOURCE MISMATCH`,
+  twice, when the checkpoint and the dataset are of different kinds. The stamp
+  reader exists in TWO copies by necessity (trainer file imports torch, robot
+  side has none) — `test_both_readers_of_the_stamps_agree` pins them. Not run
+  with a real lerobot training or a real worker (no torch here).
+  The owner will run the comparison on the FRANKA first (no F/T sensor needed:
+  step C uses `extra.ext_torque`). `ur_electricbox` (10 episodes) is too small
+  to train either policy. Known gap: `swap_action_offline.py` swaps the ARM
+  only — the gripper action of both models is the measured width, so a
+  "command" model still does not command a squeeze; `extra.gripper_target`
+  must be recorded (it is not in the existing Franka data) before that can
+  change.
 - Planned order: audit existing data → robot-only ablation of measured-pose vs
   command action (true commands exist, no residual model needed) → residual
   model on robot data → relabel handheld data into a NEW column (never

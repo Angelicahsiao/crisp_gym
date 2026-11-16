@@ -229,6 +229,41 @@ def find_action_repr(pretrained_path: str) -> dict | None:
     return None
 
 
+def action_source_from_stamps(pose_repr: dict | None, action_repr: dict | None) -> dict | None:
+    """Which action a checkpoint was trained on, from the files next to it.
+
+    Relative checkpoints carry it in pose_repr.json (action.source, written by
+    lerobot_relative_pose.py from the dataset's own metadata). The absolute
+    launchers write action_repr.json with the column name instead. None for a
+    checkpoint trained before either recorded it.
+    """
+    source = ((pose_repr or {}).get("action") or {}).get("source")
+    if isinstance(source, dict) and source.get("kind"):
+        return source
+    column = ((action_repr or {}).get("action") or {}).get("source")
+    if isinstance(column, str):
+        kind = (
+            "command"
+            if "target" in column
+            else ("measured" if column.startswith("next_") else "unknown")
+        )
+        return {"kind": kind, "column": column, "lookahead": None, "read_from": "action_repr.json"}
+    return None
+
+
+def describe_action_source(source: dict | None) -> str:
+    """One line for the log: what the model's arm action means."""
+    if not source:
+        return "not recorded (checkpoint trained before this was stamped)"
+    column = source.get("column")
+    if source.get("kind") == "command":
+        return f"COMMANDED pose ({column})"
+    if source.get("kind") == "measured":
+        ahead = source.get("lookahead")
+        return f"MEASURED pose ({column}" + (f", {ahead} frame(s) ahead)" if ahead else ")")
+    return f"unknown ({column})" if column else "unknown (the dataset did not say)"
+
+
 def target_pose9d_to_euler6d(target9: np.ndarray) -> np.ndarray:
     """9-D [pos3, rot6d] target -> 6-D [pos3, euler_xyz] (legacy state layout).
 
@@ -687,6 +722,10 @@ class RelativeLerobotPolicy(Policy):
             else:
                 logger.info("pad_missing_images set, but nothing needed padding.")
 
+        logger.info(
+            "The served checkpoint's arm action is the %s.",
+            describe_action_source(meta.get("action_source")),
+        )
         self.n_obs_steps = int(meta["n_obs_steps"])
         chunk_len = int(meta["n_action_steps"])
         self.n_action_steps = min(int(n_action_steps), chunk_len) if n_action_steps else chunk_len
@@ -1483,6 +1522,8 @@ def inference_worker(
         else:
             state_mode = state_input
         wlog.info(f"[RelInference] observation.state input mode: {state_mode}")
+        action_source = action_source_from_stamps(pose_repr, find_action_repr(pretrained_path))
+        wlog.info(f"[RelInference] arm action is the {describe_action_source(action_source)}")
         wlog.info(
             "[RelInference] checkpoint input_features: "
             f"{list(getattr(policy.config, 'input_features', {}) or {})}"
@@ -1553,6 +1594,10 @@ def inference_worker(
             # trained without --rename_map, which makes the client a no-op.
             "rename_map": rename_map,
             "image_shapes": image_shapes,
+            # MEASURED pose or COMMAND (None = not recorded). The robot side
+            # only logs it: two checkpoints of one comparison are otherwise
+            # told apart by their directory name alone.
+            "action_source": action_source,
         }
         conn.send(meta)
         wlog.info(f"[RelInference] Ready: {meta}")

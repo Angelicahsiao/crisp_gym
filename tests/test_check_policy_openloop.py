@@ -616,6 +616,16 @@ def pose9d_to_mat(p9):
     M = np.eye(4); M[:3, :3] = np.stack([r0, r1, np.cross(r0, r1)]); M[:3, 3] = p9[:3]
     return M
 lrp.pose9d_to_mat = pose9d_to_mat
+# Provenance helpers. The driver's "dataset" is command-labelled only when asked
+# (--command-dataset is taken out of the script's own argv below).
+COMMAND_DATASET = "--command-dataset" in EXTRA
+EXTRA = [a for a in EXTRA if a != "--command-dataset"]
+lrp.read_action_source = lambda root: {
+    "kind": "command" if COMMAND_DATASET else "measured", "column": "x"}
+lrp.checkpoint_action_source = lambda pose_repr, action_repr: {"kind": "measured", "column": "y"}
+def action_source_mismatch(ckpt, ds):
+    return None if ckpt["kind"] == ds["kind"] else "ACTION SOURCE MISMATCH (driver)"
+lrp.action_source_mismatch = action_source_mismatch
 sys.modules["lerobot_relative_pose"] = lrp
 
 ol = SourceFileLoader("openloop_e2e", script).load_module()
@@ -654,6 +664,30 @@ def test_main_end_to_end_perfect_policy_reads_zero_error(tmp_path, mode):
     assert "task string fed to the policy: 'open the electrical box'" in out
     assert "episode 0: dataset rows 0..59 (60 frames)" in out
     assert _rows(out) == [0, 5, 10, 15, 20, 25]  # episode 0 only, --max-frames 6
+
+
+def test_main_says_so_twice_when_the_dataset_is_the_other_kind(tmp_path):
+    """A measured-pose checkpoint against a command dataset still runs and prints
+    numbers; the warning must be there where it is found AND after the numbers."""
+    import subprocess
+
+    driver = tmp_path / "driver.py"
+    driver.write_text(DRIVER)
+
+    def run(*extra):
+        proc = subprocess.run(
+            [sys.executable, str(driver), str(SCRIPT), "nobs2", "0", *extra],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        assert proc.returncode == 0, (proc.stdout + proc.stderr)[-3000:]
+        return proc.stdout + proc.stderr
+
+    out = run("--command-dataset")
+    assert out.count("ACTION SOURCE MISMATCH (driver)") == 2
+    assert out.rindex("ACTION SOURCE MISMATCH") > out.rindex("verdict:")  # repeated at the end
+    assert "ACTION SOURCE MISMATCH" not in run()  # same kind: silent
 
 
 def _run_driver(tmp_path, mode, *episodes):

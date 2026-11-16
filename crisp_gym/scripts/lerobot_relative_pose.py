@@ -404,6 +404,99 @@ def _installed_lerobot_version() -> str:
             return "unknown"
 
 
+def read_action_source(dataset_root: object) -> dict:
+    """What the ARM part of a dataset's `action` column holds, from the dataset.
+
+    Two relative checkpoints trained on the same recordings look identical from
+    the inside whether the action was the pose the arm REACHED or the pose that
+    was COMMANDED. The dataset knows which; this reads it so the checkpoint can
+    carry it (`pose_repr.json` -> action.source).
+
+    Returns a dict with `kind`:
+      "command"   a copy made by swap_action_offline.py (meta/action_repr.json),
+                  or a dataset recorded with action definition `command`;
+      "measured"  recorded with a `next_*` action definition
+                  (meta/record_config.json): the value reached `lookahead`
+                  frames later;
+      "unknown"   neither file says (dataset not recorded with crisp_gym).
+    A swapped copy still carries the ORIGINAL record_config.json, so the swap
+    marker is read first. Never raises: this is provenance, not a gate.
+    """
+    import json
+    from pathlib import Path
+
+    out: dict = {"kind": "unknown", "column": None, "lookahead": None, "read_from": None}
+    if not dataset_root:
+        return out
+    try:
+        meta_dir = Path(str(dataset_root)) / "meta"
+        out["dataset"] = Path(str(dataset_root)).name
+        swap = meta_dir / "action_repr.json"
+        if swap.exists():
+            action = (json.loads(swap.read_text()) or {}).get("action") or {}
+            out.update(
+                kind="command", column=action.get("source"), read_from="meta/action_repr.json"
+            )
+            return out
+        record = meta_dir / "record_config.json"
+        if record.exists():
+            action = (json.loads(record.read_text()) or {}).get("action") or {}
+            definition = action.get("definition")
+            if isinstance(definition, str):
+                out.update(
+                    kind="command"
+                    if definition == "command"
+                    else ("measured" if definition.startswith("next_") else "unknown"),
+                    column=definition,
+                    lookahead=action.get("lookahead"),
+                    read_from="meta/record_config.json",
+                )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not read the dataset's action source: {e}")
+    return out
+
+
+def checkpoint_action_source(pose_repr: dict | None, action_repr: dict | None) -> dict | None:
+    """Which action a checkpoint was trained on, from the files next to it.
+
+    pose_repr.json (relative checkpoints, action.source) first; else the column
+    name the absolute launchers write to action_repr.json. None when neither
+    recorded it. Mirrors relative_lerobot_policy.action_source_from_stamps,
+    which the robot side uses (this file must stay crisp-import-free).
+    """
+    source = ((pose_repr or {}).get("action") or {}).get("source")
+    if isinstance(source, dict) and source.get("kind"):
+        return source
+    column = ((action_repr or {}).get("action") or {}).get("source")
+    if isinstance(column, str):
+        kind = (
+            "command"
+            if "target" in column
+            else ("measured" if column.startswith("next_") else "unknown")
+        )
+        return {"kind": kind, "column": column, "lookahead": None, "read_from": "action_repr.json"}
+    return None
+
+
+def action_source_mismatch(checkpoint: dict | None, dataset: dict | None) -> str | None:
+    """A warning when a checkpoint is compared with a dataset of the OTHER kind.
+
+    None when they agree or when either side does not say (an older checkpoint,
+    a dataset without metadata): silence is not a claim that they match.
+    """
+    ck, ds = (checkpoint or {}).get("kind"), (dataset or {}).get("kind")
+    if ck not in ("command", "measured") or ds not in ("command", "measured") or ck == ds:
+        return None
+    name = {"command": "COMMANDED pose", "measured": "MEASURED pose"}
+    return (
+        f"ACTION SOURCE MISMATCH: the checkpoint was trained on the {name[ck]} "
+        f"({(checkpoint or {}).get('column')}), but the action column of this dataset is the "
+        f"{name[ds]} ({(dataset or {}).get('column')}). The errors reported here measure the "
+        "distance between two different targets, not how well the model learned. Run it "
+        "against the dataset the model was trained on."
+    )
+
+
 def stamp_pose_repr(cfg, dataset, epoch_plan=None) -> None:
     """Write pose_repr.json next to the checkpoints (HANDOFF §4.2).
 
@@ -477,6 +570,12 @@ def stamp_pose_repr(cfg, dataset, epoch_plan=None) -> None:
                 "base": "last_obs_frame_tcp",
                 "compose_base": "obs_time",
                 "layout": "[x, y, z, rot6d(6), gripper]",
+                # MEASURED pose or COMMAND? The relative conversion is the
+                # same for both, so nothing else in this file tells them
+                # apart (see read_action_source).
+                "source": read_action_source(
+                    getattr(meta, "root", None) or getattr(dataset, "root", None)
+                ),
             },
             "observation": {
                 # lerobot-0.4.4 policies consume the CONCATENATED

@@ -975,6 +975,124 @@ def test_relative_dataset_getattr_guarded_against_unpickle_recursion():
         pass
 
 
+# ── which action was the checkpoint trained on? ──────────────────────────────
+
+
+def test_action_source_is_read_from_the_dataset():
+    import json
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "franka_box"
+        (root / "meta").mkdir(parents=True)
+        record, swap = root / "meta" / "record_config.json", root / "meta" / "action_repr.json"
+
+        # no metadata, no root: unknown, and never an exception
+        assert lrp.read_action_source(root)["kind"] == "unknown"
+        assert lrp.read_action_source(None)["kind"] == "unknown"
+
+        # recorded by crisp_gym: the pose reached one frame later
+        record.write_text(json.dumps({"action": {"definition": "next_tcp_pose", "lookahead": 1}}))
+        src = lrp.read_action_source(root)
+        assert (src["kind"], src["column"], src["lookahead"]) == ("measured", "next_tcp_pose", 1)
+        assert src["dataset"] == "franka_box" and src["read_from"] == "meta/record_config.json"
+
+        # a swap_action_offline.py copy KEEPS that record_config.json: its marker wins
+        swap.write_text(
+            json.dumps({"action": {"source": "extra.target_cartesian", "pose_repr": "absolute"}})
+        )
+        src = lrp.read_action_source(root)
+        assert (src["kind"], src["column"]) == ("command", "extra.target_cartesian")
+        assert src["read_from"] == "meta/action_repr.json"
+
+        # classic teleop recording: the action column IS the command
+        swap.unlink()
+        record.write_text(json.dumps({"action": {"definition": "command"}}))
+        assert lrp.read_action_source(root)["kind"] == "command"
+
+        record.write_text("{not json")
+        assert lrp.read_action_source(root)["kind"] == "unknown"
+
+
+def test_pose_repr_carries_the_action_source():
+    """Two relative checkpoints of one comparison differ ONLY in this field."""
+    import json
+    import tempfile
+    from types import SimpleNamespace
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stamped = {}
+        for name, marker in (("measured", None), ("command", "extra.target_cartesian")):
+            root, out = Path(tmp) / f"ds_{name}", Path(tmp) / f"out_{name}"
+            (root / "meta").mkdir(parents=True)
+            (root / "meta" / "record_config.json").write_text(
+                json.dumps({"action": {"definition": "next_tcp_pose", "lookahead": 1}})
+            )
+            if marker:
+                (root / "meta" / "action_repr.json").write_text(
+                    json.dumps({"action": {"source": marker}})
+                )
+            cfg = SimpleNamespace(
+                policy=SimpleNamespace(n_obs_steps=2, horizon=16, n_action_steps=8),
+                output_dir=str(out),
+            )
+            dataset = SimpleNamespace(meta=SimpleNamespace(features={}, fps=15, root=root))
+            lrp.stamp_pose_repr(cfg, dataset)
+            stamped[name] = json.loads((out / "pose_repr.json").read_text())
+
+        assert stamped["measured"]["action"]["source"]["kind"] == "measured"
+        assert stamped["command"]["action"]["source"]["kind"] == "command"
+        for info in stamped.values():  # the deploy contract is untouched
+            assert info["action"]["pose_repr"] == "relative"
+            assert info["action"]["compose_base"] == "obs_time"
+        a, b = (dict(v["action"], source=None) for v in stamped.values())
+        assert a == b
+
+
+def test_both_readers_of_the_stamps_agree():
+    """The trainer-side and the robot-side reader are two copies by necessity
+    (the trainer file imports torch, the robot has none): pin them together."""
+    cases = [
+        ({"action": {"source": {"kind": "command", "column": "extra.target_cartesian"}}}, None),
+        ({"action": {"source": {"kind": "measured", "column": "next_tcp_pose"}}}, None),
+        ({"action": {"pose_repr": "relative"}}, None),  # trained before the field existed
+        (None, {"action": {"source": "extra.target_cartesian", "pose_repr": "absolute"}}),
+        (None, {"action": {"source": "next_tcp_pose", "pose_repr": "absolute"}}),
+        (None, None),
+    ]
+    kinds = []
+    for pose_repr, action_repr in cases:
+        robot = rlp.action_source_from_stamps(pose_repr, action_repr)
+        assert robot == lrp.checkpoint_action_source(pose_repr, action_repr)
+        kinds.append(robot and robot["kind"])
+    assert kinds == ["command", "measured", None, "command", "measured", None]
+
+
+def test_describe_action_source():
+    d = rlp.describe_action_source
+    assert d({"kind": "command", "column": "extra.target_cartesian"}) == (
+        "COMMANDED pose (extra.target_cartesian)"
+    )
+    assert d({"kind": "measured", "column": "next_tcp_pose", "lookahead": 1}) == (
+        "MEASURED pose (next_tcp_pose, 1 frame(s) ahead)"
+    )
+    assert "not recorded" in d(None) and "unknown" in d({"kind": "unknown", "column": None})
+
+
+def test_mismatch_is_reported_only_when_both_sides_say():
+    m = lrp.action_source_mismatch
+    cmd = {"kind": "command", "column": "extra.target_cartesian"}
+    meas = {"kind": "measured", "column": "next_tcp_pose"}
+    unknown = {"kind": "unknown", "column": None}
+    assert m(cmd, cmd) is None and m(meas, meas) is None
+    # silence is not a claim that they match — but it must not cry wolf either
+    assert m(None, cmd) is None and m(cmd, unknown) is None and m(unknown, meas) is None
+    text = m(cmd, meas)
+    assert "COMMANDED pose (extra.target_cartesian)" in text
+    assert "MEASURED pose (next_tcp_pose)" in text
+    assert m(meas, cmd) is not None
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
