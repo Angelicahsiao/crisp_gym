@@ -9,13 +9,12 @@ Two machines import this package, and neither has everything installed:
 
 `RelativeLerobotPolicy` and `RemotePolicy` keep their module tops free of all
 three (torch and lerobot are imported inside the inference worker only), so
-they always import. `LerobotPolicy` and `AsyncLerobotPolicy` import torch,
-lerobot and the ROS-bound env at module load; when one of those is missing
-they are left out of the registry instead of making the whole package — and
-with it `remote_protocol` — unimportable.
-"""
+the package always imports.
 
-import logging
+The older `lerobot_policy` and `async_lerobot_policy` were removed (2026-11,
+owner's decision): `relative_lerobot_policy` deploys every checkpoint they did,
+and its `async_inference: true` is the asynchronous mode.
+"""
 
 from crisp_gym.policy.policy import Policy, make_policy, register_policy
 from crisp_gym.policy.relative_lerobot_policy import RelativeLerobotPolicy
@@ -28,15 +27,3 @@ __all__ = [
     "register_policy",
     "make_policy",
 ]
-
-try:
-    from crisp_gym.policy.async_lerobot_policy import AsyncLerobotPolicy
-    from crisp_gym.policy.lerobot_policy import LerobotPolicy
-
-    __all__ += ["LerobotPolicy", "AsyncLerobotPolicy"]
-except ImportError as exc:  # torch / lerobot / ROS not installed on this machine
-    logging.getLogger(__name__).info(
-        "lerobot_policy and async_lerobot_policy are not available here (%s); "
-        "relative_lerobot_policy and remote_policy still are.",
-        exc,
-    )

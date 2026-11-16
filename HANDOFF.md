@@ -780,7 +780,18 @@ declares `fr3_joint*`, and `set_parameters` raised
 is now `control/fr3_joint_control.yaml` (matching the existing
 `ur_joint_control.yaml` convention) so the name cannot collide.
 
-**STILL SHADOWED — crisp_py's packaged copy wins:**
+**REMOVED (2026-11, owner: "put duplicated config files all in crisp_py"):**
+the five duplicates that were byte-identical in both packages
+(`control/clipped_cartesian_impedance`, `control/default_operational_space_controller`,
+`control/gravity_compensation`, `control/no_friction_cartesian_impedance`,
+`robots/fr3`) now exist in crisp_py only. No behaviour change either way.
+
+**STILL DUPLICATED, WITH DIFFERENT CONTENT — which copy loads depends on
+`CRISP_CONFIG_PATH`.** Without it crisp_py's copy wins. `scripts/set_env.sh.example`
+(sourced by `pixi shell` once copied to `set_env.sh`) PREPENDS crisp_gym's
+config dir, so on a machine set up from that template crisp_gym's copy is the
+one in effect. Moving these to crisp_py must keep the copy that is in effect on
+the robot PC — check `echo $CRISP_CONFIG_PATH` there first:
 - `control/default_cartesian_impedance.yaml` — crisp_gym's copy sets
   `nullspace.projector_type: none`, `nullspace.damping: 0.0`,
   `nullspace.max_tau: 0.0`; crisp_py's lacks all three, so the controller

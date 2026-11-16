@@ -405,22 +405,6 @@ def test_numpy_obs_to_torch():
     assert torch_obs["task"] == "pick the block"
 
 
-def test_make_pre_post_processors_detection():
-    """Verify the USE_LEROBOT_PROCESSORS flag matches actual import availability."""
-    from crisp_gym.policy import lerobot_policy
-
-    try:
-        from lerobot.policies.factory import make_pre_post_processors  # noqa: F401
-
-        expected = True
-    except ImportError:
-        expected = False
-
-    assert lerobot_policy.USE_LEROBOT_PROCESSORS == expected, (
-        f"USE_LEROBOT_PROCESSORS={lerobot_policy.USE_LEROBOT_PROCESSORS} but actual import={expected}"
-    )
-
-
 def _make_tiny_act_policy(state_dim=7, action_dim=7, image_shape=(3, 96, 96)):
     """Build a minimal ACTPolicy for round-trip save/load testing."""
     from lerobot.policies.act.configuration_act import ACTConfig
@@ -544,7 +528,6 @@ if __name__ == "__main__":
         print("\n--- Deploy / inference tests ---\n")
         run("concatenate_state_features", test_concatenate_state_features)
         run("numpy_obs_to_torch", test_numpy_obs_to_torch)
-        run("USE_LEROBOT_PROCESSORS detection", test_make_pre_post_processors_detection)
         run(
             "ACT policy save_pretrained → from_pretrained → select_action",
             lambda: test_policy_save_load_inference(tmp_path),

@@ -21,6 +21,15 @@ Line numbers are for commit `afb4a18` (after the one-off `ruff format`).
 Scope is `crisp_gym` only; `crisp_py` and `crisp_controllers_demos` are cited
 where a finding depends on them.
 
+## Progress since this review
+
+| date | item | what happened |
+|---|---|---|
+| 2026-11-16 | A5 | `lerobot_policy`, `async_lerobot_policy` and their configs `0_default_config.yaml`, `1_async_default_config.yaml` removed (owner). Their tests went with them. |
+| 2026-11-16 | C10 | `scripts/dataset_conversions/` deleted (owner). `scripts/training_configs/act_umilike.yaml` and `diffusion_umilike.yaml` still describe datasets made by the deleted `add_umilike_state_observation.py`; owner to decide. |
+| 2026-11-16 | C2 (part) | The five config files identical in crisp_py and crisp_gym now live in crisp_py only. The four that DIFFER are still in both; which copy is in effect on the robot PC depends on `CRISP_CONFIG_PATH` (see HANDOFF §6.1) and must be checked there before moving. |
+| 2026-11-16 | D2 (part) | Of the unreferenced configs, the two legacy policy YAMLs are gone. The owner asked to delete "all configs with dual camera"; that set includes the Franka recording env and `umi_robot_full_record.yaml`, so it waits for confirmation. |
+
 ---
 
 ## 0. Owner decisions that constrain any fix
@@ -128,7 +137,7 @@ everywhere (A3).
 | S1 | Safety box silently drops any bound equal to 0.0; the default z floor never applies | P0 | S | VERIFIED |
 | S2 | No limit on how far the commanded pose may jump in one tick | P0 | M | VERIFIED (absence) |
 | C1 | Env names defined both as a Python class and a YAML: the class wins, the YAML is never read | P1 | S | VERIFIED |
-| C2 | Config files shadowed between crisp_py and crisp_gym; search order flips with an env var | P1 | S–M | FROM HANDOFF |
+| C2 | Config files shadowed between crisp_py and crisp_gym; search order flips with an env var | P1 | S–M | PART DONE |
 | C3 | `observation.state` concatenated in dict insertion order | P1 | S | FROM HANDOFF |
 | C4 | `data_fn` returns `None` twice per episode, uninvestigated | P1 | S | FROM HANDOFF |
 | C5 | `control_frequency`, `block`, `max_episode_steps` are dead; `step()` builds an observation every caller discards | P1 | M | VERIFIED |
@@ -136,12 +145,12 @@ everywhere (A3).
 | C7 | Interactive config prompts default to whatever the filesystem lists first | P1 | S | VERIFIED (code) |
 | C8 | `make_policy` raises `ValueError` with a tuple message | P3 | XS | VERIFIED |
 | C9 | 14 test files use `SourceFileLoader.load_module()`, removed in Python 3.15 | P2 | S | VERIFIED |
-| C10 | `scripts/dataset_conversions/*` use an old lerobot API | P2 | S | INFERRED |
+| C10 | `scripts/dataset_conversions/*` use an old lerobot API | P2 | S | DONE — deleted |
 | A1 | `crisp_gym/scripts` mixes four kinds of program; a second `scripts/` folder at the root | P2 | L | VERIFIED |
 | A2 | GPU-side code is duplicated so scripts stay single-file | P2 | M–L | VERIFIED |
 | A3 | Dataset schema lives in string literals across 20+ files | P2 | M | VERIFIED |
 | A4 | 14 functions over 150 lines, 35 over 80 | P2 | L | VERIFIED |
-| A5 | Two unused legacy policies with their own inference workers | P2 | S | VERIFIED + owner |
+| A5 | Two unused legacy policies with their own inference workers | P2 | S | DONE — removed |
 | A6 | `RelativeLerobotPolicy` file: 1,718 lines, one class of 858 lines | P2 | L | VERIFIED |
 | A7 | `RecordingManager`: one class of 1,031 lines doing five jobs | P2 | L | VERIFIED |
 | A8 | Five places spin their own ROS executor in a daemon thread | P2 | M | VERIFIED |

@@ -19,10 +19,12 @@
 # crisp_py/config and crisp_gym/config are BOTH searched with no env var set
 # (crisp_gym/config/path.py:30-33 appends them unconditionally), and crisp_py
 # is searched FIRST -- so where a name exists in both, crisp_py's copy is the
-# one that loads and crisp_gym's is silently ignored. Nine names currently
-# collide; four differ in content, among them cameras/wrist_camera.yaml
-# (different topic names AND resolution) and two control YAMLs. find_config()
-# warns about each, but only once per name per process.
+# one that loads and crisp_gym's is silently ignored. Four names currently
+# collide, all four with different content: cameras/wrist_camera.yaml
+# (different topic names AND resolution), control/default_cartesian_impedance,
+# control/gravity_compensation_on_plane and control/joint_velocity_control
+# (the five identical duplicates were deleted from crisp_gym, 2026-11).
+# find_config() warns about each, but only once per name per process.
 #
 # Entries here are PREPENDED, in the order given, ahead of both built-ins, so
 # naming crisp_gym's own config dir flips the winner to crisp_gym. Anything

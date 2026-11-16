@@ -32,12 +32,11 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-# Both local inference workers push through populate_queues and both are used
-# with GR00T checkpoints, so both need the guard. The async worker gained it
-# when claude/add-umi-state-observation-84vsF landed, which rewrote its loop.
+# The local inference worker (also run by scripts/policy_server.py) pushes
+# through populate_queues and is used with GR00T checkpoints. The second worker
+# this list once held, async_lerobot_policy's, was removed with that policy.
 SOURCES = {
     "relative": REPO / "crisp_gym" / "policy" / "relative_lerobot_policy.py",
-    "async": REPO / "crisp_gym" / "policy" / "async_lerobot_policy.py",
 }
 
 worker_source = pytest.mark.parametrize("source", list(SOURCES.values()), ids=list(SOURCES))

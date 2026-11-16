@@ -81,7 +81,7 @@ unfixable = []
 "tests/**" = ["D", "ANN"]
 "examples/**" = ["D", "ANN"]
 
-# BASELINE, 25 files, 234 findings on 2026-11-15: docstring and annotation rules these
+# BASELINE, 23 files, 231 findings on 2026-11-15 (two files since deleted): docstring and annotation rules these
 # files did not meet when the lint job was first made to pass. Each entry
 # lists only the rules that file breaks (the number is how often), so anything
 # else in it, and every file not listed here, is held to the full rule set.
@@ -89,7 +89,6 @@ unfixable = []
 "crisp_gym/config/home.py" = ["ANN001"]  # 1
 "crisp_gym/envs/env_wrapper.py" = ["D103"]  # 1
 "crisp_gym/envs/umi_handheld_env.py" = ["ANN003", "D102", "D105", "D107"]  # 9
-"crisp_gym/policy/lerobot_policy.py" = ["ANN001"]  # 1
 "crisp_gym/policy/relative_lerobot_policy.py" = ["ANN001", "D107", "D205"]  # 5
 "crisp_gym/policy/remote_policy.py" = ["D102", "D107"]  # 4
 "crisp_gym/policy/remote_protocol.py" = ["ANN001", "ANN003", "ANN202", "D103"]  # 11
@@ -110,7 +109,6 @@ unfixable = []
 "crisp_gym/teleop/teleop_factr_stream.py" = ["D102", "D107", "D301"]  # 6
 "crisp_gym/util/epoch_steps.py" = ["ANN001", "ANN202", "D107"]  # 5
 "crisp_gym/util/lerobot_features.py" = ["ANN001"]  # 4
-"scripts/dataset_conversions/add_umilike_state_observation.py" = ["D103", "D301"]  # 2
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
