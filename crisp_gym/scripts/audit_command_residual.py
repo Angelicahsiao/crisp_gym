@@ -24,6 +24,20 @@ whether a tactile "residual trajectory correction" model is worth building:
      frames, in free motion and in contact. A lookahead that closes the gap in
      free motion says how much of the difference is plain lag; what is left in
      contact at that lookahead is the part only the command carries.
+  G. How long is one step of the command, and of the measured pose? Percentiles
+     per frame, and the share of steps a per-step target limit (the deploy envs'
+     0.03 m / 5 deg) would cut — read the row of the target a model is trained on.
+  H. Does the force grow with the gap? Median force per band of gap size and a
+     static stiffness fit, on SLOW frames only. A ratio that falls at large gaps
+     means a capped controller error rather than a lower stiffness.
+  I. Command minus measured in the robot BASE frame, per axis, free and contact:
+     a constant offset (sag, frame offset) versus motion.
+
+Contact/free split: tactile when present, otherwise the external joint torques,
+each joint against its own resting level at the start of the episode (more than
+--torque-threshold Nm away on any joint = contact). The TCP-force threshold
+(--contact-from wrench) is still available, but a small resting bias on the
+base joint becomes a few newtons at the TCP and can flag every frame.
 
 The residual is expressed in the TCP (body) frame, like the relative-pose
 convention in lerobot_relative_pose.py, so it is independent of the world frame
@@ -436,6 +450,113 @@ def detect_action_lookahead(
     return None if best is None else best[0]
 
 
+def torque_contact(
+    ext_torque: np.ndarray, episode: np.ndarray, baseline_frames: int, threshold_nm: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Contact from the external joint torques, each joint against its own resting level.
+
+    The resting level of a joint is the median of the first `baseline_frames`
+    frames of each episode (episodes start at home, in free motion). A frame is
+    in contact when ANY joint is more than `threshold_nm` away from its resting
+    level. Works in joint space on purpose: a small constant bias on the base
+    joint (measured on the owner's FR3: about -1.3 Nm on joint 1) becomes a
+    ~3 N phantom force once converted to the TCP, enough to flag every frame
+    against a force threshold of a few newtons.
+
+    Returns (contact [N] bool, largest deviation [N] in Nm, resting levels [E, J]).
+    """
+    tau = np.asarray(ext_torque, dtype=np.float64)
+    episode = np.asarray(episode)
+    deviation = np.empty_like(tau)
+    levels = []
+    for ep in np.unique(episode):
+        idx = np.flatnonzero(episode == ep)
+        level = np.median(tau[idx[: max(1, min(baseline_frames, len(idx)))]], axis=0)
+        deviation[idx] = tau[idx] - level
+        levels.append(level)
+    peak = np.abs(deviation).max(axis=1)
+    return peak > threshold_nm, peak, np.asarray(levels)
+
+
+def step_sizes(T: np.ndarray, episode: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Per-frame translation (mm) and rotation (deg) of a pose sequence, within episodes."""
+    episode = np.asarray(episode)
+    same = episode[1:] == episode[:-1]
+    d_pos = np.linalg.norm(T[1:, :3, 3] - T[:-1, :3, 3], axis=1) * 1e3
+    R_step = np.swapaxes(T[:-1, :3, :3], -1, -2) @ T[1:, :3, :3]
+    d_rot = np.degrees(np.linalg.norm(mat_to_rotvec(R_step), axis=1))
+    return d_pos[same], d_rot[same]
+
+
+def step_report(T: np.ndarray, episode: np.ndarray, limit_m: float, limit_deg: float) -> dict:
+    """Step-size percentiles and the share of steps a per-step limit would cut."""
+    d_pos, d_rot = step_sizes(T, episode)
+    over_pos, over_rot = d_pos > limit_m * 1e3, d_rot > limit_deg
+    share = (lambda m: float(m.mean())) if len(d_pos) else (lambda m: 0.0)
+    return {
+        "pos_mm": _percentiles(d_pos),
+        "rot_deg": _percentiles(d_rot),
+        "over_limit_pos": share(over_pos),
+        "over_limit_rot": share(over_rot),
+        "over_limit_any": share(over_pos | over_rot),
+    }
+
+
+GAP_BINS_MM = (0.0, 5.0, 10.0, 20.0, 40.0, 80.0, 160.0, float("inf"))
+
+
+def force_against_gap(
+    res_pos: np.ndarray, force: np.ndarray, mask: np.ndarray, min_count: int = 20
+) -> list[dict]:
+    """Median force per band of gap size, on the frames in `mask`.
+
+    Under a linear impedance the force grows in proportion to the gap, so the
+    ratio median|F| / median|gap| stays flat across bands. A ratio that falls
+    in the large-gap bands means the force stops growing: the controller caps
+    the pose error (or the operator pulled the target far ahead while the arm
+    was blocked by something the force estimate does not see).
+    """
+    gap = np.linalg.norm(res_pos, axis=1) * 1e3
+    f = np.linalg.norm(force, axis=1)
+    rows = []
+    for lo, hi in zip(GAP_BINS_MM[:-1], GAP_BINS_MM[1:]):
+        m = mask & (gap >= lo) & (gap < hi)
+        if m.sum() < min_count:
+            continue
+        g, fm = float(np.median(gap[m])), float(np.median(f[m]))
+        rows.append(
+            {
+                "lo_mm": lo,
+                "hi_mm": hi,
+                "n": int(m.sum()),
+                "gap_mm": g,
+                "force_n": fm,
+                "ratio_n_per_m": fm / (g * 1e-3) if g > 0 else float("nan"),
+            }
+        )
+    return rows
+
+
+def base_frame_offset(T_tcp: np.ndarray, T_cmd: np.ndarray, mask: np.ndarray) -> dict:
+    """Command minus measured position in the robot BASE frame, per axis, in mm.
+
+    A constant offset (non-zero mean, small spread, same sign in every episode)
+    points at something static — a sag under gravity, a frame offset between
+    the commanded and the measured pose, a steady push. An offset that is
+    centred on zero with a wide spread is motion (lag, jitter).
+    """
+    d = (T_cmd[:, :3, 3] - T_tcp[:, :3, 3])[mask] * 1e3
+    if len(d) == 0:
+        return {"n": 0}
+    return {
+        "n": int(len(d)),
+        "mean": d.mean(axis=0).tolist(),
+        "median": np.median(d, axis=0).tolist(),
+        "std": d.std(axis=0).tolist(),
+        "positive_share": (d > 0).mean(axis=0).tolist(),
+    }
+
+
 class NoCommandError(ValueError):
     """The dataset carries no usable Cartesian command (handheld or joint-driven)."""
 
@@ -668,6 +789,11 @@ def analyze(
     contact_from: str = "auto",
     tactile_threshold: float | None = None,
     force_threshold: float = 3.0,
+    torque_threshold: float = 2.0,
+    slow_speed: float = 0.02,
+    slow_ang_deg: float = 5.0,
+    step_limit_m: float = 0.03,
+    step_limit_deg: float = 5.0,
     min_sigma: float = 0.03,
     ridge_lambda: float = 1.0,
     folds: int = 5,
@@ -763,9 +889,17 @@ def analyze(
         )
 
     # ── contact flag ────────────────────────────────────────────────────────
+    by_torque = None
+    if ext_torque is not None:
+        by_torque, torque_peak, _ = torque_contact(
+            ext_torque, episode, baseline_frames, torque_threshold
+        )
+        frames["torque_deviation_nm"] = torque_peak
     source = contact_from
     if source == "auto":
-        source = "tactile" if tac_mag is not None else ("wrench" if wrench is not None else "none")
+        source = (
+            "tactile" if tac_mag is not None else ("torque" if by_torque is not None else "none")
+        )
     if source == "tactile":
         if tac_mag is None:
             raise ValueError("--contact-from tactile but no tactile column was found")
@@ -774,6 +908,15 @@ def analyze(
         )
         contact = tac_mag > thr
         report["contact"] = {"source": "tactile", "threshold": float(thr)}
+    elif source == "torque":
+        if by_torque is None:
+            raise ValueError("--contact-from torque but no external joint torque column was found")
+        contact = by_torque
+        report["contact"] = {
+            "source": "torque",
+            "threshold_nm": float(torque_threshold),
+            "baseline_frames": int(baseline_frames),
+        }
     elif source == "wrench":
         if wrench is None:
             raise ValueError("--contact-from wrench but no TCP wrench could be computed")
@@ -782,7 +925,7 @@ def analyze(
     else:
         contact = np.zeros(n, dtype=bool)
         report["contact"] = {"source": "none"}
-        notes.append("no tactile and no wrench: contact/free split unavailable.")
+        notes.append("no tactile and no joint torque: contact/free split unavailable.")
     report["contact"]["fraction"] = float(contact.mean())
     frames["contact"] = contact
     free = ~contact
@@ -790,17 +933,17 @@ def analyze(
     # Does the skin SEE the contacts the arm feels? A skin only covers the
     # finger pads; a load path that bypasses them (gripper body, outer finger)
     # shows up in the joint torques and not in the tactile signal.
-    if tac_mag is not None and wrench is not None:
+    if tac_mag is not None and by_torque is not None:
         thr = (
             report["tactile"]["auto_threshold"] if tactile_threshold is None else tactile_threshold
         )
         by_skin = (tac_mag > thr)[good]
-        by_wrench = (np.linalg.norm(wrench[:, :3], axis=1) > force_threshold)[good]
-        report["contact"]["skin_vs_wrench"] = {
-            "force_threshold_N": float(force_threshold),
-            "both": float(np.mean(by_skin & by_wrench)),
-            "wrench_only": float(np.mean(~by_skin & by_wrench)),
-            "skin_only": float(np.mean(by_skin & ~by_wrench)),
+        felt = by_torque[good]
+        report["contact"]["skin_vs_torque"] = {
+            "torque_threshold_nm": float(torque_threshold),
+            "both": float(np.mean(by_skin & felt)),
+            "torque_only": float(np.mean(~by_skin & felt)),
+            "skin_only": float(np.mean(by_skin & ~felt)),
         }
 
     # ── A. residual magnitude ───────────────────────────────────────────────
@@ -945,6 +1088,47 @@ def analyze(
                 "cannot mark which row is the recorded action."
             )
     report["action_labels"] = labels
+
+    # ── G. step sizes per frame: what a per-step target limit would cut ─────
+    report["step_sizes"] = {
+        "limit_m": float(step_limit_m),
+        "limit_deg": float(step_limit_deg),
+        "command": step_report(T_cmd, episode, step_limit_m, step_limit_deg),
+        "measured": step_report(T_tcp, episode, step_limit_m, step_limit_deg),
+    }
+
+    # ── H. force against gap, slow frames only ──────────────────────────────
+    if wrench is not None:
+        slow = (
+            good
+            & (np.linalg.norm(vel, axis=1) < slow_speed)
+            & (np.linalg.norm(omega, axis=1) < np.radians(slow_ang_deg))
+        )
+        h: dict = {
+            "slow_speed_m_s": float(slow_speed),
+            "slow_ang_deg_s": float(slow_ang_deg),
+            "slow_frames": int(slow.sum()),
+            "bands": force_against_gap(res_pos, wrench[:, :3], slow),
+            "static_fit": {"translation": {}, "rotation": {}},
+        }
+        if slow.sum() > 20:
+            for group, r, w, nominal in (
+                ("translation", res_pos, wrench[:, :3], k_pos),
+                ("rotation", res_rot, wrench[:, 3:], k_rot),
+            ):
+                for i, ax in enumerate(AXES):
+                    coef, r2 = fit_linear(r[slow, i : i + 1], w[slow, i])
+                    entry = {"stiffness": float(-coef[0]), "r2": float(r2)}
+                    if nominal:
+                        entry["stiffness_vs_nominal"] = float(-coef[0] / nominal)
+                    h["static_fit"][group][ax] = entry
+        report["force_against_gap"] = h
+
+    # ── I. command minus measured in the robot base frame ───────────────────
+    report["base_frame_offset"] = {
+        "free": base_frame_offset(T_tcp, T_cmd, free),
+        "contact": base_frame_offset(T_tcp, T_cmd, contact),
+    }
 
     report["notes"] = notes
     return report, frames
@@ -1276,17 +1460,29 @@ def format_report(r: dict) -> str:
         )
     c = r["contact"]
     add(f"Contact flag: {c['source']}, {100 * c.get('fraction', 0):.1f}% of frames in contact")
+    if c["source"] == "torque":
+        add(
+            f"  a frame is contact when any joint's external torque is more than "
+            f"{c['threshold_nm']:g} Nm away from its resting level (median of the first "
+            f"{c['baseline_frames']} frames of the episode)"
+        )
+    elif c["source"] == "wrench":
+        add(
+            f"  a frame is contact when the TCP force from the joint torques exceeds "
+            f"{c['threshold_N']:g} N; a small resting torque bias can exceed that on its own "
+            "— prefer --contact-from torque"
+        )
     if "tactile" in r:
         t = r["tactile"]
         add(
             f"  tactile taxels {t['taxels']}, noise floor {t['noise_floor']:.4g}, "
             f"auto threshold {t['auto_threshold']:.4g}"
         )
-    if "skin_vs_wrench" in c:
-        s = c["skin_vs_wrench"]
+    if "skin_vs_torque" in c:
+        s = c["skin_vs_torque"]
         add(
-            f"  skin vs joint-torque contact (>{s['force_threshold_N']:g} N): "
-            f"both {100 * s['both']:.1f}%, torque only {100 * s['wrench_only']:.1f}% "
+            f"  skin vs joint-torque contact (>{s['torque_threshold_nm']:g} Nm): "
+            f"both {100 * s['both']:.1f}%, torque only {100 * s['torque_only']:.1f}% "
             f"(contact the skin does not see), skin only {100 * s['skin_only']:.1f}%"
         )
 
@@ -1377,6 +1573,78 @@ def format_report(r: dict) -> str:
                     f"motion, {b['pos_mm']['contact']['p50']:.1f} mm in contact (median). The contact "
                     "excess is what a measured-pose label does not carry."
                 )
+
+    st = r.get("step_sizes")
+    if st:
+        add(
+            f"\nG. Step size per frame, within episodes  (share over a per-step limit of "
+            f"{st['limit_m'] * 1e3:g} mm / {st['limit_deg']:g} deg)"
+        )
+        for name in ("command", "measured"):
+            v = st[name]
+            add(f"  {name:<9s} translation {_fmt_p(v['pos_mm'], 'mm')}")
+            add(f"  {'':<9s} rotation    {_fmt_p(v['rot_deg'], 'deg')}")
+            add(
+                f"  {'':<9s} over the limit: translation {100 * v['over_limit_pos']:.2f}%, "
+                f"rotation {100 * v['over_limit_rot']:.2f}%, either {100 * v['over_limit_any']:.2f}%"
+            )
+        add(
+            "  A deploy-time step limit cuts a model's commands about as often as the recorded "
+            "steps of its training target exceed it: `command` for a command-trained model, "
+            "`measured` for one trained on the measured pose."
+        )
+
+    h = r.get("force_against_gap")
+    if h:
+        add(
+            f"\nH. Force against gap, slow frames only (< {h['slow_speed_m_s'] * 1e3:g} mm/s and "
+            f"< {h['slow_ang_deg_s']:g} deg/s: {h['slow_frames']} frames)"
+        )
+        if not h["bands"]:
+            add("  (too few slow frames)")
+        for b in h["bands"]:
+            hi = "inf" if b["hi_mm"] == float("inf") else f"{b['hi_mm']:g}"
+            add(
+                f"  gap {b['lo_mm']:>4g}-{hi:<4s} mm  n={b['n']:<7d} median gap {b['gap_mm']:6.1f} mm"
+                f"  median |F| {b['force_n']:6.1f} N  ratio {b['ratio_n_per_m']:7.0f} N/m"
+            )
+        if h["bands"]:
+            add(
+                "  A ratio that stays level means force grows with the gap (plain impedance); a "
+                "ratio that falls at large gaps means the force stops growing (capped error). The "
+                "smallest bands include the resting torque bias."
+            )
+        for group, ku in (("translation", "N/m"), ("rotation", "Nm/rad")):
+            for ax, v in h["static_fit"].get(group, {}).items():
+                vs = (
+                    f"  ({100 * v['stiffness_vs_nominal']:.0f}% of nominal)"
+                    if "stiffness_vs_nominal" in v
+                    else ""
+                )
+                add(
+                    f"  static fit {group:<11s} {ax}: K {v['stiffness']:9.1f} {ku:<6s} "
+                    f"R2 {v['r2']:5.2f}{vs}"
+                )
+
+    o = r.get("base_frame_offset")
+    if o:
+        add("\nI. Command minus measured position in the robot BASE frame (mm)")
+        add("                      mean   median     std   command larger")
+        for split in ("free", "contact"):
+            v = o[split]
+            if not v.get("n"):
+                add(f"  {split:<8s} n=0")
+                continue
+            for i, ax in enumerate(AXES):
+                label = f"{split} (n={v['n']})" if i == 0 else ""
+                add(
+                    f"  {label:<16s} {ax}  {v['mean'][i]:6.1f}   {v['median'][i]:6.1f}  "
+                    f"{v['std'][i]:6.1f}   {100 * v['positive_share'][i]:3.0f}% of frames"
+                )
+        add(
+            "  A mean far from zero with a small spread is a static offset (sag, frame offset, "
+            "steady push); a mean near zero with a wide spread is motion."
+        )
 
     if r.get("notes"):
         add("\nNotes")
@@ -1543,9 +1811,46 @@ def build_parser() -> argparse.ArgumentParser:
         "--baseline-frames",
         type=int,
         default=10,
-        help="frames at the start of each episode averaged as the tactile zero",
+        help="frames at the start of each episode taken as the resting level (tactile zero "
+        "and joint-torque resting level)",
     )
-    p.add_argument("--contact-from", choices=("auto", "tactile", "wrench", "none"), default="auto")
+    p.add_argument(
+        "--contact-from",
+        choices=("auto", "tactile", "torque", "wrench", "none"),
+        default="auto",
+        help="auto: tactile if present, else the external joint torques",
+    )
+    p.add_argument(
+        "--torque-threshold",
+        type=float,
+        default=2.0,
+        help="contact when any joint's external torque leaves its resting level by more than "
+        "this, Nm (--contact-from torque)",
+    )
+    p.add_argument(
+        "--slow-speed",
+        type=float,
+        default=0.02,
+        help="step H uses frames slower than this, m/s",
+    )
+    p.add_argument(
+        "--slow-ang-deg",
+        type=float,
+        default=5.0,
+        help="step H uses frames turning slower than this, deg/s",
+    )
+    p.add_argument(
+        "--step-limit-m",
+        type=float,
+        default=0.03,
+        help="step G: per-step translation limit to check against, m (the deploy envs' value)",
+    )
+    p.add_argument(
+        "--step-limit-deg",
+        type=float,
+        default=5.0,
+        help="step G: per-step rotation limit to check against, deg (the deploy envs' value)",
+    )
     p.add_argument(
         "--tactile-threshold",
         type=float,
@@ -1555,7 +1860,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--force-threshold",
         type=float,
         default=3.0,
-        help="contact threshold on the TCP force norm, N (--contact-from wrench)",
+        help="contact threshold on the TCP force norm, N (--contact-from wrench only)",
     )
     p.add_argument(
         "--min-sigma",
@@ -1690,6 +1995,11 @@ def main(argv: list[str] | None = None) -> int:
         contact_from=args.contact_from,
         tactile_threshold=args.tactile_threshold,
         force_threshold=args.force_threshold,
+        torque_threshold=args.torque_threshold,
+        slow_speed=args.slow_speed,
+        slow_ang_deg=args.slow_ang_deg,
+        step_limit_m=args.step_limit_m,
+        step_limit_deg=args.step_limit_deg,
         min_sigma=args.min_sigma,
         ridge_lambda=args.ridge_lambda,
         folds=args.folds,

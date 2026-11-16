@@ -923,6 +923,30 @@ established so far — verify before contradicting them:
   (`extra.target_cartesian`, `extra.joints`, ...) exist but are ZERO
   placeholders; there is no `extra.gripper_target`. It is written by the
   owner's `umi_data_collection` tool, which is in none of these repos.
+- **First audit of the FRANKA data (`franka_electricbox`, open-electrical-box,
+  2026-11-16, owner's run):** 293 episodes / 103,040 frames, streamed
+  Cartesian teleop (the command moves), one camera `oakw_cam` 800x1280, has
+  `extra.ext_torque` and `extra.target_cartesian`, no `extra.gripper_target`,
+  no tactile. Bring-up gains 400 N/m / 30 Nm/rad. Findings:
+  - The joint torques are clean (owner's plot: three contact phases per
+    episode, free motion within ±1.5 Nm), but joint 1 RESTS at about −1.3 Nm;
+    with the other joints' resting values that is ~3.7 N at the TCP at the home
+    pose, so the old 3 N TCP-force contact threshold flagged 99.4 % of frames.
+    Contact detection is now in joint space against each episode's resting
+    level (`torque_contact`, default 2 Nm). With a 15 N force threshold, 10.4 %
+    of frames were contact; by eye on one episode it is ~25 %.
+  - Training targets differ (step F, recorded action = pose 1 frame ahead):
+    median 23 mm free / 69 mm strong contact; no lookahead closes the contact
+    gap (47 mm left at 0.5 s). Force + velocity explain R2 0.79–0.93 of the
+    contact gap (velocity alone 0.21–0.56). The comparison is worth running.
+  - Delivered stiffness (step C) 131 / 231 / 267 N/m and 13.9 / 6.4 / 11.0
+    Nm/rad: 21–67 % of the bring-up gains. Cause not separated yet (capped
+    controller error? attenuation by lag/noise? different gains at recording?)
+    — steps H and I were added to tell these apart.
+  - A free-motion gap of ~20 mm remains at the best lookahead. Gravity sag of
+    an unconfigured gripper load was considered and is UNLIKELY: an
+    unconfigured 0.9 kg gripper would show several Nm on joints 2 and 4 at
+    rest, and they rest near 0. Step I (base-frame offset) is the next check.
 - **A robot dataset with the same tactile columns exists: `ur_electricbox`**
   (10 episodes, 2778 frames, `extra.tactile.left/right` 72 taxels). It is
   recorded by the owner's setup, NOT by anything in this repo — crisp_gym has

@@ -239,6 +239,9 @@ What the steps need and answer:
 | D | can tactile predict the gap on held-out episodes? | tactile columns |
 | E | the same gap for the gripper | `extra.gripper_target` |
 | F | how different are the two action labels (command vs measured pose `L` frames ahead)? | commanded + measured pose |
+| G | how long is one step, and how often would the deploy step limit (30 mm / 5 deg) cut it? | commanded + measured pose |
+| H | does the force grow with the gap, or stop growing (a capped controller error)? | `extra.joints` + `extra.ext_torque`, Franka only |
+| I | is the command-minus-measured gap a constant offset in the base frame, or motion? | commanded + measured pose |
 
 Things to know:
 
@@ -250,7 +253,8 @@ Things to know:
   probe failing, not a statement about the sensor. The `velocity` row is fine.
 - **Step C is skipped on a UR** (6 joints, built-in kinematics are Franka's).
 - Contact frames are picked from tactile when it is present, otherwise from
-  the external force.
+  the external joint torques: any joint more than 2 Nm (`--torque-threshold`)
+  away from its resting level at the start of the episode.
 
 ### 2.4 Loading the high-rate tactile CSVs
 

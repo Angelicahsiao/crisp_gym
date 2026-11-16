@@ -595,18 +595,126 @@ def test_kinematics_mismatch_skips_sysid_instead_of_lying():
     assert any("not rigid" in n for n in report["notes"])
 
 
-def test_skin_vs_wrench_flags_contact_the_skin_misses():
+def test_skin_vs_torque_flags_contact_the_skin_misses():
     mod = _load()
     kwargs, _ = synth(mod, episodes=4)
     report, _ = mod.analyze(**kwargs)
-    assert report["contact"]["skin_vs_wrench"]["wrench_only"] < 0.02
+    assert report["contact"]["skin_vs_torque"]["torque_only"] < 0.05
 
-    # A skin that sees nothing: every joint-torque contact becomes "wrench only".
+    # A skin that sees nothing: every joint-torque contact becomes "torque only".
     rng = np.random.default_rng(5)
     n = len(kwargs["episode"])
     kwargs["tactile"] = {"left_tactile": rng.normal(0, 0.02, (n, 80))}
-    report, _ = mod.analyze(**kwargs, contact_from="wrench")
-    assert report["contact"]["skin_vs_wrench"]["wrench_only"] > 0.2
+    report, _ = mod.analyze(**kwargs, contact_from="torque")
+    assert report["contact"]["skin_vs_torque"]["torque_only"] > 0.2
+
+
+def test_torque_contact_ignores_a_resting_bias_the_force_threshold_does_not():
+    """The FR3 case: joint 1 rests at about -1.3 Nm. In joint space that is
+    simply the resting level and must not read as contact. (On the owner's arm
+    the resting torques of all joints together become ~3.7 N at the TCP at the
+    recording home pose, which tripped the old 3 N force threshold everywhere.)"""
+    mod = _load()
+    kwargs, d = synth(mod, episodes=4, torque_noise=0.05)
+    kwargs["tactile"] = None
+    kwargs["ext_torque"] = kwargs["ext_torque"].copy()
+    kwargs["ext_torque"][:, 0] -= 1.3
+    report, frames = mod.analyze(**kwargs)
+    assert report["contact"]["source"] == "torque"  # auto without tactile
+    contact = frames["contact"]
+    first = np.concatenate([np.flatnonzero(kwargs["episode"] == e)[:40] for e in range(4)])
+    assert contact[first].mean() == 0.0  # free before the contact window
+    # 2 Nm at a joint is ~4-7 N at a 0.3-0.5 m lever: clear contacts are found
+    strong = np.linalg.norm(d["wrench"][:, :3], axis=1) > 8.0
+    assert strong.sum() > 20 and contact[strong].mean() > 0.9
+    text = mod.format_report({**report, "columns": {}})
+    assert "resting level" in text
+
+
+def test_torque_contact_resting_level_is_per_episode():
+    mod = _load()
+    episode = np.repeat([0, 1], 50)
+    tau = np.zeros((100, 7))
+    tau[:50, 0], tau[50:, 0] = -1.3, +0.8  # a different rest per episode
+    tau[30:40, 3] += 3.0  # a contact in episode 0
+    contact, peak, levels = mod.torque_contact(tau, episode, 10, 2.0)
+    assert np.allclose(levels[:, 0], [-1.3, 0.8])
+    assert contact.sum() == 10 and contact[30:40].all()
+    assert np.isclose(peak[35], 3.0)
+
+
+def test_step_sizes_and_the_share_a_limit_would_cut():
+    mod = _load()
+    n = 21
+    T = np.tile(np.eye(4), (2 * n, 1, 1))
+    T[:n, 0, 3] = np.arange(n) * 0.010  # 10 mm per frame
+    T[n:, 0, 3] = np.arange(n) * 0.040  # 40 mm per frame
+    T[n:, :3, :3] = np.stack([_exp(np.array([0, 0, np.radians(2.0 * k)])) for k in range(n)])
+    episode = np.repeat([0, 1], n)
+    d_pos, d_rot = mod.step_sizes(T, episode)
+    assert len(d_pos) == 2 * (n - 1)  # no step across episodes
+    assert np.allclose(np.sort(d_pos), [10.0] * (n - 1) + [40.0] * (n - 1))
+    assert np.allclose(d_rot[n - 1 :], 2.0)
+    rep = mod.step_report(T, episode, 0.03, 5.0)
+    assert rep["over_limit_pos"] == 0.5 and rep["over_limit_rot"] == 0.0
+    rep = mod.step_report(T, episode, 0.05, 1.0)
+    assert rep["over_limit_pos"] == 0.0 and rep["over_limit_rot"] == 0.5
+
+
+def test_force_against_gap_shows_a_capped_error():
+    """Linear up to 40 mm, then the force stops growing: the ratio must fall."""
+    mod = _load()
+    rng = np.random.default_rng(0)
+    gap = rng.uniform(0.001, 0.15, 4000)
+    direction = rng.normal(size=(4000, 3))
+    direction /= np.linalg.norm(direction, axis=1, keepdims=True)
+    res = direction * gap[:, None]
+    force = -400.0 * direction * np.minimum(gap, 0.04)[:, None]
+    rows = mod.force_against_gap(res, force, np.ones(4000, bool))
+    ratio = {r["lo_mm"]: r["ratio_n_per_m"] for r in rows}
+    assert abs(ratio[10.0] - 400.0) < 10 and abs(ratio[20.0] - 400.0) < 10
+    assert ratio[80.0] < 0.5 * ratio[20.0]
+    rows = mod.force_against_gap(res, -400.0 * res, np.ones(4000, bool))
+    assert all(abs(r["ratio_n_per_m"] - 400.0) < 5 for r in rows)  # linear: a level ratio
+
+
+def test_force_against_gap_and_static_fit_in_the_report():
+    """With no damping in the simulation, F = -K r holds on every frame, so the
+    static fit must return K (with damping it is only right on slow frames)."""
+    global D_POS, D_ROT
+    mod = _load()
+    saved = D_POS, D_ROT
+    D_POS, D_ROT = 0.0, 0.0
+    try:
+        kwargs, _ = synth(mod, episodes=4)
+    finally:
+        D_POS, D_ROT = saved
+    report, _ = mod.analyze(**kwargs, slow_speed=1.0, slow_ang_deg=1e3)
+    h = report["force_against_gap"]
+    assert h["slow_frames"] > 0 and h["bands"]
+    k = h["static_fit"]["translation"]["z"]["stiffness"]
+    assert abs(k - K_POS) / K_POS < 0.03
+    assert "H. Force against gap" in mod.format_report({**report, "columns": {}})
+
+
+def test_base_frame_offset_finds_a_static_sag():
+    mod = _load()
+    n = 200
+    T_tcp = np.tile(np.eye(4), (n, 1, 1))
+    T_tcp[:, 0, 3] = np.linspace(0.3, 0.5, n)
+    T_cmd = T_tcp.copy()
+    T_cmd[:, 2, 3] += 0.025  # the command 25 mm above the arm
+    contact = np.zeros(n, bool)
+    contact[150:] = True
+    T_cmd[150:, 0, 3] += 0.06  # pushing in x while in contact
+    out = {
+        s: mod.base_frame_offset(T_tcp, T_cmd, m)
+        for s, m in (("free", ~contact), ("contact", contact))
+    }
+    assert np.allclose(out["free"]["mean"], [0, 0, 25.0]) and np.allclose(out["free"]["std"], 0)
+    assert out["free"]["positive_share"][2] == 1.0
+    assert np.allclose(out["contact"]["mean"], [60.0, 0, 25.0])
+    assert mod.base_frame_offset(T_tcp, T_cmd, np.zeros(n, bool)) == {"n": 0}
 
 
 # ── I/O ──────────────────────────────────────────────────────────────────────

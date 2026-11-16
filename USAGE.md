@@ -1484,6 +1484,9 @@ It reports:
 | D | Can tactile predict the residual on HELD-OUT episodes (linear, single frame)? | tactile columns |
 | E | The same residual for the gripper channel | `extra.gripper_target` |
 | F | How different are the two action labels — command vs the measured pose `L` frames ahead — in free motion and in contact? | command + pose (`action` only to mark the recorded lookahead) |
+| G | How long is one step of the command and of the measured pose, and how often would the deploy envs' 30 mm / 5 deg step limit cut it? | command + pose |
+| H | Does the force grow with the gap? Median force per gap band and a static stiffness fit, slow frames only. A ratio that falls at large gaps = a capped controller error | `extra.joints` + `extra.ext_torque`, Franka FR3 |
+| I | Command minus measured position in the robot base frame, per axis: a constant offset (sag, frame offset) or motion? | command + pose |
 
 Things to know when reading it:
 
@@ -1513,8 +1516,15 @@ Things to know when reading it:
   mean of the first `--baseline-frames` frames of each episode, so an episode
   that starts in contact hides that contact. Frames whose
   `<tactile>.sync_valid` is false are left out of steps C and D.
-- **Contact flag** comes from tactile when present, else from the TCP force.
-  The "torque only" percentage is contact the arm felt and the skin did not see.
+- **Contact flag** comes from tactile when present, else from the external
+  joint torques: a frame is contact when any joint is more than
+  `--torque-threshold` (default 2 Nm) away from its resting level, the median
+  of the episode's first `--baseline-frames` frames. Joint space on purpose: on
+  the FR3 the resting torques (about −1.3 Nm on joint 1, smaller on others)
+  become ~3.7 N at the gripper, which flagged 99 % of frames as contact against
+  the old 3 N force threshold. `--contact-from wrench --force-threshold N` still
+  uses the TCP force. The "torque only" percentage is contact the arm felt and
+  the skin did not see.
 - **Step D is a lower bound**: one 15 Hz frame, linear. A velocity-only row and
   (with torques) a wrench row are printed next to it as the floor and the
   reference.
