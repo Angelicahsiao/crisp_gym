@@ -570,14 +570,5 @@ ruff check . && ruff format --check .
 ```
 
 ```bash
-python - <<'EOF'
-import ast, pathlib
-rows = []
-for p in [*pathlib.Path("crisp_gym").rglob("*.py"), *pathlib.Path("scripts").rglob("*.py")]:
-    for n in ast.walk(ast.parse(p.read_text())):
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            rows.append((n.end_lineno - n.lineno + 1, f"{p}:{n.lineno}", n.name))
-for r in sorted(rows, reverse=True)[:15]:
-    print(*r)
-EOF
+python scripts/code_metrics.py            # longest functions; --files for longest files
 ```

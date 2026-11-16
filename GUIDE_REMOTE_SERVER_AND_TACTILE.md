@@ -193,6 +193,22 @@ The zero of each episode is the mean of its first 10 valid frames
 reports.** A model trained on one only carries over to the other if noise,
 contact share, contact strength and active-taxel counts are similar.
 
+Two smaller tools look at one dataset in detail (see
+`crisp_gym/scripts/README.md`, "Dataset inspection"):
+
+```bash
+python crisp_gym/scripts/inspect_dataset.py /path/to/dataset
+```
+
+lists every column with shape and dtype and the CSVs next to the dataset;
+
+```bash
+python crisp_gym/scripts/check_tactile_sync.py /path/to/dataset --episode 0
+```
+
+checks, for one episode, that each frame's tactile sample is a row of the CSV
+(stamp dtype, exact join, equal taxels, rows per frame, sync figures).
+
 ### 2.3 Residual audit — robot data only
 
 Under Cartesian impedance control a contact force sits in the gap between the
@@ -321,4 +337,8 @@ python tests/test_audit_command_residual.py
 python tests/test_tactile_raw.py
 ```
 
-Both run on synthetic data with known answers and need no robot.
+```bash
+python -m pytest tests/test_dataset_inspection.py
+```
+
+All run on synthetic data with known answers and need no robot.

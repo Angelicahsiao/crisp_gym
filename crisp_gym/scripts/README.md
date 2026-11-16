@@ -424,6 +424,54 @@ found.
 
 ---
 
+## Dataset inspection (any machine, read-only)
+
+### `inspect_dataset.py` — what is in this dataset folder?
+
+Prints fps, episode and frame counts, every feature with shape and dtype, and
+the files next to the dataset: how many tactile CSVs there are (and how many are
+only DVC pointers), field count, first/last columns and row count of one
+episode's CSVs, and the start of `tactile_raw/edit_report.json`. Standard
+library only.
+
+```bash
+python crisp_gym/scripts/inspect_dataset.py datasets/umi_electricbox/lerobot
+```
+
+| flag | meaning |
+|---|---|
+| `--episode N` | episode whose CSVs are described (default 0) |
+| `--raw-dir NAME` | folder of the high-rate CSVs (default `tactile_raw`) |
+| `--report-chars N` | characters of `edit_report.json` to print; 0 = only say it is there |
+
+### `check_tactile_sync.py` — do the 15 Hz tactile columns match the high-rate CSV?
+
+For one episode and each sensor: the declared dtypes of the tactile column and
+its sync columns, the CSV's rate and gaps, whether each frame's
+`source_stamp_ns` is found in the CSV exactly and the taxels there are equal,
+CSV rows per frame, and the `sync_valid` / offset / error figures. Its first
+line shows the command-vs-measured gap and joint motion, which tells robot from
+handheld data. numpy + pandas + pyarrow.
+
+```bash
+python crisp_gym/scripts/check_tactile_sync.py datasets/umi_electricbox/lerobot --episode 0
+```
+
+| flag | meaning |
+|---|---|
+| `--episode N` | which episode (default 0) |
+| `--sides ...` | sensors to check (default `left right`) |
+| `--key-prefix P` | tactile column is `<P>.<side>` (default `extra.tactile`) |
+| `--raw-dir NAME` | folder of the high-rate CSVs (default `tactile_raw`) |
+| `--pose-key`, `--target-key`, `--joints-key` | columns for the first line |
+
+How to read the join line: `exact 100%` and `taxels equal 100%` mean every frame
+is a row of the CSV. A `float32` stamp shows `exact 0%` — that column cannot be
+joined. A missing stamp column or an unpulled CSV is reported, not fatal. For
+every episode at once, use `audit_command_residual.py --tactile-only` instead.
+
+---
+
 ## Deployment
 
 ### `deploy_policy.py` (robot PC, ROS)
