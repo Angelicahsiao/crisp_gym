@@ -475,9 +475,18 @@ and leave the DVC-tracked one untouched; then `dvc add` the result.
 
 ## 7. Post-process: promote extra states to policy inputs
 
+> **Check before relying on this (found 2026-11-16, CODE_REVIEW C11).** The
+> rename gives a separate column such as `observation.state.joints`. A lerobot
+> diffusion policy reads `observation.state`, the images and
+> `observation.environment_state` only (read in the lerobot v0.4.4 and main
+> sources; not run), so the renamed column is loaded and normalised but does
+> not enter the network. Until GUIDANCE WP-10 is done, a promoted column is NOT
+> a model input for diffusion. Check your policy with
+> `grep -n "OBS_STATE\|OBS_ENV_STATE" <lerobot>/policies/<policy>/modeling_*.py`.
+
 For a ROBOT-ONLY model that should consume joint states etc. Renames
-`extra.*` → `observation.state.*` on disk so LeRobot picks them up as STATE
-inputs with proper temporal windowing and stats.
+`extra.*` → `observation.state.*` on disk so the column is windowed and gets
+statistics like a state input.
 
 ```bash
 python crisp_gym/scripts/postprocess_align_datasets.py \

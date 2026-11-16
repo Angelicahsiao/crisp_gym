@@ -1,5 +1,9 @@
 # Development Handoff Notes — crisp_gym / crisp_py UMI pipeline
 
+**Start with `GUIDANCE.md`.** It says which sections of this file matter for
+which task, lists what must never break with the test that pins each item, and
+holds the ordered work packages. This file is the detail behind it.
+
 Instructions for future AI-assisted development sessions on these repos.
 Read this FULLY before changing anything related to the UMI handheld pipeline,
 pose representations, or model serving. These notes capture decisions that are
@@ -139,7 +143,7 @@ Repos involved (same owner, branch conventions apply to all):
 
 ---
 
-## 2. File map (UMI pipeline, all on branch `claude/vigilant-tesla-VZJT6` unless merged)
+## 2. File map (UMI pipeline; the `claude/vigilant-tesla-VZJT6` work is merged)
 
 | File | Role |
 |---|---|
@@ -174,6 +178,8 @@ Repos involved (same owner, branch conventions apply to all):
 | `tests/test_loop_timing.py` | Pins the attribution in all three regimes against a REAL `mp.JoinableQueue` with a slow consumer, plus `make_record_fn`'s `.timing` publication. Stdlib + numpy; stubs `crisp_py.utils.geometry`. |
 | `crisp_gym/scripts/audit_command_residual.py` | READ-ONLY audit of the command-minus-measured residual `T_tcp^-1 @ T_cmd` (TCP frame, world-invariant) on Cartesian-driven data: size in contact vs free, tracking lag, SYSTEM IDENTIFICATION of the delivered stiffness/damping from `extra.ext_torque` (built-in FR3 DH kinematics, Jacobian at the recorded TCP so no tool model; skipped when recorded TCP and DH flange are not rigid), a held-out-EPISODE linear probe of tactile → residual, and the gripper residual. Tactile columns are found by themselves (`extra.tactile.left/right`, else `left_tactile`/`right_tactile`) and may have any shape; frames with `<tactile>.sync_valid` false are left out of C/D. Refuses, BEFORE any pose math and with a `NoCommandError` that says which, a handheld dataset (placeholder all-zero command, joints never move), a frozen command (FACTR/JIC), and a mix of both. `--tactile-only` needs no command: per-sensor noise, dead taxels, baseline drift, contact share/strength, and for `<dataset>/tactile_raw/` the stream rate, gaps and the stamp join — run it on the handheld AND the robot dataset and compare. GPU-PC, crisp-import-free. USAGE.md §14, HANDOFF §7. |
 | `CODE_REVIEW.md` | Review of the whole package (2026-11-16, commit `afb4a18`): architecture map, contract files, and a prioritised backlog with file:line evidence — safety (workspace box ignores 0.0 bounds; no per-tick jump limit), silent misconfiguration, duplication, packaging, CI, docs. Records findings only; each fix still needs the owner's approval. Start there before planning refactors. |
+| `GUIDANCE.md` | Entry point for any change: rules, where each thing is decided, the invariants with their tests, work packages WP-01 … WP-18, open owner decisions. Keep its status and decision tables current. |
+| `RESEARCH_FORCE_TACTILE.md` | Force / tactile research plan: questions, prior work by idea, laptop-class simulators, what was executed, staged experiments. |
 | `GUIDE_REMOTE_SERVER_AND_TACTILE.md` | USER-FACING how-to for the policy server and the tactile scripts. Keep it in step with `scripts/policy_server.py` options, the `server:` YAML block and the audit's flags. |
 | `crisp_gym/scripts/inspect_dataset.py` | READ-ONLY layout of a dataset folder: info.json counts + every feature (shape, dtype), tactile_raw CSVs (count, DVC pointers not pulled, one episode's fields and rows), edit_report.json. Standard library only. Was an inline command given to the owner. |
 | `crisp_gym/scripts/check_tactile_sync.py` | READ-ONLY, one episode: tactile column dtypes, CSV rate/gaps, exact int64 stamp join + equal taxels, rows per frame, sync_valid/offset/error; first line = command gap + joint motion (robot vs handheld). Same output as the inline check it replaces on complete data; reports missing columns/CSVs instead of raising. Tests: `tests/test_dataset_inspection.py`. |
@@ -689,8 +695,14 @@ error is now 0.8% (was ~11%, and 7.5% under stock GC with streaming on).
    have a wrong time base (ep1 of the field run encodes ~3.2x the motion its
    timestamps claim). Drop or re-record them.
 4. `data_fn` returns `None` exactly twice per episode (`recording_manager.py`
-   `skipped=True` path) — reproducible across every field run, not yet
-   investigated. No row is written, so no desync.
+   `skipped=True` path) — reproducible across every field run. No row is
+   written, so no desync. EXPLAINED (2026-11-16; read, and reproduced on a
+   fake env: 2 / 1 / 1; not yet a committed test): `make_record_fn` is built once per episode and returns
+   `(None, None)` in two places only — the drive warm-up tick (a relative
+   drive function has no previous pose to subtract) and the tick on which the
+   lookahead buffer fills (lookahead 1). Expect 2 with a relative drive
+   function, 1 with an absolute one (FACTR with `use_relative_actions: false`)
+   or none (handheld). GUIDANCE WP-06.
 
 Unrelated landmine noticed while reading: `concatenate_state_features` builds
 `observation.state` from `obs` DICT INSERTION ORDER, not the declared feature
@@ -701,6 +713,8 @@ order. It matches today only because `_collect_obs` iterates
 
 ## 5. Process rules for AI sessions on these repos
 
+- Read `GUIDANCE.md` first; its §4 is the step-by-step procedure for a change
+  (plan, test first, other copies, run everything, documents, report).
 - Follow `CLAUDE.md`: for the first request of a session, present a plan,
   change nothing beyond what is explicitly approved, and ask before proceeding.
 - Branch: develop on the designated `claude/...` branch; never push elsewhere
@@ -1073,6 +1087,25 @@ established so far — verify before contradicting them:
   "command" model still does not command a squeeze; `extra.gripper_target`
   must be recorded (it is not in the existing Franka data) before that can
   change.
+- **A "promoted" column is not a model input for a diffusion policy
+  (2026-11-16, CODE_REVIEW C11).** `postprocess_align_datasets.py --promote`
+  only renames `extra.foo` to `observation.state.foo`. lerobot's diffusion
+  model reads `observation.state`, the images and
+  `observation.environment_state`, nothing else (source read at v0.4.4 and
+  main; not run). Feeding torque, force or tactile to the model therefore
+  needs GUIDANCE WP-10 first: write them to `observation.environment_state`,
+  or append them to the concatenated `observation.state`.
+- **Simulation (2026-11-16).** The research plan and the simulators are in
+  `RESEARCH_FORCE_TACTILE.md`. Executed in a cloud session: MuJoCo 4.0.1
+  from pip with the `touch_grid` sensor plugin gives a 6 x 12 = 72-taxel pad
+  (3 channels each); on a 400 N/m position servo pressed onto a peg,
+  stiffness x (command - measured) equalled the summed taxel force to two
+  decimals while the measured position stayed at the surface. The sensor's
+  site looks along its -z axis; the other way round every taxel reads zero.
+  Not executed: `tactile_envs` (a floating Robotiq 2F-85 with taxel pads on
+  spring-like position actuators — the closest ready-made match). The "fake
+  hardware" Franka of crisp_controllers_demos IS MuJoCo behind ros2_control:
+  arm only, gravity off, no gripper, camera or external-torque topic.
 - Planned order: audit existing data → robot-only ablation of measured-pose vs
   command action (true commands exist, no residual model needed) → residual
   model on robot data → relabel handheld data into a NEW column (never

@@ -7,6 +7,11 @@ them into work guidance. It changes nothing. Per `CLAUDE.md`, no item here is
 to be fixed without the owner's go-ahead; several need an owner decision first
 (marked **DECIDE**).
 
+**The guidance now exists: `GUIDANCE.md`.** It turns the findings below into
+ordered, self-contained work packages (WP-01 … WP-18) and lists the owner
+decisions still open. This file stays the evidence behind them; §6 is a second
+pass made while writing the guidance.
+
 **How it was produced.** Reading the code, plus measurements (AST outlines,
 grep counts, `ruff`, the ROS-free test suite). Nothing was run against ROS,
 lerobot, torch, a GPU or a robot. Each finding carries one status:
@@ -31,6 +36,7 @@ where a finding depends on them.
 | 2026-11-16 | D2 (part) | Of the unreferenced configs, the two legacy policy YAMLs are gone, and so are all eight dual-camera configs (owner): the four `dric_dual_rscam_*` / `factr_dric_dual_rscam_*` Franka envs, `ur7e_robotiq_dual_cam`, `left_robot_env`, `right_robot_env`, `umi_robot_dual_cam_record`. The Franka rig's single-camera replacements are `dric_franka_oakw_umi`, `factr_dric_franka_oakw`, `dric_franka_oakw_deploy_umi`; `umi_robot_full_record.yaml` records `oakw_cam` only. The recording script's default follower config is now `dric_franka_oakw_umi` (was `left_robot_env`). |
 | 2026-11-16 | S1 | Fixed: 0.0 is a real workspace bound (`util/safety.workspace_box`). Default `min_z` is now `None` — the same behaviour as before, since the old 0.0 default was dropped — because a robot on a mobile base may reach below its base. |
 | 2026-11-16 | S2 | Done: `max_target_step_m` / `max_target_step_deg` (target-to-target, per env.step), default off, set to 0.03 m / 5 deg in the three deploy envs. Tested on the pure function and on the real env methods exec'd from source; not run on a robot. |
+| 2026-11-16 | second pass | Re-read at commit `12f6b29` to write `GUIDANCE.md`. New finding C11 (promoted columns do not reach a diffusion policy). C4 explained by reading. K1 re-checked by building a wheel. Numbers refreshed in §6. No code changed. |
 
 ---
 
@@ -141,13 +147,14 @@ everywhere (A3).
 | C1 | Env names defined both as a Python class and a YAML: the class wins, the YAML is never read | P1 | S | VERIFIED |
 | C2 | Config files shadowed between crisp_py and crisp_gym; search order flips with an env var | P1 | S–M | PART DONE |
 | C3 | `observation.state` concatenated in dict insertion order | P1 | S | FROM HANDOFF |
-| C4 | `data_fn` returns `None` twice per episode, uninvestigated | P1 | S | FROM HANDOFF |
+| C4 | `data_fn` returns `None` twice per episode | P1 → P3 | XS | EXPLAINED (§6: read, and reproduced on a fake env); test pending, WP-06 |
 | C5 | `control_frequency`, `block`, `max_episode_steps` are dead; `step()` builds an observation every caller discards | P1 | M | VERIFIED |
 | C6 | Recording with `--follower-config franka` bypasses the config system with hard-coded values | P1 | S | VERIFIED |
 | C7 | Interactive config prompts default to whatever the filesystem lists first | P1 | S | VERIFIED (code) |
 | C8 | `make_policy` raises `ValueError` with a tuple message | P3 | XS | VERIFIED |
 | C9 | 14 test files use `SourceFileLoader.load_module()`, removed in Python 3.15 | P2 | S | VERIFIED |
 | C10 | `scripts/dataset_conversions/*` use an old lerobot API | P2 | S | DONE — deleted |
+| C11 | `--promote` renames a column to `observation.state.<x>`, which a lerobot diffusion policy never reads | P1 | M | VERIFIED (lerobot source read; not run) |
 | A1 | `crisp_gym/scripts` mixes four kinds of program; a second `scripts/` folder at the root | P2 | L | VERIFIED |
 | A2 | GPU-side code is duplicated so scripts stay single-file | P2 | M–L | VERIFIED |
 | A3 | Dataset schema lives in string literals across 20+ files | P2 | M | VERIFIED |
@@ -315,6 +322,31 @@ pre-0.5 `LeRobotDataset` API (e.g. `fix_rotation_vectors_in_dataset.py:12`).
 Not run here; likely broken on lerobot ≥ 0.5. Newer tools cover much of it
 (`migrate_euler_delta_to_rot6d.py`, `postprocess_align_datasets.py`,
 `swap_action_offline.py`). **DECIDE**: delete, or port and test.
+
+#### C11. Promoted columns do not reach the model — VERIFIED by reading, not run
+
+`postprocess_align_datasets.py --promote extra.foo` renames the column to
+`observation.state.foo` (`promoted_name`) and changes nothing else; the
+concatenated `observation.state` vector is not rebuilt. USAGE §7 presented
+this as making the column a policy input. In lerobot (read at tag v0.4.4 and
+on main, 2026-11-16):
+
+- `configs/policies.py::robot_state_feature` returns the STATE feature whose
+  name is exactly `observation.state`;
+- `policies/diffusion/modeling_diffusion.py::_prepare_global_conditioning`
+  reads `batch[OBS_STATE]`, the images, and `batch[OBS_ENV_STATE]` when an
+  environment-state feature is declared. No other low-dimensional key.
+
+So a promoted column is declared, windowed and normalised, and never enters a
+diffusion network. HANDOFF §1.2 already says the same about the stand-alone
+`rot_wrt_start` key ("not consumable there"), which is why the wrapper
+appends it to `observation.state`. Not checked: ACT (expected the same),
+`multi_task_dit`, GR00T (own modality config), and whether any existing
+checkpoint was trained on a promoted dataset — if one was, its extra inputs
+were ignored. Two fixes are described in GUIDANCE WP-10: write the extras to
+`observation.environment_state` (recommended), or rebuild `observation.state`
+with the extras appended. This matters now because every "torque / force /
+tactile as a model input" experiment depends on it.
 
 ### 2.4 P2 — structure
 
@@ -545,6 +577,9 @@ ask before deleting.
 
 ## 3. Suggested order of work
 
+Superseded by `GUIDANCE.md` §6, which keeps this order, adds the findings of
+the second pass and writes each item as a work package. Kept for the record.
+
 Each step: write the test first, keep existing command lines working, and run
 in the ROS + lerobot environment before calling it done.
 
@@ -583,3 +618,68 @@ ruff check . && ruff format --check .
 ```bash
 python scripts/code_metrics.py            # longest functions; --files for longest files
 ```
+
+---
+
+## 6. Second pass (2026-11-16, commit `12f6b29`)
+
+Made while writing `GUIDANCE.md`, after the removals and safety work listed in
+the progress table. Baseline: 709 tests passed, 12 skipped, 25 s; `ruff check`
+clean with ruff 0.12.0.
+
+### 6.1 Numbers that changed since §1–§2
+
+| item | at `afb4a18` | now |
+|---|---|---|
+| `crisp_gym/scripts` | 21 files | 23 (`inspect_dataset.py`, `check_tactile_sync.py` added) |
+| `scripts/` (root) | incl. `dataset_conversions/` | deleted; `policy_server.py`, `code_metrics.py`, shell launchers remain |
+| `crisp_gym/policy` | incl. two legacy policies | removed; 7 files |
+| `audit_command_residual.py` | 1,717 lines | 2,034 (`analyze` 360 lines, `format_report` 210, `build_parser` 145) |
+| tests | 34 files | 37 files, 709 tests |
+| `except Exception` handlers | 86 in 22 files | 81 |
+| functions over 150 / over 80 lines | 14 / 35 | 14 / 31 |
+| env configs | 10 classes + 16 YAML | 10 classes + 12 YAML; still two names in both (C1) |
+
+Line numbers in §2 are for `afb4a18` and have moved. `GUIDANCE.md` names the
+function instead of the line.
+
+### 6.2 C4 explained
+
+`make_record_fn` is created once per episode (the recording scripts build it
+inside their episode loop). Its `_fn` returns `(None, None)` in two places
+only: on the drive warm-up tick (a relative drive function has no previous
+pose to subtract; `make_teleop_drive_fn`, `make_streamer_drive_fn`, and
+`make_factr_drive_fn` in relative mode return `None` on their first call), and
+while the lookahead buffer fills (`len(obs_buffer) <= lookahead`, one tick at
+the default lookahead of 1). That is two skipped frames per episode with a
+relative drive function and one with an absolute drive function or none. It is
+deterministic and loses no data. Reproduced by calling the real
+`make_record_fn` on a fake env six times: 2, 1 and 1 skipped frames for the
+three cases. Not run on the robot; GUIDANCE WP-06 turns that check into a test
+and asks for one confirmation on the robot.
+
+### 6.3 Checked again
+
+- **K1 stands.** A wheel built from this tree contains the `crisp_gym`
+  subpackages, plus `examples` (14 files), `scripts` (2) and `tests` (38) as
+  top-level packages, and no YAML file at all.
+- **Ruff version.** ruff 0.16.9 would reformat 7 files that ruff 0.12.0 accepts.
+  Pin 0.12.0 locally as CI does.
+
+### 6.4 Small findings added
+
+| ID | finding | where | package |
+|---|---|---|---|
+| N1 | Eight commented-out `print` lines in the gripper action path, one more in `leader_follower_teleop.py` | `ManipulatorBaseEnv._set_gripper_action` | WP-08 |
+| N2 | A name defined as class and YAML is listed twice at the env prompt | `list_env_configs` | WP-02, WP-03 |
+| N3 | Required reading is about 270,000 characters in 8 documents; HANDOFF §2 has table cells of up to 2,938 characters | D1 | WP-17, WP-18 |
+| N4 | The "fake hardware" Franka of crisp_controllers_demos is MuJoCo with the arm only: gravity off, no gripper, no camera, and the Franka state broadcaster is not started, so there is no external-torque topic. An end-to-end test on it (K2) cannot use `dric_franka_oakw_umi` + `umi_robot_full_record.yaml` as they are (INFERRED from the launch file and the scene) | `crisp_controllers_demos/crisp_mujoco_sim`, `config/fr3/scene.xml`, `launch/franka.launch.py` | K2 |
+| N5 | To load a script by path in a test, the module must be registered in `sys.modules` before it is executed, or dataclasses fail. `load_module()` did this implicitly; its replacement must do it explicitly | C9 | WP-04 |
+
+### 6.5 Is the structure easy to manage?
+
+Assessment and the rules that follow from it are in `GUIDANCE.md` §5. In one
+line: the layering, the registries and the tested invariants are sound; the
+cost is in volume — too much required reading, a few very large files and
+functions, dataset keys as string literals, and code kept in several copies.
+
