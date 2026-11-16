@@ -510,11 +510,13 @@ def force_against_gap(
 ) -> list[dict]:
     """Median force per band of gap size, on the frames in `mask`.
 
-    Under a linear impedance the force grows in proportion to the gap, so the
-    ratio median|F| / median|gap| stays flat across bands. A ratio that falls
-    in the large-gap bands means the force stops growing: the controller caps
+    Read the SLOPE between neighbouring bands (added force per added gap, N/m):
+    under a linear impedance it stays level and equals the stiffness; if it
+    falls toward 0 at large gaps the force stops growing — the controller caps
     the pose error (or the operator pulled the target far ahead while the arm
-    was blocked by something the force estimate does not see).
+    was blocked by something the force estimate does not see). The plain ratio
+    median|F| / median|gap| is kept, but a force floor at small gaps (resting
+    torque bias, noise) makes it fall even for a perfect spring.
     """
     gap = np.linalg.norm(res_pos, axis=1) * 1e3
     f = np.linalg.norm(force, axis=1)
@@ -524,16 +526,18 @@ def force_against_gap(
         if m.sum() < min_count:
             continue
         g, fm = float(np.median(gap[m])), float(np.median(f[m]))
-        rows.append(
-            {
-                "lo_mm": lo,
-                "hi_mm": hi,
-                "n": int(m.sum()),
-                "gap_mm": g,
-                "force_n": fm,
-                "ratio_n_per_m": fm / (g * 1e-3) if g > 0 else float("nan"),
-            }
-        )
+        row = {
+            "lo_mm": lo,
+            "hi_mm": hi,
+            "n": int(m.sum()),
+            "gap_mm": g,
+            "force_n": fm,
+            "ratio_n_per_m": fm / (g * 1e-3) if g > 0 else float("nan"),
+            "slope_n_per_m": None,
+        }
+        if rows and g > rows[-1]["gap_mm"]:
+            row["slope_n_per_m"] = (fm - rows[-1]["force_n"]) / ((g - rows[-1]["gap_mm"]) * 1e-3)
+        rows.append(row)
     return rows
 
 
@@ -1604,15 +1608,18 @@ def format_report(r: dict) -> str:
             add("  (too few slow frames)")
         for b in h["bands"]:
             hi = "inf" if b["hi_mm"] == float("inf") else f"{b['hi_mm']:g}"
+            slope = b.get("slope_n_per_m")
+            slope_txt = "      -" if slope is None else f"{slope:7.0f}"
             add(
                 f"  gap {b['lo_mm']:>4g}-{hi:<4s} mm  n={b['n']:<7d} median gap {b['gap_mm']:6.1f} mm"
-                f"  median |F| {b['force_n']:6.1f} N  ratio {b['ratio_n_per_m']:7.0f} N/m"
+                f"  median |F| {b['force_n']:6.1f} N  slope from band before {slope_txt} N/m"
             )
         if h["bands"]:
             add(
-                "  A ratio that stays level means force grows with the gap (plain impedance); a "
-                "ratio that falls at large gaps means the force stops growing (capped error). The "
-                "smallest bands include the resting torque bias."
+                "  Read the SLOPE (added force per added gap): level = a plain spring of that "
+                "stiffness; falling toward 0 at large gaps = the force stops growing (capped "
+                "error). The smallest bands carry a force floor (resting torque bias, noise), so "
+                "force / gap there says nothing."
             )
         for group, ku in (("translation", "N/m"), ("rotation", "Nm/rad")):
             for ax, v in h["static_fit"].get(group, {}).items():

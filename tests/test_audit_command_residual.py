@@ -671,11 +671,17 @@ def test_force_against_gap_shows_a_capped_error():
     res = direction * gap[:, None]
     force = -400.0 * direction * np.minimum(gap, 0.04)[:, None]
     rows = mod.force_against_gap(res, force, np.ones(4000, bool))
-    ratio = {r["lo_mm"]: r["ratio_n_per_m"] for r in rows}
-    assert abs(ratio[10.0] - 400.0) < 10 and abs(ratio[20.0] - 400.0) < 10
-    assert ratio[80.0] < 0.5 * ratio[20.0]
-    rows = mod.force_against_gap(res, -400.0 * res, np.ones(4000, bool))
-    assert all(abs(r["ratio_n_per_m"] - 400.0) < 5 for r in rows)  # linear: a level ratio
+    slope = {r["lo_mm"]: r["slope_n_per_m"] for r in rows}
+    assert slope[0.0] is None
+    assert abs(slope[10.0] - 400.0) < 20 and abs(slope[20.0] - 400.0) < 20
+    assert abs(slope[80.0]) < 20  # past the cap the force no longer grows
+
+    # a plain spring plus a 7 N force floor (the FR3's resting bias): the RATIO
+    # falls with the gap, the SLOPE does not — which is why the slope is printed
+    floor = -(400.0 * gap + 7.0)[:, None] * direction
+    rows = mod.force_against_gap(res, floor, np.ones(4000, bool))
+    assert rows[1]["ratio_n_per_m"] > 2 * rows[-1]["ratio_n_per_m"]
+    assert all(abs(r["slope_n_per_m"] - 400.0) < 20 for r in rows[1:])
 
 
 def test_force_against_gap_and_static_fit_in_the_report():

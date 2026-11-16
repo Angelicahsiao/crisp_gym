@@ -940,13 +940,27 @@ established so far — verify before contradicting them:
     gap (47 mm left at 0.5 s). Force + velocity explain R2 0.79–0.93 of the
     contact gap (velocity alone 0.21–0.56). The comparison is worth running.
   - Delivered stiffness (step C) 131 / 231 / 267 N/m and 13.9 / 6.4 / 11.0
-    Nm/rad: 21–67 % of the bring-up gains. Cause not separated yet (capped
-    controller error? attenuation by lag/noise? different gains at recording?)
-    — steps H and I were added to tell these apart.
+    Nm/rad: 21–67 % of the bring-up gains. Second run (joint-space contact,
+    22.6 % of frames, matching the owner's plot): the STATIC fit on slow frames
+    gives the same (147 / 198 / 282 N/m), so it is not lag attenuation; the
+    controller frame and the recorded pose are both `fr3_hand_tcp`, so not a
+    frame mismatch. Force against gap (slow frames): ~7 N floor below 20 mm,
+    then +150 / 200 / 260 N/m per band up to ~10 cm — no capping up to 10 cm
+    (the >16 cm band, 63 frames, is too thin to judge). Still open: joint
+    friction absorbing part of the spring force, controller-side filters or
+    limits, or different gains when recorded. A push test with a scale at a
+    fixed target would settle it.
   - A free-motion gap of ~20 mm remains at the best lookahead. Gravity sag of
     an unconfigured gripper load was considered and is UNLIKELY: an
     unconfigured 0.9 kg gripper would show several Nm on joints 2 and 4 at
-    rest, and they rest near 0. Step I (base-frame offset) is the next check.
+    rest, and they rest near 0. Step I confirms: in free motion the
+    command-minus-measured offset in the base frame is mostly motion (std
+    13–22 mm) with small constant parts (x about −7 mm, z about +3 mm). In
+    contact the command leads mainly along base −y (median −20 mm) and −x.
+  - Step G: command steps exceed the deploy limit (30 mm / 5 deg) in 0.21 %
+    of frames (rotation spikes, max 17 deg); the measured pose has single-frame
+    jumps up to 138 mm (0.48 % over 30 mm) — possibly dropped frames, see §4b
+    item 3. The deploy limit suits both models.
 - **A robot dataset with the same tactile columns exists: `ur_electricbox`**
   (10 episodes, 2778 frames, `extra.tactile.left/right` 72 taxels). It is
   recorded by the owner's setup, NOT by anything in this repo — crisp_gym has
