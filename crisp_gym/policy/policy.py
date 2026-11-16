@@ -71,10 +71,13 @@ def make_policy(name_or_config_name, *args, **kwargs) -> Policy:  # noqa: ANN001
 
     policy_cls = policy_registry.get(name)
     if policy_cls is None:
-        raise ValueError(
-            f"Policy '{name}' is not registered. Available policies: {list(policy_registry.keys())}",
-            f"{'Make sure the policy is registered and the config file exists: ' + str(file_path) if file_path is not None else ''}",
+        message = (
+            f"Policy '{name}' is not registered. "
+            f"Available policies: {list(policy_registry.keys())}."
         )
+        if file_path is not None:
+            message += f" The name was read from the config file {file_path}."
+        raise ValueError(message)
 
     # Explicit kwargs OVERRIDE the YAML config (e.g. a CLI --num-inference-steps
     # beats the value in the policy config file). Merging also avoids the
