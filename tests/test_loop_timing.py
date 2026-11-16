@@ -487,6 +487,71 @@ def test_make_record_fn_publishes_per_phase_timing():
     assert fn.timing["step"] >= 0.004, "env.step should be charged to step"
 
 
+# ── how many frames an episode skips at its start ────────────────────────────
+
+
+def _skipped_frames(drive_fn, lookahead=1, calls=6):
+    """Build a record function the way an episode does and count its (None, None)."""
+    rf = _load_record_functions()
+    import crisp_gym.record.record_config as rc
+
+    config = rc.RecordConfig(
+        name="t",
+        rate_hz=15.0,
+        observations=[
+            rc.ObsFieldConfig(
+                key="observation.state.cartesian",
+                source="robot.tcp_pose",
+                params={"representation": "rotation_6d"},
+            ),
+        ],
+        action=rc.ActionConfig(
+            definition="next_tcp_pose",
+            lookahead=lookahead,
+            representation="rotation_6d",
+            include_gripper=False,
+        ),
+    )
+    fn = rf.make_record_fn(_FakeEnv(), config, drive_fn=drive_fn)
+    results = [fn() for _ in range(calls)]
+    skipped = [obs is None and action is None for obs, action in results]
+    # skipped frames come first and never come back within the episode
+    assert skipped == sorted(skipped, reverse=True), skipped
+    return sum(skipped)
+
+
+def _relative_drive_fn():
+    """Like the teleop drive functions: nothing to subtract from on the first call."""
+    state = {"first": True}
+
+    def _drive():
+        if state["first"]:
+            state["first"] = False
+            return None
+        return [0.0]
+
+    return _drive
+
+
+def test_an_episode_skips_the_warm_up_tick_and_the_lookahead_fill():
+    """Field runs logged "data function returned None" twice per episode.
+
+    Both are by construction and lose no data: the drive warm-up tick (a
+    relative drive function has no previous pose yet) and one tick per step of
+    lookahead while the observation buffer fills.
+    """
+    assert _skipped_frames(_relative_drive_fn()) == 2
+    # an absolute drive function (FACTR with use_relative_actions: false) has
+    # no warm-up tick; neither has passive recording (handheld, drive_fn=None)
+    assert _skipped_frames(lambda: [0.0]) == 1
+    assert _skipped_frames(None) == 1
+
+
+def test_skipped_frames_grow_with_the_lookahead():
+    assert _skipped_frames(_relative_drive_fn(), lookahead=3, calls=8) == 4
+    assert _skipped_frames(None, lookahead=3, calls=8) == 3
+
+
 # ── GC pause reduction ───────────────────────────────────────────────────────
 
 

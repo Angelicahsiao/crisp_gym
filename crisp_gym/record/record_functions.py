@@ -101,8 +101,14 @@ def make_record_fn(
             itself. For passive recording (handheld), leave None.
 
     Returns:
-        Callable returning (obs, action) per tick — or (None, None) while the
-        lookahead buffer fills — for RecordingManager.record_episode.
+        Callable returning (obs, action) per tick for
+        RecordingManager.record_episode. It returns (None, None), which the
+        manager logs and skips, at the start of every episode: once if the
+        drive function needs a warm-up tick, plus `lookahead` times while the
+        observation buffer fills. With the default lookahead of 1 that is two
+        skipped frames under relative teleop and one otherwise. No data is
+        lost: the first stored row pairs the first observation with the pose
+        measured `lookahead` ticks later.
     """
     from collections import deque
 
@@ -161,7 +167,8 @@ def make_record_fn(
         t1 = time.perf_counter()
         timing["drive"] = t1 - t0
         if drive_fn is not None and cmd is None:
-            # Drive warm-up tick (e.g. teleop needs a previous pose to diff).
+            # Skipped frame: drive warm-up tick (e.g. teleop needs a previous
+            # pose to diff). The env is not stepped.
             timing["step"] = timing["collect"] = timing["action"] = 0.0
             return None, None
         env.step(cmd, block=False)
@@ -183,6 +190,8 @@ def make_record_fn(
         # next_*: pair obs[t-lookahead] with the value measured NOW.
         obs_buffer.append(obs)
         if len(obs_buffer) <= lookahead:
+            # Skipped frame: the buffer is still filling (`lookahead` ticks per
+            # episode). The env was stepped and this observation is kept.
             return None, None
         action = _action_value()
         timing["action"] = time.perf_counter() - t3
