@@ -166,7 +166,6 @@ while True:
         if args.use_streamed_teleop
         else 0.0
     )
-    # print(gripper_value)
 
     # action_pose = leader.robot.end_effector_pose - previous_pose
     # previous_pose = leader.robot.end_effector_pose

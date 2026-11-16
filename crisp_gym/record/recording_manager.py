@@ -1136,8 +1136,11 @@ class ROSRecordingManager(RecordingManager):
             msg: The message containing the recording state
         """
         if msg.data not in self.allowed_actions:
-            print(f"[red]Invalid action received: {msg.data}[/red]")
-            print("[yellow]Allowed actions are: record, save, delete, exit[/yellow]")
+            logger.warning(
+                "Invalid action received: %r. Allowed actions are: %s.",
+                msg.data,
+                ", ".join(self.allowed_actions),
+            )
             return
 
         logger.debug(f"Received message: {msg.data}")

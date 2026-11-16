@@ -294,7 +294,7 @@ if __name__ == "__main__":
             button_map=button_map,
             device_name=args.device,
         )
-        print("SpaceMouse streamer running — press Ctrl+C to exit")
+        streamer.node.get_logger().info("SpaceMouse streamer running — press Ctrl+C to exit")
         while rclpy.ok():
             time.sleep(0.1)
     except KeyboardInterrupt:
