@@ -630,6 +630,8 @@ unit tests first; it is the part with the most states and the fewest tests.
 | D-8 | Split HANDOFF into conventions and dated notes? | yes |
 | D-9 | Add one line to `CLAUDE.md` naming `GUIDANCE.md` as the first file to read, and an `AGENTS.md` for tools that read that name? | **ANSWERED 2026-11-17: yes to both, done** |
 | D-10 | `multi_task_dit` and GR00T read `observation.state` only. Put extra inputs INTO `observation.state`, after the gripper (changes the state layout)? | **ANSWERED 2026-11-17: yes.** One route for every policy; the robot side already adds env sensors to the state. Missing: `--promote` must rebuild `observation.state`. ROADMAP F2 |
+| D-11 | Which policies for the measured-vs-command comparison? | **ANSWERED 2026-11-17: `multi_task_dit` and diffusion first; GR00T later** (the owner trains GR00T in SE3 mode, which uses the same wrapper) |
+| D-12 | When to make `--promote` rebuild `observation.state`? | **ANSWERED 2026-11-17: a later session.** It is step 1 of ROADMAP F2 |
 
 Robot-side checks still owed (from earlier sessions):
 

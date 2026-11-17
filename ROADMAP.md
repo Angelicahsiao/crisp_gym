@@ -115,7 +115,7 @@ feature's section in the same commit.
 
 | # | feature | level | what is missing | needs |
 |---|---|---|---|---|
-| F1 | Measured-pose vs command action (models M and C) | FAKES | no training run, no rollout | GPU PC, robot |
+| F1 | Measured-pose vs command action (models M and C), `multi_task_dit` and diffusion first | FAKES | no training run, no rollout | GPU PC, robot |
 | F2 | Torque, force or tactile as a model input | route decided; one dataset step not built | `--promote` must rebuild `observation.state`; then training and one robot start | code, GPU PC, robot |
 | F3 | Safety limits on the commanded pose | FAKES | never acted on a real arm; no workspace box chosen | robot |
 | F4 | One-camera Franka configs (`dric_franka_oakw_*`) | FAKES (YAML checks) | never started on the robot | robot |
@@ -126,7 +126,7 @@ feature's section in the same commit.
 | F9 | Tactile | ON HOLD (hardware) | recording on the robot, time stamps, the probe | owner |
 | F10 | The test suite in the real environments | never run there | one pytest run each on robot PC and GPU PC | owner |
 | F11 | Open measurements | — | delivered stiffness, duplicated configs, loop left-overs | robot |
-| F12 | GR00T | in use by the owner; level on the current rig unknown here | ask which mode and which steps have run | owner |
+| F12 | GR00T (SE3 mode) | in use by the owner; level on the one-camera rig unknown here | ask which steps have run there | owner |
 
 Order: **F10 → F4 → F3 → F1**, because F1's rollouts need the configs, the
 limits and trustworthy tests. F2 in parallel on the GPU PC. F6 with the next
@@ -169,13 +169,18 @@ of success, time and contact gap exists for 20–30 trials each.
 so neither commands a squeeze (F6). Do not compare the two open-loop errors
 with each other. Recordings use ONE stiffness; the answer may change with it.
 
-**With GR00T.** Feed it the recording and the command copy as they are (no
-relative wrapper in its default mode). Its dataset gate will warn that the
-action of the command copy "is not the next measured pose": expected.
-Nothing records the action source in a GR00T checkpoint (F12).
+**Decided (owner, 2026-11-17): `multi_task_dit` and diffusion first, GR00T
+later.** That is four trainings (two policies, two labels) and four sets of
+rollouts. Diffusion goes through `lerobot_relative_pose.py` directly;
+`multi_task_dit` through `train_multi_task_dit_server.sh`, which calls the
+same wrapper, so both record the action source. Its dataset gate will warn
+on the command copy that the action "is not the next measured pose":
+expected. `RUN_SHEETS.md` sheet 3 is the smoke run for both.
 
-**Ask the owner.** Which policy: diffusion, `multi_task_dit`, GR00T? How many
-trials?
+**Later, with GR00T.** The owner trains it in SE3 mode, which also goes
+through the wrapper, so the same two datasets and the same stamp apply (F12).
+
+**Ask the owner.** How many rollout trials per model?
 
 ---
 
@@ -213,7 +218,8 @@ automatically, and `_verify_state_dim` compares the width with the checkpoint.
   state route fails.
 
 **To finish.**
-1. [cloud] Make `--promote` also rebuild `observation.state`: append the
+1. [cloud; the next code step, left by the owner for a later session] Make
+   `--promote` also rebuild `observation.state`: append the
    promoted columns in the order given, extend its `names` and `shape`,
    recompute its statistics in all three places. Copy the tests and the
    refusals (missing, constant, NaN) from `tests/test_add_environment_state.py`.
@@ -238,10 +244,12 @@ starts; pressing the gripper by hand changes the state the log shows.
 - `has_effort_feedback: true` adds 7 more numbers (total joint torque): keep it
   `false` on the deploy env unless that column was promoted too.
 - wrt-start stays last.
-- GR00T in its default mode forms the relative action as action minus the
-  matching STATE dimensions. Appending at the end keeps the pose at 0–8 and
-  the gripper at 9, which is what it needs, but this has not run with a wider
-  state: smoke-train and run `check_trained_groot.sh` first.
+- GR00T: in SE3 mode (the owner's) its own relative conversion is off and
+  the wrapper handles the state, so a wider state is just more state. In the
+  DEFAULT mode it forms the relative action as action minus the matching
+  state dimensions; appending at the end keeps the pose at 0–8 and the
+  gripper at 9, which it needs. Neither has run with a wider state:
+  smoke-train and run `check_trained_groot.sh` first.
 - External torque rests at a bias (joint 1 about −1.3 Nm) that may differ from
   day to day. Look at a resting stretch before trusting it as an input.
 - A model given force may ignore it (FACTR, TA-VLA): compare under occlusion.
@@ -446,31 +454,40 @@ find.
 
 ### F12 · GR00T
 
-**For.** The owner's language-conditioned policy (lerobot's GR00T N1.7).
+**For.** The owner's language-conditioned policy (lerobot's GR00T N1.7),
+trained in **SE3 mode** (`--se3` / `SE3=1`; owner, 2026-11-17).
 
-**Exists.** Launchers `scripts/train_groot.sh` and `train_groot_server.sh`
-(they pin three flags lerobot's defaults get wrong), `check_gpu_groot.sh`,
-`groot_preflight.py` (is the dataset fit), `check_trained_groot.sh` (did the
-flags survive), the policy configs `groot_lerobot_policy` and
+**Exists.** Launchers `scripts/train_groot.sh` and `train_groot_server.sh`,
+`check_gpu_groot.sh`, `groot_preflight.py` (is the dataset fit),
+`check_trained_groot.sh` (did the pinned flags survive), the policy config
 `groot_se3_lerobot_policy`, the deploy env `dric_franka_oakw_deploy_groot`.
 USAGE §8 "Train GR00T N1.7", §9 "Deploy a GR00T checkpoint"; HANDOFF §4c.
 
-**How it differs from diffusion and `multi_task_dit`.** Each line has cost a
-run before:
-- It is fed the dataset AS RECORDED (absolute poses) and builds its relative
-  actions itself. Never give the default mode a relative-wrapper output.
-- Its checkpoint carries no `pose_repr.json` in the default mode. `state_input`
-  and `action_repr` are therefore pinned in the policy YAML, and `auto`
-  resolves wrongly. Choose the YAML by training mode (table in USAGE §9).
-- For the same reason nothing records the action source: a GR00T checkpoint
-  trained on the command copy looks the same as one trained on the recording.
-  Name the folders, or have the launcher write that note (a small code step).
-- The task string is a model input: a stale task label trains a wrong mapping.
-- It reads `observation.state` only (F2).
-- It is slow: measure the loop rate before judging its behaviour.
+**What SE3 mode means here.**
+- Training goes through `lerobot_relative_pose.py`, like diffusion and
+  `multi_task_dit`: relative poses made by the wrapper, GR00T's own relative
+  conversion switched off (`--policy.use_relative_actions=false`).
+- So the checkpoint gets a `pose_repr.json`, with the action source in it, and
+  F1 and F2 apply to it unchanged.
+- Deploy with `groot_se3_lerobot_policy` (`state_input: relative_wrt_start`,
+  `action_repr: relative`); with `WRT_START=0`, set `state_input: relative`.
+  The values are pinned in the YAML on purpose: do not switch them to `auto`.
+- The env config is the same as for the other policies: the robot still sends
+  the 10-wide state and the worker appends wrt-start.
 
-**Level.** In use by the owner. This document does not know which steps have
-run on the one-camera rig, nor in which mode. Ask before planning.
+**Whatever the mode.** The task string is a model input (a stale label trains
+a wrong mapping). The model is slow: measure the loop rate before judging its
+behaviour (HANDOFF §4c). Install the `groot` extra on the deploy machine or
+the first action fails (USAGE §9).
+
+**The other mode, if it is ever used.** The default mode is fed the dataset as
+recorded, builds its relative actions itself by subtraction, writes no
+`pose_repr.json`, and deploys with `groot_lerobot_policy`. Mixing the two
+modes' configs is silent: the arm composes an absolute pose twice, or receives
+a relative one as absolute.
+
+**Level.** In use by the owner. Whether an SE3 checkpoint has been trained on
+the current dataset and deployed with the one-camera env is not known here.
 
 **SmolVLA** was tried and underperformed a from-scratch diffusion policy on
 this rig; HANDOFF §4c says why. Do not restart that without reading it.

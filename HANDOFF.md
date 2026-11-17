@@ -1122,6 +1122,11 @@ established so far — verify before contradicting them:
   sensors; a dataset appended in another order passes every width check with
   the numbers in the wrong slots. `add_environment_state.py` stays as the
   diffusion / ACT-only alternative. ROADMAP F2.
+- **Owner's answers, 2026-11-17.** GR00T is trained in SE3 mode (through
+  `lerobot_relative_pose.py`, so its checkpoints carry `pose_repr.json` like
+  the others; deploy with `groot_se3_lerobot_policy`). The measured-vs-command
+  comparison runs with `multi_task_dit` and diffusion first. Rebuilding
+  `observation.state` in `--promote` is left for a later session.
 - **Simulation (2026-11-16).** The research plan and the simulators are in
   `RESEARCH_FORCE_TACTILE.md`; the starter is `crisp_gym/sim/spring_pad.py`
   (tests pass on MuJoCo 3.2.7 and 4.0.1). The `touch_grid` sensor plugin
