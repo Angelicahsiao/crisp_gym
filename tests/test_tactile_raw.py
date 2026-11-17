@@ -11,11 +11,27 @@ The properties that matter downstream are pinned on hand-built streams:
 Run:  python tests/test_tactile_raw.py   (or via pytest)
 """
 
+import importlib.util
+import sys
 import tempfile
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 import numpy as np
+
+
+def _load_by_path(name, path):
+    """Import the file at `path` as module `name`."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    # registered first: dataclasses and pickle look a module up by its name
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
+
 
 REPO = Path(__file__).resolve().parents[1]
 MS = 1_000_000
@@ -23,9 +39,7 @@ T0 = 1_794_190_351_560_399_616  # a real Unix-epoch ns stamp: above 2**53
 
 
 def _load():
-    return SourceFileLoader(
-        "tactile_raw", str(REPO / "crisp_gym" / "util" / "tactile_raw.py")
-    ).load_module()
+    return _load_by_path("tactile_raw", str(REPO / "crisp_gym" / "util" / "tactile_raw.py"))
 
 
 def test_side_of():

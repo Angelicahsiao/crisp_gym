@@ -7,19 +7,33 @@ sensor via `source: robot.sensor`. No Pinocchio dependency here.
 Run:  python tests/test_sensor_source.py   (or via pytest)
 """
 
+import importlib.util
+import sys
 import types
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 import numpy as np
+
+
+def _load_by_path(name, path):
+    """Import the file at `path` as module `name`."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    # registered first: dataclasses and pickle look a module up by its name
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
+
 
 REPO = Path(__file__).resolve().parents[1]
 
 
 def _load_record_config():
-    return SourceFileLoader(
-        "rc_sensor", str(REPO / "crisp_gym" / "record" / "record_config.py")
-    ).load_module()
+    return _load_by_path("rc_sensor", str(REPO / "crisp_gym" / "record" / "record_config.py"))
 
 
 class _FakeSensor:

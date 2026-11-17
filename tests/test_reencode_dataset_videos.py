@@ -11,13 +11,28 @@ These tests pin the checks that refuse such a file.
 Run:  python -m pytest tests/test_reencode_dataset_videos.py
 """
 
+import importlib.util
 import json
 import sys
 import types
 from dataclasses import dataclass, field
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from typing import Any
+
+
+def _load_by_path(name, path):
+    """Import the file at `path` as module `name`."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    # registered first: dataclasses and pickle look a module up by its name
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
+
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
@@ -76,10 +91,10 @@ def _install_stubs() -> None:
 
 _install_stubs()
 
-reencode = SourceFileLoader(
+reencode = _load_by_path(
     "reencode_dataset_videos",
     str(REPO / "crisp_gym" / "scripts" / "reencode_dataset_videos.py"),
-).load_module()
+)
 
 VideoProbe = reencode.VideoProbe
 

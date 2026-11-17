@@ -16,11 +16,11 @@ that `make_record_fn` publishes the per-phase breakdown the loop reads.
 Run:  python tests/test_loop_timing.py   (or via pytest)
 """
 
+import importlib.util
 import multiprocessing as mp
 import sys
 import time
 import types
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -31,6 +31,21 @@ from crisp_gym.util.loop_timing import (  # noqa: E402
     WriterTimingRecorder,
     percentile,
 )
+
+
+def _load_by_path(name, path):
+    """Import the file at `path` as module `name`."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    # registered first: dataclasses and pickle look a module up by its name
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
+
 
 # ── percentile ───────────────────────────────────────────────────────────────
 
@@ -427,9 +442,7 @@ def test_make_record_fn_publishes_per_phase_timing():
     """record_episode reads data_fn.timing to split a slow frame apart."""
     rf = _load_record_functions()
     _stub_crisp_py()
-    rc = SourceFileLoader(
-        "rc_loop_timing", str(REPO / "crisp_gym" / "record" / "record_config.py")
-    ).load_module()
+    rc = _load_by_path("rc_loop_timing", str(REPO / "crisp_gym" / "record" / "record_config.py"))
 
     config = rc.RecordConfig(
         name="t",

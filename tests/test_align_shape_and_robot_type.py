@@ -16,22 +16,37 @@ only the joint-space extras conflict.
 Run:  python -m pytest tests/test_align_shape_and_robot_type.py
 """
 
+import importlib.util
 import json
 import sys
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
+
+def _load_by_path(name, path):
+    """Import the file at `path` as module `name`."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    # registered first: dataclasses and pickle look a module up by its name
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
+
+
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-align_mod = SourceFileLoader(
+align_mod = _load_by_path(
     "postprocess_align_datasets",
     str(REPO / "crisp_gym" / "scripts" / "postprocess_align_datasets.py"),
-).load_module()
+)
 
 
 # Shared by both arms — this is what makes the merge meaningful at all.

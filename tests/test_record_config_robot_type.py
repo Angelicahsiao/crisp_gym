@@ -15,16 +15,30 @@ scripts/postprocess_align_datasets.py, which owns robot_type after a merge).
 Run:  python -m pytest tests/test_record_config_robot_type.py
 """
 
-from importlib.machinery import SourceFileLoader
+import importlib.util
+import sys
 from pathlib import Path
+
+
+def _load_by_path(name, path):
+    """Import the file at `path` as module `name`."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    # registered first: dataclasses and pickle look a module up by its name
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
+
 
 REPO = Path(__file__).resolve().parents[1]
 
 
 def _load_record_config():
-    return SourceFileLoader(
-        "rc_robot_type", str(REPO / "crisp_gym" / "record" / "record_config.py")
-    ).load_module()
+    return _load_by_path("rc_robot_type", str(REPO / "crisp_gym" / "record" / "record_config.py"))
 
 
 _MINIMAL = """

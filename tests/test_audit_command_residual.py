@@ -16,12 +16,28 @@ skipped without them.
 Run:  python tests/test_audit_command_residual.py   (or via pytest)
 """
 
+import importlib.util
 import json
+import sys
 import tempfile
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 import numpy as np
+
+
+def _load_by_path(name, path):
+    """Import the file at `path` as module `name`."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    # registered first: dataclasses and pickle look a module up by its name
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
+
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -31,10 +47,10 @@ FPS = 15.0
 
 
 def _load():
-    return SourceFileLoader(
+    return _load_by_path(
         "audit_command_residual",
         str(REPO / "crisp_gym" / "scripts" / "audit_command_residual.py"),
-    ).load_module()
+    )
 
 
 def _exp(rv):

@@ -13,15 +13,30 @@ builder with numpy in place of torch. Needs numpy only.
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 import types
 from collections import deque
-from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 import pytest
 
 np = pytest.importorskip("numpy")
+
+
+def _load_by_path(name, path):
+    """Import the file at `path` as module `name`."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    # registered first: dataclasses and pickle look a module up by its name
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(name, None)
+        raise
+    return module
+
 
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "crisp_gym" / "scripts" / "check_policy_openloop.py"
@@ -37,7 +52,7 @@ def _load():
     saved = sys.modules.get("lerobot_relative_pose")
     sys.modules["lerobot_relative_pose"] = stub
     try:
-        return SourceFileLoader("check_policy_openloop_under_test", str(SCRIPT)).load_module()
+        return _load_by_path("check_policy_openloop_under_test", str(SCRIPT))
     finally:
         if saved is None:
             sys.modules.pop("lerobot_relative_pose", None)
@@ -484,7 +499,7 @@ def test_a_dataset_without_an_hf_dataset_cannot_be_searched():
 DRIVER = r'''
 import json, sys, types
 from types import SimpleNamespace
-from importlib.machinery import SourceFileLoader
+import importlib.util
 import numpy as np
 
 script, mode = sys.argv[1], sys.argv[2]
@@ -628,7 +643,10 @@ def action_source_mismatch(ckpt, ds):
 lrp.action_source_mismatch = action_source_mismatch
 sys.modules["lerobot_relative_pose"] = lrp
 
-ol = SourceFileLoader("openloop_e2e", script).load_module()
+_spec = importlib.util.spec_from_file_location("openloop_e2e", script)
+ol = importlib.util.module_from_spec(_spec)
+sys.modules["openloop_e2e"] = ol
+_spec.loader.exec_module(ol)
 sys.argv = ["x", "--path", "ckpt", "--repo-id", "ds", "--action-repr", "absolute",
             "--episodes", *EPISODES, "--stride", "5", "--max-frames", "6", *EXTRA]
 try:

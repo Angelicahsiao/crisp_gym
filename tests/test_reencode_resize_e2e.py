@@ -29,7 +29,7 @@ SCRIPT = REPO / "crisp_gym" / "scripts" / "reencode_dataset_videos.py"
 DRIVER = textwrap.dedent(r'''
     import json, sys, types
     from dataclasses import dataclass, field
-    from importlib.machinery import SourceFileLoader
+    import importlib.util
     from pathlib import Path
     from typing import Any
 
@@ -133,7 +133,10 @@ DRIVER = textwrap.dedent(r'''
         }))
         return root, video
 
-    reencode = SourceFileLoader("reencode_dataset_videos", str(script)).load_module()
+    _spec = importlib.util.spec_from_file_location("reencode_dataset_videos", str(script))
+    reencode = importlib.util.module_from_spec(_spec)
+    sys.modules["reencode_dataset_videos"] = reencode
+    _spec.loader.exec_module(reencode)
     src, src_video = make_dataset(work / "src")
     out = work / "out"
     code = reencode.main(["--root", str(src), "--resize", "80", "128", "--output-root", str(out),
