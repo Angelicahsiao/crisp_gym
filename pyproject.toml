@@ -22,6 +22,8 @@ dependencies = [
 [project.optional-dependencies]
 # For scripts/postprocess_align_datasets.py (runs on the training PC).
 postprocess = ["pandas", "pyarrow"]
+# For crisp_gym/sim: small MuJoCo models to try ideas without the robot.
+sim = ["mujoco>=3.2"]
 
 [project.scripts]
 crisp-deploy-policy = "crisp_gym.scripts.deploy_policy:main"

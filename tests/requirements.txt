@@ -18,3 +18,6 @@ pyarrow
 websockets
 msgpack
 pytest>=7.4
+# crisp_gym/sim (tests/test_sim_spring_pad.py). CPU only, no display. Checked
+# with 3.2.7 and 4.0.1; without it those tests skip themselves.
+mujoco>=3.2
