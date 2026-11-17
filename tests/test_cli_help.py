@@ -24,6 +24,7 @@ SCRIPTS = REPO / "crisp_gym" / "scripts"
 
 # Start with nothing more than tests/requirements.txt installed.
 ROS_FREE = [
+    SCRIPTS / "add_environment_state.py",
     SCRIPTS / "audit_command_residual.py",
     SCRIPTS / "inspect_dataset.py",
     SCRIPTS / "check_tactile_sync.py",

@@ -475,27 +475,79 @@ and leave the DVC-tracked one untouched; then `dvc add` the result.
 
 ## 7. Post-process: promote extra states to policy inputs
 
-> **Check before relying on this (found 2026-11-16, CODE_REVIEW C11).** The
-> rename gives a separate column such as `observation.state.joints`. A lerobot
-> diffusion policy reads `observation.state`, the images and
-> `observation.environment_state` only (read in the lerobot v0.4.4 and main
-> sources; not run), so the renamed column is loaded and normalised but does
-> not enter the network. Until GUIDANCE WP-10 is done, a promoted column is NOT
-> a model input for diffusion. Check your policy with
-> `grep -n "OBS_STATE\|OBS_ENV_STATE" <lerobot>/policies/<policy>/modeling_*.py`.
+To let a model SEE joint torque, force or tactile, the values must be in a
+column the policy actually reads. Checked in the lerobot source (2026-11):
 
-For a ROBOT-ONLY model that should consume joint states etc. Renames
-`extra.*` → `observation.state.*` on disk so the column is windowed and gets
-statistics like a state input.
+| policy | low-dimensional inputs it reads |
+|---|---|
+| `diffusion`, `act` | `observation.state` and `observation.environment_state` |
+| `multi_task_dit` | `observation.state` only (plus images and the task text) |
+
+Every other column — `extra.*`, and also `observation.state.<name>` — is loaded
+and normalised but never enters the network.
+
+### 7.1 `add_environment_state.py` (diffusion, ACT)
+
+Writes a COPY of the dataset in which the chosen columns, joined in the order
+given, form the new column `observation.environment_state`. `observation.state`,
+`action` and the videos are untouched, so the relative-pose wrapper and every
+existing check work as before.
+
+Look first, write nothing:
+
+```bash
+python crisp_gym/scripts/add_environment_state.py \
+    --input ../../datasets/franka_electricbox/lerobot \
+    --output ../../datasets/franka_electricbox_torque/lerobot \
+    --columns extra.ext_torque --dry-run
+```
+
+Then the same without `--dry-run`. Several columns are joined in the order
+given, e.g. `--columns extra.ext_torque extra.tactile.left extra.tactile.right`.
+
+It refuses, before writing anything: a column the dataset does not have, an
+image column, a NaN or infinite value, a dataset that already has the key, and
+a column that never changes. The last one is what the handheld datasets hold in
+their robot-only columns (all zeros); `--allow-constant` overrides it.
+`meta/environment_state.json` in the result records which column went into
+which slice.
+
+Train the result with the same launcher as before; with `--policy.type=diffusion`
+lerobot takes the new key as an input by itself. Three things to know:
+
+- **Confirm the model took it.** After the first checkpoint, the key must be
+  listed in the checkpoint's `config.json`:
+
+```bash
+python -c "import json,sys; print(list(json.load(open(sys.argv[1]))['input_features']))" \
+    outputs/train/RUN/checkpoints/last/pretrained_model/config.json
+```
+
+- **A finetune from `--policy.path` keeps the old inputs**: the input list comes
+  from the checkpoint, not the dataset. Train from scratch, or the new column is
+  ignored.
+- **It cannot be deployed yet.** `relative_lerobot_policy` does not produce
+  `observation.environment_state` on the robot (GUIDANCE WP-10, second half).
+  Training and `check_policy_openloop.py` are what this is for today. Not run
+  with a real lerobot training yet.
+
+Mixing with handheld data needs the same column in both datasets;
+`postprocess_align_datasets.py` drops a column that one of them lacks.
+
+### 7.2 `--promote` (a rename; does not feed any of the three policies)
+
+`postprocess_align_datasets.py --promote extra.foo` renames the column to
+`observation.state.foo`. It is then windowed and gets statistics like a state
+input, but none of the policies in the table reads it (CODE_REVIEW C11). Kept
+for data that was prepared this way; use §7.1 for a model input.
 
 ```bash
 python crisp_gym/scripts/postprocess_align_datasets.py \
     --datasets .../umi_ur7e_full --output-suffix _promoted \
     --promote extra.joints extra.joint_efforts
 ```
-Promotion is refused if any dataset in the mix lacks the column — promoted
-datasets cannot be mixed with handheld data, by construction. At deployment
-the policy then also needs real joint states in its observation.
+
+Promotion is refused if any dataset in the mix lacks the column.
 
 ---
 
