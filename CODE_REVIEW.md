@@ -37,6 +37,13 @@ where a finding depends on them.
 | 2026-11-16 | S1 | Fixed: 0.0 is a real workspace bound (`util/safety.workspace_box`). Default `min_z` is now `None` — the same behaviour as before, since the old 0.0 default was dropped — because a robot on a mobile base may reach below its base. |
 | 2026-11-16 | S2 | Done: `max_target_step_m` / `max_target_step_deg` (target-to-target, per env.step), default off, set to 0.03 m / 5 deg in the three deploy envs. Tested on the pure function and on the real env methods exec'd from source; not run on a robot. |
 | 2026-11-16 | second pass | Re-read at commit `12f6b29` to write `GUIDANCE.md`. New finding C11 (promoted columns do not reach a diffusion policy). C4 explained by reading. K1 re-checked by building a wheel. Numbers refreshed in §6. No code changed. |
+| 2026-11-17 | C8 | Done (GUIDANCE WP-01, `d284f37`): one readable message; `tests/test_policy_registry.py`. |
+| 2026-11-17 | A10 (part) | Done (WP-08, `ce16193`): nine commented-out prints removed; an invalid recording trigger is a `logger.warning`; the spacemouse node uses its ROS logger. The rich `Panel` print stays. The 81 broad `except Exception` handlers are untouched. |
+| 2026-11-17 | C4 | Done (WP-06, `6e78c53`): pinned by two tests (2 / 1 / 1 skipped frames; 4 / 3 with lookahead 3). Not yet confirmed on the robot. |
+| 2026-11-17 | K2 (part) | Done (WP-09, `b468ce0`, `b2990d8`): 14 ROS-free scripts are started with `--help` in CI; two more where lerobot is installed. A second test fails when a script is added unlisted. |
+| 2026-11-17 | C9 | Done (WP-04, `47aa704`): the 15 `load_module()` calls are gone; the suite's 115 deprecation warnings with them. |
+| 2026-11-17 | owner decisions | D-5: extra model inputs go to `observation.environment_state`. D-7: GPU-side scripts may import ROS-free `crisp_gym` modules. D-9: `CLAUDE.md` names `GUIDANCE.md`. |
+| 2026-11-17 | new | `crisp_gym/sim/spring_pad.py` (`02fe74c`): the MuJoCo starter of `RESEARCH_FORCE_TACTILE.md` as a script with 11 tests; `mujoco` joined `tests/requirements.txt`. |
 
 ---
 
@@ -147,12 +154,12 @@ everywhere (A3).
 | C1 | Env names defined both as a Python class and a YAML: the class wins, the YAML is never read | P1 | S | VERIFIED |
 | C2 | Config files shadowed between crisp_py and crisp_gym; search order flips with an env var | P1 | S–M | PART DONE |
 | C3 | `observation.state` concatenated in dict insertion order | P1 | S | FROM HANDOFF |
-| C4 | `data_fn` returns `None` twice per episode | P1 → P3 | XS | EXPLAINED (§6: read, and reproduced on a fake env); test pending, WP-06 |
+| C4 | `data_fn` returns `None` twice per episode | P1 → P3 | XS | DONE — explained and pinned by tests (§6.2); robot confirmation open |
 | C5 | `control_frequency`, `block`, `max_episode_steps` are dead; `step()` builds an observation every caller discards | P1 | M | VERIFIED |
 | C6 | Recording with `--follower-config franka` bypasses the config system with hard-coded values | P1 | S | VERIFIED |
 | C7 | Interactive config prompts default to whatever the filesystem lists first | P1 | S | VERIFIED (code) |
-| C8 | `make_policy` raises `ValueError` with a tuple message | P3 | XS | VERIFIED |
-| C9 | 14 test files use `SourceFileLoader.load_module()`, removed in Python 3.15 | P2 | S | VERIFIED |
+| C8 | `make_policy` raises `ValueError` with a tuple message | P3 | XS | DONE |
+| C9 | 14 test files use `SourceFileLoader.load_module()`, removed in Python 3.15 | P2 | S | DONE |
 | C10 | `scripts/dataset_conversions/*` use an old lerobot API | P2 | S | DONE — deleted |
 | C11 | `--promote` renames a column to `observation.state.<x>`, which a lerobot diffusion policy never reads | P1 | M | VERIFIED (lerobot source read; not run) |
 | A1 | `crisp_gym/scripts` mixes four kinds of program; a second `scripts/` folder at the root | P2 | L | VERIFIED |
@@ -670,11 +677,12 @@ and asks for one confirmation on the robot.
 
 | ID | finding | where | package |
 |---|---|---|---|
-| N1 | Eight commented-out `print` lines in the gripper action path, one more in `leader_follower_teleop.py` | `ManipulatorBaseEnv._set_gripper_action` | WP-08 |
+| N1 | Eight commented-out `print` lines in the gripper action path, one more in `leader_follower_teleop.py` | `ManipulatorBaseEnv._set_gripper_action` | WP-08 (done) |
 | N2 | A name defined as class and YAML is listed twice at the env prompt | `list_env_configs` | WP-02, WP-03 |
 | N3 | Required reading is about 270,000 characters in 8 documents; HANDOFF §2 has table cells of up to 2,938 characters | D1 | WP-17, WP-18 |
 | N4 | The "fake hardware" Franka of crisp_controllers_demos is MuJoCo with the arm only: gravity off, no gripper, no camera, and the Franka state broadcaster is not started, so there is no external-torque topic. An end-to-end test on it (K2) cannot use `dric_franka_oakw_umi` + `umi_robot_full_record.yaml` as they are (INFERRED from the launch file and the scene) | `crisp_controllers_demos/crisp_mujoco_sim`, `config/fr3/scene.xml`, `launch/franka.launch.py` | K2 |
-| N5 | To load a script by path in a test, the module must be registered in `sys.modules` before it is executed, or dataclasses fail. `load_module()` did this implicitly; its replacement must do it explicitly | C9 | WP-04 |
+| N5 | To load a script by path in a test, the module must be registered in `sys.modules` before it is executed, or dataclasses fail. `load_module()` did this implicitly; its replacement must do it explicitly | C9 | WP-04 (done) |
+| N6 | `tests/test_reencode_resize_e2e.py` fails on PyAV 19.0.2 and passes on 15.1.0. The failure is in the test's own stand-in for lerobot's `get_video_info` (`int(stream.base_rate)`: PyAV 19 returns a rational that `int()` rejects), before and after WP-04. Not changed. Whether the real lerobot function has the same problem on PyAV 19 was not checked | the `DRIVER` string of that test | open |
 
 ### 6.5 Is the structure easy to manage?
 

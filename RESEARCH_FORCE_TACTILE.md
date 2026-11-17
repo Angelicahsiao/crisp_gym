@@ -8,7 +8,7 @@ How each statement here was checked:
 
 | mark | meaning |
 |---|---|
-| RAN | executed in this session (MuJoCo 4.0.1 from pip, CPU, no display) |
+| RAN | executed in a cloud session (MuJoCo 3.2.7 and 4.0.1 from pip, CPU, no display) |
 | READ | source code or README read; not executed |
 | PAPER | abstract or summary only |
 
@@ -81,18 +81,28 @@ list rest on search results and on what ran in §4.
 
 ## 4. What was run here
 
-A 72-taxel pad on a 400 N/m position servo, pressed onto a fixed peg. This is
-the smallest model of the real situation: a spring-driven tool, a command that
-runs past the surface, a skin that feels the result.
+`crisp_gym/sim/spring_pad.py`: a 72-taxel pad on a 400 N/m position servo,
+pressed onto a fixed peg. It is the smallest model of the real situation: a
+spring-driven tool, a command that runs past the surface, a skin that feels
+the result. Depth is counted from the peg's surface, positive = commanded
+into it.
+
+```bash
+pip install mujoco numpy
+```
+
+```bash
+python crisp_gym/sim/spring_pad.py --show-grid
+```
 
 ```
-touch grid: 216 values = 3 channels x 72 taxels
- command   measured   gap(mm)  K*gap(N)  taxel normal sum(N)  lit taxels
-   -30.0     -30.00      0.00      0.00          0.00           0
-   -40.0     -38.00     -2.00     -0.80          0.80           7
-   -50.0     -38.01    -11.99     -4.80          4.80           7
-   -60.0     -38.02    -21.98     -8.79          8.79           7
-   -80.0     -38.04    -41.96    -16.78         16.78           7
+pad 6 x 12 = 72 taxels, 3 values each | spring 400 N/m
+command(mm)  measured(mm)  gap(mm)  spring force(N)  taxel force(N)  lit taxels
+     -10.00        -10.00     0.00             0.00            0.00           0
+       2.00          0.00     2.00             0.80            0.80           9
+      12.00          0.01    11.99             4.80            4.80           9
+      22.00          0.02    21.98             8.79            8.79           9
+      42.00          0.04    41.96            16.78           16.78           9
 ```
 
 What it shows:
@@ -100,95 +110,40 @@ What it shows:
 - In steady contact, **stiffness × (command − measured) equals the summed
   taxel force**, to two decimals. This is the relation the residual model
   (Q2) has to learn on real data.
-- The measured position stops at −38 mm while the command goes on to −80 mm.
-  A measured-pose label would replay "stay at −38 mm", which commands no
-  force. That is Q1 in one table.
-- The grid gives 3 channels per taxel (normal and two shear) and a spatial
-  pattern (7 taxels lit under an off-centre peg).
+- The measured depth stays within 0.04 mm of the surface whether the command
+  is 2 mm or 42 mm past it. A measured-pose label would replay "stay at the surface",
+  which commands no force. That is Q1 in one table.
+- The grid gives 3 values per taxel (normal and two shear) and a spatial
+  pattern: the lit taxels lie under the off-centre peg.
 
-Two things learned while building it:
+Options: `--stiffness`, `--taxels NX NY`, `--depths-mm`, `--peg-xy-mm`. The
+functions `press`, `model_xml` and `read_taxels` can be imported to build on.
+Eleven tests (`tests/test_sim_spring_pad.py`) check it against statics and pass
+on MuJoCo 3.2.7 and 4.0.1; the two versions differ in how far the contact gives
+way (0.16 mm against 0.04 mm at 17 N), not in the result.
+
+Four things learned while building it, each pinned by a test or stated in the
+script:
 
 - The sensor's site looks along its **−z** axis, like a camera. With the site
   pointing the other way every taxel reads zero and nothing warns you.
 - A rigid box pad gives ONE contact point, so one lit taxel. To spread contact
   over taxels, build the pad from one small box per taxel. `tactile_envs` does
   the same (`generate_pad_collisions.py --nx 6 --ny 12` gives 72).
-
-The script (standard `mujoco` and `numpy` only):
-
-```python
-"""A 72-taxel pad on a 400 N/m position servo pressed onto a fixed peg."""
-import mujoco
-import numpy as np
-
-NX, NY = 6, 12                  # taxels across / along the pad
-HALF_X, HALF_Y = 0.011, 0.019   # pad half sizes (m)
-K = 400.0                       # N/m
-
-
-def pad_geoms() -> str:
-    sx, sy = HALF_X / NX, HALF_Y / NY
-    rows = []
-    for j in range(NY):
-        for i in range(NX):
-            x = -HALF_X + sx + 2 * sx * i
-            y = -HALF_Y + sy + 2 * sy * j
-            rows.append(f'<geom type="box" pos="{x:.5f} {y:.5f} 0" size="{sx:.5f} {sy:.5f} 0.002"/>')
-    return "\n        ".join(rows)
-
-
-XML = f"""
-<mujoco>
-  <extension><plugin plugin="mujoco.sensor.touch_grid"/></extension>
-  <option timestep="0.001" gravity="0 0 0"/>
-  <worldbody>
-    <body name="pad" pos="0 0 0.10">
-      <joint name="pad_z" type="slide" axis="0 0 1" damping="20"/>
-      <inertial pos="0 0 0" mass="0.5" diaginertia="1e-4 1e-4 1e-4"/>
-      {pad_geoms()}
-      <!-- the grid looks along the site's -z: the site sits ABOVE a pad that faces down -->
-      <site name="skin" pos="0 0 0.05" zaxis="0 0 1"/>
-    </body>
-    <geom name="peg" type="cylinder" pos="0.004 0.008 0.03" size="0.004 0.03"/>
-  </worldbody>
-  <actuator>
-    <position name="servo" joint="pad_z" kp="{K}" ctrlrange="-0.2 0.2"/>
-  </actuator>
-  <sensor>
-    <plugin name="skin" plugin="mujoco.sensor.touch_grid" objtype="site" objname="skin">
-      <config key="size" value="{NX} {NY}"/>
-      <config key="fov" value="12.5 21"/>
-      <config key="gamma" value="0"/>
-      <config key="nchannel" value="3"/>
-    </plugin>
-  </sensor>
-</mujoco>
-"""
-m = mujoco.MjModel.from_xml_string(XML)
-d = mujoco.MjData(m)
-dim = m.sensor_dim[0]
-print(f"touch grid: {dim} values = 3 channels x {NX * NY} taxels")
-print(" command   measured   gap(mm)  K*gap(N)  taxel normal sum(N)  lit taxels")
-for cmd in (-0.030, -0.040, -0.050, -0.060, -0.080):
-    d.ctrl[0] = cmd
-    for _ in range(4000):
-        mujoco.mj_step(m, d)
-    q = float(d.qpos[0])
-    normal = d.sensordata[:dim].reshape(3, NY, NX)[0]
-    lit = int((np.abs(normal) > 1e-6).sum())
-    gap = cmd - q
-    print(f"{cmd * 1e3:8.1f}  {q * 1e3:9.2f}  {gap * 1e3:8.2f}  {K * gap:8.2f}  {normal.sum():12.2f}  {lit:10d}")
-```
-
-```bash
-pip install mujoco numpy
-```
+- The sensor's `fov` is a half angle and the taxels are bins of ANGLE as seen
+  from the site. Put the site far from the pad (the script uses 1 m), or the
+  outer taxels cover more surface than the inner ones.
+- **Move the command, do not jump it.** After a jump, a spring of about
+  800 N/m or more drives the pad into the peg fast enough to break through;
+  every contact normal then points sideways (measured at 1600 N/m) and the pad
+  stays sunk at a fraction of the force. The script moves the command at 5 cm/s and flags a sunk
+  result. Thicker collision boxes do not prevent it (tried).
 
 ---
 
 ## 5. Recommended path
 
-**Stage 1 — one file, one day, CPU.** Grow the script of §4 into a small task:
+**Stage 1 — one file, one day, CPU.** Grow `crisp_gym/sim/spring_pad.py` into a small task:
 a 2-D or 3-D spring-driven pad (or two pads as a gripper) that must reach a
 surface, press with a wanted force, and slide. Write the episodes as a LeRobot
 dataset with **the same column names as the real data**:
@@ -258,7 +213,7 @@ variants. Do not carry absolute numbers (forces, success rates) to the robot.
 | research step | needs in this repository |
 |---|---|
 | E1 | nothing new: `swap_action_offline.py`, `lerobot_relative_pose.py`, the audit |
-| a simulated dataset | a small writer producing the real column names (new, ROS-free) |
+| a simulated dataset | a small writer producing the real column names (new, ROS-free), next to `crisp_gym/sim/spring_pad.py` |
 | E3 on real data | GUIDANCE WP-10 (model inputs that actually reach the network) |
 | squeeze as a command | record `extra.gripper_target` (the source exists; the Franka data lacks it) |
 | E4, E5 on the robot | a second worker connection for a fast model (HANDOFF §7 "timing stack"); run-time gains in crisp_py |

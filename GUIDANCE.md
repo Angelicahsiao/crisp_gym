@@ -6,9 +6,11 @@ must not break, how to make a change safely, and which improvements to do in
 which order. Each work package in §6 is written to be done on its own, without
 re-deriving why.
 
-Written 2026-11-16 at commit `12f6b29`, branch `claude/determined-faraday-1z6rx0`.
-State at that commit: `python -m pytest` gives 709 passed, 12 skipped in 25 s;
-`ruff check .` is clean with ruff 0.12.0.
+Written 2026-11-16 at commit `12f6b29`, branch `claude/determined-faraday-1z6rx0`;
+status columns last updated 2026-11-17 at `02fe74c`. State then:
+`python -m pytest` gives 740 passed, 13 skipped in 30 s (739 and 14 without
+PyAV); `ruff check .` is clean with ruff 0.12.0. The rule is zero failures, not
+a particular count.
 
 **If the code does not match what this guide says, the guide is out of date.
 Stop, say what differs, and ask. Do not force the steps onto different code.**
@@ -119,8 +121,9 @@ controllers: crisp_controllers (1 kHz) ◄─ crisp_py (50 Hz re-publish) ◄─
 | `crisp_gym/record` | what is recorded (`RecordConfig`) and the writer (`RecordingManager`) | rclpy, lerobot (manager only) |
 | `crisp_gym/policy` | policy registry, relative policy, inference worker, remote transport | no ROS, torch or lerobot at import time |
 | `crisp_gym/scripts` | entry points: robot, training, dataset tools, diagnostics | depends on the file; see CODE_REVIEW A1 |
+| `crisp_gym/sim` | small MuJoCo models to try ideas without the robot (`spring_pad.py`) | numpy; mujoco only when a simulation runs |
 | `scripts/` (root) | `policy_server.py`, shell launchers | lerobot on the GPU PC |
-| `tests` | 37 test files, run without ROS; fakes for torch / rclpy / lerobot | — |
+| `tests` | 40 test files, run without ROS; fakes for torch / rclpy / lerobot | — |
 
 ### Where is it decided?
 
@@ -207,20 +210,13 @@ these, stop and ask.
   test file.
 - A test that needs the real lerobot/torch or ROS gets `@pytest.mark.lerobot`
   or `@pytest.mark.ros`; it then skips where they are missing.
-- To load a script by path, register it before executing it. Dataclasses and
-  pickle look the module up by name and fail without the middle line:
-
-```python
-import importlib.util
-import sys
-
-def _load(name, path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
-```
+- To load a script by path, copy `_load_by_path` from any test that has it
+  (for example `tests/test_tactile_raw.py`). It registers the module under its
+  name before executing it; dataclasses and pickle look the module up by that
+  name and fail without it. Keep the helper local to the test file: the files
+  must still run as scripts.
+- After writing a test for a fix, break the fix on purpose once and watch the
+  test fail. A test that still passes proves nothing about that fix.
 
 ### 4.3 Code that exists in several copies on purpose
 
@@ -265,7 +261,7 @@ What makes it hard, in order of cost:
 | 3 | Seven files over 800 lines, 14 functions over 150 lines. The three entry-point `main` functions parse, prompt, build and loop in one body, so tests must fake whole modules | see `scripts/code_metrics.py` | WP-14, WP-15, WP-16 |
 | 4 | Copied code (§4.3) | 6 sets | WP-13 |
 | 5 | Two ways to define an env config, and a config search order that an environment variable reverses | 10 classes + 12 YAMLs; 4 files in both repos | WP-03, C2 |
-| 6 | Tests install fakes at import time; a shared conftest hides the side effects | 37 files | §4.2, later K3 |
+| 6 | Tests install fakes at import time; a shared conftest hides the side effects | 40 files | §4.2, later K3 |
 | 7 | Comments that tell history ("this used to return 1 − value") beside the code | throughout | move to commit messages when touching a file |
 
 Rules that keep it from getting worse (apply from now on):
@@ -292,10 +288,10 @@ Size: XS under 1 h, S under half a day, M 1–3 days, L more.
 
 | step | packages | why this order |
 |---|---|---|
-| 1. No decision needed | WP-01, WP-04, WP-06, WP-08, WP-09 | small, safe, each proven by a test here |
-| 2. After one owner answer each | WP-02, WP-03, WP-05, WP-07, WP-10 | silent misconfiguration and silently unused inputs |
+| 1. No decision needed | WP-01, WP-04, WP-06, WP-08, WP-09 — **all done 2026-11-17** | small, safe, each proven by a test here |
+| 2. After one owner answer each | WP-10 (answered: next), then WP-02, WP-03, WP-05, WP-07 | silent misconfiguration and silently unused inputs |
 | 3. Needs the robot | WP-11, and the robot checks in §7 | measure before changing the loop |
-| 4. Structure, in this order | WP-12 → WP-13 → WP-14 → WP-15 → WP-16 | each makes the next smaller and safer |
+| 4. Structure, in this order | WP-12 → WP-13 (both unblocked by D-7) → WP-14 → WP-15 → WP-16 | each makes the next smaller and safer |
 | 5. Documents | WP-17, WP-18 | after the structure settles, or the map goes stale twice |
 
 Not recommended now: moving the script folders (CODE_REVIEW A1: 46 document
@@ -304,15 +300,15 @@ a shared ROS executor (A8) unless shutdown problems are seen.
 
 | ID | finding | title | size | robot | decision | status |
 |---|---|---|---|---|---|---|
-| WP-01 | C8 | `make_policy` error message | XS | no | — | open |
+| WP-01 | C8 | `make_policy` error message | XS | no | — | done `d284f37` |
 | WP-02 | C7 | sorted, de-duplicated config lists and prompt defaults | S | no | D-3 | open |
 | WP-03 | C1 | one definition per env name | S | no | D-1 | open |
-| WP-04 | C9 | replace the deprecated test loader | S | no | — | open |
+| WP-04 | C9 | replace the deprecated test loader | S | no | — | done `47aa704` |
 | WP-05 | C3 | check the state vector order | S | no | D-2 | open |
-| WP-06 | C4 | explain and pin the skipped frames | XS | no | — | open |
+| WP-06 | C4 | explain and pin the skipped frames | XS | no | — | done `6e78c53` |
 | WP-07 | C6 | remove the hard-coded `franka` branch | S | yes | D-4 | open |
-| WP-08 | A10 | commented-out prints, `print` in library code | XS | no | — | open |
-| WP-09 | K2 | `--help` smoke test for ROS-free scripts | S | no | — | open |
+| WP-08 | A10 | commented-out prints, `print` in library code | XS | no | — | done `ce16193` |
+| WP-09 | K2 | `--help` smoke test for ROS-free scripts | S | no | — | done `b468ce0` |
 | WP-10 | C11 | make promoted columns reach the model | M | no | D-5 | open |
 | WP-11 | C5 | `step` builds an observation nobody reads | M | yes | D-6 | open |
 | WP-12 | A3 | one schema module | M | no | D-7 | open |
@@ -325,7 +321,7 @@ a shared ROS executor (A8) unless shutdown problems are seen.
 
 ### 6.2 Cards
 
-#### WP-01 · `make_policy` error message (C8)
+#### WP-01 · `make_policy` error message (C8) — DONE
 
 - **Goal.** The error for an unknown policy reads as one sentence, not a tuple.
 - **Where.** `crisp_gym/policy/policy.py::make_policy`, the `raise ValueError(`
@@ -374,7 +370,7 @@ a shared ROS executor (A8) unless shutdown problems are seen.
   `("c", {"c"})`.
 - **Do not** remove the classes in this package (that is A9).
 
-#### WP-04 · replace the deprecated test loader (C9)
+#### WP-04 · replace the deprecated test loader (C9) — DONE
 
 - **Problem.** 15 calls in 14 test files use
   `SourceFileLoader(...).load_module()`, removed in Python 3.15.
@@ -389,6 +385,10 @@ a shared ROS executor (A8) unless shutdown problems are seen.
   to the file: the files must still run as scripts.
 - **One file per commit is fine.** After each file: run that file with pytest,
   and with `python tests/<file>` if it ends in an `if __name__` block.
+- **As done.** Two of the calls sit inside driver scripts that tests run in a
+  subprocess (`test_check_policy_openloop`, `test_reencode_resize_e2e`); there
+  the four lines are written inline. The re-encode one runs only where PyAV
+  is installed, so it was checked with PyAV 15.
 - **Done when.** `grep -c "load_module()" tests/*.py` prints only zeros and the
   suite still reports 709 passed.
 
@@ -413,7 +413,7 @@ a shared ROS executor (A8) unless shutdown problems are seen.
 - **D-2.** Raise (recommended: a permuted state is never right) or warn.
 - **Do not** sort the keys to "fix" the order: the dataset on disk defines it.
 
-#### WP-06 · explain and pin the skipped frames (C4)
+#### WP-06 · explain and pin the skipped frames (C4) — DONE
 
 - **What reading shows, reproduced on a fake env (2026-11-16: 2 / 1 / 1).**
   `make_record_fn` is built once per episode. Its
@@ -429,8 +429,10 @@ a shared ROS executor (A8) unless shutdown problems are seen.
 - **Change.** None to behaviour. Give each of the two returns a one-line
   comment naming its reason. Replace HANDOFF §4b item 4 "not yet investigated"
   with the explanation.
-- **Still for the owner.** Confirm on the robot that the count matches the
-  table above for the rig in use.
+- **As done.** `tests/test_loop_timing.py`: 2 / 1 / 1, and 4 / 3 with a
+  lookahead of 3.
+- **Still for the owner.** Confirm on the robot that the count matches for the
+  rig in use.
 
 #### WP-07 · remove the hard-coded `franka` branch (C6) — DECISION D-4
 
@@ -444,7 +446,7 @@ a shared ROS executor (A8) unless shutdown problems are seen.
   2026-11, so this should affect nobody; the owner confirms.
 - **Robot.** One recording start with the usual command line.
 
-#### WP-08 · leftover prints (A10, part)
+#### WP-08 · leftover prints (A10, part) — DONE
 
 - **Where.** `envs/manipulator_env.py::_set_gripper_action`: eight
   commented-out `# print(...)` lines, and one in
@@ -455,26 +457,24 @@ a shared ROS executor (A8) unless shutdown problems are seen.
   operator's on-screen instruction, written with rich on purpose.
 - **Done when.** `grep -n "# print(" crisp_gym -r` prints nothing.
 
-#### WP-09 · `--help` smoke test for the ROS-free scripts (K2, part)
+#### WP-09 · `--help` smoke test for the ROS-free scripts (K2, part) — DONE
 
 - **Goal.** An import error in a GPU-side script fails CI instead of failing on
   the GPU PC.
-- **Change.** New `tests/test_cli_help.py`: run `python <script> --help` in a
-  subprocess and assert exit code 0.
-  - Answer today with only `tests/requirements.txt` installed (checked
-    2026-11-16): `audit_command_residual`, `inspect_dataset`,
-    `check_tactile_sync`, `check_schema_drift`, `fix_dataset_task`,
-    `swap_action_offline`, `migrate_euler_delta_to_rot6d`,
-    `postprocess_align_datasets`, `viz_encoder_attention`, `groot_preflight`,
-    `deploy_preflight`, and from the root `scripts/code_metrics.py`,
-    `scripts/policy_server.py`.
-  - Need torch, lerobot or av even for `--help`; put them in a second list
-    marked `@pytest.mark.lerobot`: `lerobot_relative_pose`,
-    `train_absolute_next_pose`, `train_action_from_target_cartesian`,
-    `check_policy_openloop`, `check_relative_pose`,
-    `check_available_policies`, `reencode_dataset_videos`.
-- **Do not** add the ROS scripts (`deploy_policy`, the two record scripts,
-  `leader_follower_teleop`, `check_config`); they cannot import here.
+- **As done.** `tests/test_cli_help.py` starts 14 scripts with `--help` in a
+  subprocess: `audit_command_residual`, `inspect_dataset`,
+  `check_tactile_sync`, `check_schema_drift`, `fix_dataset_task`,
+  `swap_action_offline`, `migrate_euler_delta_to_rot6d`,
+  `postprocess_align_datasets`, `viz_encoder_attention`, `groot_preflight`,
+  `deploy_preflight`, `scripts/code_metrics.py`, `scripts/policy_server.py`,
+  `crisp_gym/sim/spring_pad.py`. Two more carry the `lerobot` marker
+  (`check_policy_openloop`, `reencode_dataset_videos`); they have not run
+  anywhere yet, so expect to look at them on the GPU PC.
+- **Left out on purpose.** The ROS entry points; and the three training
+  launchers, `check_relative_pose` and `check_available_policies`, which have
+  no argument parser of their own (`--help` there is lerobot's).
+- **A second test** fails when a file is added to `crisp_gym/scripts` without
+  being listed or excluded with a reason.
 
 #### WP-10 · make promoted columns reach the model (C11) — DECISION D-5
 
@@ -613,11 +613,11 @@ unit tests first; it is the part with the most states and the fewest tests.
 | D-2 | Wrong state order: raise or warn? | raise |
 | D-3 | Default env at the deploy and record prompts? | the rig's env, e.g. `dric_franka_oakw_deploy_umi` / `dric_franka_oakw_umi` |
 | D-4 | Remove the hard-coded `--follower-config franka` branch? | yes |
-| D-5 | Extra model inputs through `observation.environment_state` (a) or appended to `observation.state` (b)? | (a) |
+| D-5 | Extra model inputs through `observation.environment_state` (a) or appended to `observation.state` (b)? | **ANSWERED 2026-11-17: (a)** |
 | D-6 | Remove `block` and `control_frequency`, or document them as dead? | document now, remove with WP-14 |
-| D-7 | May GPU-side scripts import ROS-free `crisp_gym` modules (ending single-file copying)? | yes |
+| D-7 | May GPU-side scripts import ROS-free `crisp_gym` modules (ending single-file copying)? | **ANSWERED 2026-11-17: yes.** The rule "no crisp_py, no rclpy, no ROS" stays |
 | D-8 | Split HANDOFF into conventions and dated notes? | yes |
-| D-9 | Add one line to `CLAUDE.md` naming `GUIDANCE.md` as the first file to read (and an `AGENTS.md` with the same line, for tools that read that name)? | yes; `CLAUDE.md` is the owner's file, so it was not edited |
+| D-9 | Add one line to `CLAUDE.md` naming `GUIDANCE.md` as the first file to read? | **ANSWERED 2026-11-17: yes, done.** Still open: an `AGENTS.md` with the same line, for tools that read that name |
 
 Robot-side checks still owed (from earlier sessions):
 
@@ -645,6 +645,9 @@ Robot-side checks still owed (from earlier sessions):
 | "Promote" was documented as feeding the model; it does not | read what the consumer reads (C11) before documenting a data path |
 | A synthetic test cancelled the effect it was meant to show | print the intermediate numbers of a new test once and look at them |
 | `0.0 or inf` turned a bound of zero into "no bound" | compare with `is None`, never truthiness, for numbers that may be 0 |
+| A simulator failure was explained by a guess (thin collision plate); the regression test passed with the "fix" removed | break the fix on purpose and watch the test fail before believing the explanation; then measure the mechanism (here: contact directions) |
+| A skip condition was guessed ("needs av"); the script needed lerobot as well | install the optional package once and run the test, instead of assuming what it needs |
+| A text tool replaced a call that lived inside a string holding another script | after a scripted edit, check with the parser that every replacement is real code |
 
 ---
 

@@ -180,6 +180,8 @@ Repos involved (same owner, branch conventions apply to all):
 | `CODE_REVIEW.md` | Review of the whole package (2026-11-16, commit `afb4a18`): architecture map, contract files, and a prioritised backlog with file:line evidence — safety (workspace box ignores 0.0 bounds; no per-tick jump limit), silent misconfiguration, duplication, packaging, CI, docs. Records findings only; each fix still needs the owner's approval. Start there before planning refactors. |
 | `GUIDANCE.md` | Entry point for any change: rules, where each thing is decided, the invariants with their tests, work packages WP-01 … WP-18, open owner decisions. Keep its status and decision tables current. |
 | `RESEARCH_FORCE_TACTILE.md` | Force / tactile research plan: questions, prior work by idea, laptop-class simulators, what was executed, staged experiments. |
+| `crisp_gym/sim/spring_pad.py` | MuJoCo, CPU, no ROS: a pad of taxels on a spring (position servo) pressed onto a peg, read with the `touch_grid` sensor. Shows stiffness x (command - measured) = summed taxel force. `pip install mujoco`. Tests: `tests/test_sim_spring_pad.py`. |
+| `tests/test_cli_help.py` | Starts every ROS-free script with `--help`; fails when a script is added to `crisp_gym/scripts` without being listed there or excluded with a reason. |
 | `GUIDE_REMOTE_SERVER_AND_TACTILE.md` | USER-FACING how-to for the policy server and the tactile scripts. Keep it in step with `scripts/policy_server.py` options, the `server:` YAML block and the audit's flags. |
 | `crisp_gym/scripts/inspect_dataset.py` | READ-ONLY layout of a dataset folder: info.json counts + every feature (shape, dtype), tactile_raw CSVs (count, DVC pointers not pulled, one episode's fields and rows), edit_report.json. Standard library only. Was an inline command given to the owner. |
 | `crisp_gym/scripts/check_tactile_sync.py` | READ-ONLY, one episode: tactile column dtypes, CSV rate/gaps, exact int64 stamp join + equal taxels, rows per frame, sync_valid/offset/error; first line = command gap + joint motion (robot vs handheld). Same output as the inline check it replaces on complete data; reports missing columns/CSVs instead of raising. Tests: `tests/test_dataset_inspection.py`. |
@@ -696,8 +698,8 @@ error is now 0.8% (was ~11%, and 7.5% under stock GC with streaming on).
    timestamps claim). Drop or re-record them.
 4. `data_fn` returns `None` exactly twice per episode (`recording_manager.py`
    `skipped=True` path) — reproducible across every field run. No row is
-   written, so no desync. EXPLAINED (2026-11-16; read, and reproduced on a
-   fake env: 2 / 1 / 1; not yet a committed test): `make_record_fn` is built once per episode and returns
+   written, so no desync. EXPLAINED (2026-11-16) and pinned by
+   `tests/test_loop_timing.py` (2 / 1 / 1; not yet confirmed on the robot): `make_record_fn` is built once per episode and returns
    `(None, None)` in two places only — the drive warm-up tick (a relative
    drive function has no previous pose to subtract) and the tick on which the
    lookahead buffer fills (lookahead 1). Expect 2 with a relative drive
@@ -737,7 +739,7 @@ order. It matches today only because `_collect_obs` iterates
 - **Tests and lint (set up 2026-11; keep both green).**
   - Run everything with `python -m pytest` from the repo root (settings in
     `pyproject.toml`; `pip install -r tests/requirements.txt` is enough, no
-    ROS). The "Tests" GitHub job does exactly that on Python 3.11 and 3.12.
+    ROS; it includes `mujoco` for the `crisp_gym/sim` tests). The "Tests" GitHub job does exactly that on Python 3.11 and 3.12.
   - `tests/conftest.py` isolates test FILES from each other: most files put
     fake `torch` / `rclpy` / `lerobot` / `crisp_py` modules into `sys.modules`
     so they can run alone, and those used to leak into the next file (tests
@@ -1096,12 +1098,18 @@ established so far — verify before contradicting them:
   needs GUIDANCE WP-10 first: write them to `observation.environment_state`,
   or append them to the concatenated `observation.state`.
 - **Simulation (2026-11-16).** The research plan and the simulators are in
-  `RESEARCH_FORCE_TACTILE.md`. Executed in a cloud session: MuJoCo 4.0.1
-  from pip with the `touch_grid` sensor plugin gives a 6 x 12 = 72-taxel pad
-  (3 channels each); on a 400 N/m position servo pressed onto a peg,
-  stiffness x (command - measured) equalled the summed taxel force to two
-  decimals while the measured position stayed at the surface. The sensor's
-  site looks along its -z axis; the other way round every taxel reads zero.
+  `RESEARCH_FORCE_TACTILE.md`; the starter is `crisp_gym/sim/spring_pad.py`
+  (tests pass on MuJoCo 3.2.7 and 4.0.1). The `touch_grid` sensor plugin
+  from the pip wheel gives a 6 x 12 = 72-taxel pad (3 channels each); on a
+  400 N/m position servo pressed onto a peg, stiffness x (command - measured)
+  equalled the summed taxel force to two decimals while the measured position
+  stayed at the surface. Three traps, all pinned by tests: the sensor's site
+  looks along its -z axis (the other way round every taxel reads zero); its
+  `fov` is a HALF angle and bins by angle, so put the site far away to make
+  taxels equal in size; and a command that JUMPS makes a stiff spring (from
+  about 800 N/m) drive the pad into the peg, where every contact normal turns
+  sideways and the pad stays sunk at a fraction of the force — move the
+  command at a finite speed. Plate thickness does not matter (measured).
   Not executed: `tactile_envs` (a floating Robotiq 2F-85 with taxel pads on
   spring-like position actuators — the closest ready-made match). The "fake
   hardware" Franka of crisp_controllers_demos IS MuJoCo behind ros2_control:
