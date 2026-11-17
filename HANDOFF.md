@@ -2,7 +2,8 @@
 
 **Start with `GUIDANCE.md`.** It says which sections of this file matter for
 which task, lists what must never break with the test that pins each item, and
-holds the ordered work packages. This file is the detail behind it.
+holds the clean-up packages. `ROADMAP.md` lists the unfinished and untested
+features and how to finish each. This file is the detail behind both.
 
 Instructions for future AI-assisted development sessions on these repos.
 Read this FULLY before changing anything related to the UMI handheld pipeline,
@@ -179,6 +180,8 @@ Repos involved (same owner, branch conventions apply to all):
 | `crisp_gym/scripts/audit_command_residual.py` | READ-ONLY audit of the command-minus-measured residual `T_tcp^-1 @ T_cmd` (TCP frame, world-invariant) on Cartesian-driven data: size in contact vs free, tracking lag, SYSTEM IDENTIFICATION of the delivered stiffness/damping from `extra.ext_torque` (built-in FR3 DH kinematics, Jacobian at the recorded TCP so no tool model; skipped when recorded TCP and DH flange are not rigid), a held-out-EPISODE linear probe of tactile → residual, and the gripper residual. Tactile columns are found by themselves (`extra.tactile.left/right`, else `left_tactile`/`right_tactile`) and may have any shape; frames with `<tactile>.sync_valid` false are left out of C/D. Refuses, BEFORE any pose math and with a `NoCommandError` that says which, a handheld dataset (placeholder all-zero command, joints never move), a frozen command (FACTR/JIC), and a mix of both. `--tactile-only` needs no command: per-sensor noise, dead taxels, baseline drift, contact share/strength, and for `<dataset>/tactile_raw/` the stream rate, gaps and the stamp join — run it on the handheld AND the robot dataset and compare. GPU-PC, crisp-import-free. USAGE.md §14, HANDOFF §7. |
 | `CODE_REVIEW.md` | Review of the whole package (2026-11-16, commit `afb4a18`): architecture map, contract files, and a prioritised backlog with file:line evidence — safety (workspace box ignores 0.0 bounds; no per-tick jump limit), silent misconfiguration, duplication, packaging, CI, docs. Records findings only; each fix still needs the owner's approval. Start there before planning refactors. |
 | `GUIDANCE.md` | Entry point for any change: rules, where each thing is decided, the invariants with their tests, work packages WP-01 … WP-18, open owner decisions. Keep its status and decision tables current. |
+| `ROADMAP.md` | The unfinished and untested features (F1 … F12): what each is for, what is proven (built / on fakes / for real), the order to finish it in, how to know it works, and a first-run checklist per machine. Keep its level column current. |
+| `crisp_gym/scripts/add_environment_state.py` | Offline, ROS-free: copies a dataset and joins chosen columns into `observation.environment_state`, the second low-dimensional input diffusion and ACT read (`multi_task_dit` does not). Adds the feature, statistics in all three places, and `meta/environment_state.json`. Refuses missing, constant, NaN and image columns. Tests: `tests/test_add_environment_state.py`. USAGE §7.1. |
 | `RESEARCH_FORCE_TACTILE.md` | Force / tactile research plan: questions, prior work by idea, laptop-class simulators, what was executed, staged experiments. |
 | `crisp_gym/sim/spring_pad.py` | MuJoCo, CPU, no ROS: a pad of taxels on a spring (position servo) pressed onto a peg, read with the `touch_grid` sensor. Shows stiffness x (command - measured) = summed taxel force. `pip install mujoco`. Tests: `tests/test_sim_spring_pad.py`. |
 | `tests/test_cli_help.py` | Starts every ROS-free script with `--help`; fails when a script is added to `crisp_gym/scripts` without being listed there or excluded with a reason. |
@@ -1095,8 +1098,17 @@ established so far — verify before contradicting them:
   model reads `observation.state`, the images and
   `observation.environment_state`, nothing else (source read at v0.4.4 and
   main; not run). Feeding torque, force or tactile to the model therefore
-  needs GUIDANCE WP-10 first: write them to `observation.environment_state`,
-  or append them to the concatenated `observation.state`.
+  goes through `observation.environment_state` (owner's decision):
+  `add_environment_state.py` writes it into a dataset copy (2026-11-17, tested
+  on synthetic data only). Confirmed on the owner's GPU PC the same day:
+  diffusion and ACT read that key; `multi_task_dit` does NOT (its model reads
+  `observation.state`, the images and the task text), so for it the only
+  route is appending to `observation.state`, not decided. Nothing on the
+  robot side produces the key yet. TRAP for whoever builds that: a sensor in
+  the env's `sensor_configs` is added to `observation.state` automatically
+  (`observation.state.sensors_<name>`), which is why the deploy env keeps
+  `sensor_configs: []`; adding the torque sensor there widens the state from
+  10 to 17. ROADMAP F2 has the design order.
 - **Simulation (2026-11-16).** The research plan and the simulators are in
   `RESEARCH_FORCE_TACTILE.md`; the starter is `crisp_gym/sim/spring_pad.py`
   (tests pass on MuJoCo 3.2.7 and 4.0.1). The `touch_grid` sensor plugin

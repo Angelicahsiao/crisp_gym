@@ -360,6 +360,11 @@ All of these are implemented in `WebsocketPolicyClient` and pinned by
 
 ## 6. Promoted-state models
 
+> **Out of date as a way to feed a model (2026-11).** A column renamed to
+> `observation.state.<name>` is not read by diffusion, ACT or `multi_task_dit`.
+> Extra model inputs go through `observation.environment_state`
+> (USAGE §7.1); serving such a checkpoint is not built yet (ROADMAP F2).
+
 If the model was trained on a dataset with promoted extras (usage 7 in
 USAGE.md — e.g. `observation.state.joints` as a policy input), the contract
 config must list those keys under `observation.keys` too (source

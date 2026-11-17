@@ -22,7 +22,7 @@ Nothing here was run on the robot, with lerobot, or on a GPU.
 |---|---|---|
 | Q1 | **Label.** In contact, is the COMMAND a better action label than the measured pose? | Planned on the Franka (models M and C, USAGE §14). The audit says the two labels differ by a median of 48 mm in contact |
 | Q2 | **Relabel.** Can a model predict the command (or the force) from tactile + motion, so handheld data gets a command label? | The planned residual model. Needs Q1 to be "yes" first |
-| Q3 | **Input.** Does the policy do better when it also SEES torque, force or tactile? | Not started. Blocked by finding C11 (GUIDANCE WP-10): promoted columns do not reach a lerobot diffusion policy today |
+| Q3 | **Input.** Does the policy do better when it also SEES torque, force or tactile? | The dataset tool exists (`add_environment_state.py`, for diffusion and ACT). Not trained yet; the robot side is not built; `multi_task_dit` cannot read it. ROADMAP F2 |
 | Q4 | **Speed.** Is a 15 Hz chunked policy fast enough in contact, or is a fast inner loop needed? | Not started. Today only the 1 kHz impedance controller reacts between ticks, and only mechanically |
 | Q5 | **Compliance as action.** Should the policy also output stiffness or a target force? | Not started. Needs a controller that accepts gains at run time |
 
@@ -214,7 +214,7 @@ variants. Do not carry absolute numbers (forces, success rates) to the robot.
 |---|---|
 | E1 | nothing new: `swap_action_offline.py`, `lerobot_relative_pose.py`, the audit |
 | a simulated dataset | a small writer producing the real column names (new, ROS-free), next to `crisp_gym/sim/spring_pad.py` |
-| E3 on real data | GUIDANCE WP-10 (model inputs that actually reach the network) |
+| E3 on real data | `add_environment_state.py` for training; the robot side of ROADMAP F2 for rollouts |
 | squeeze as a command | record `extra.gripper_target` (the source exists; the Franka data lacks it) |
 | E4, E5 on the robot | a second worker connection for a fast model (HANDOFF §7 "timing stack"); run-time gains in crisp_py |
 

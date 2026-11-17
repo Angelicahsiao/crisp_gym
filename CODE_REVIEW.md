@@ -44,6 +44,9 @@ where a finding depends on them.
 | 2026-11-17 | C9 | Done (WP-04, `47aa704`): the 15 `load_module()` calls are gone; the suite's 115 deprecation warnings with them. |
 | 2026-11-17 | owner decisions | D-5: extra model inputs go to `observation.environment_state`. D-7: GPU-side scripts may import ROS-free `crisp_gym` modules. D-9: `CLAUDE.md` names `GUIDANCE.md`. |
 | 2026-11-17 | new | `crisp_gym/sim/spring_pad.py` (`02fe74c`): the MuJoCo starter of `RESEARCH_FORCE_TACTILE.md` as a script with 11 tests; `mujoco` joined `tests/requirements.txt`. |
+| 2026-11-17 | C11 (part) | `crisp_gym/scripts/add_environment_state.py` (`013e8f6`): writes chosen columns to `observation.environment_state` in a dataset copy; 15 tests. Confirmed on the owner's GPU PC: diffusion and ACT read that key, `multi_task_dit` does not (it reads `observation.state` only). Nothing on the robot side produces the key yet. USAGE §7 rewritten. |
+| 2026-11-17 | N6 | Fixed (`aa2ada5`): the test stand-in reads the frame rate as lerobot's current source does; passes on PyAV 15.1.0 and 19.0.2. lerobot 0.4.4 and 0.6.1 use the old expression in the real function but pin `av>=15,<16`, so their environments are not affected. |
+| 2026-11-17 | direction | Owner: features before small fixes. `ROADMAP.md` lists the unfinished and untested features and how to finish each; the packages of GUIDANCE §6 are done when they stand in a feature's way. |
 
 ---
 
@@ -161,7 +164,7 @@ everywhere (A3).
 | C8 | `make_policy` raises `ValueError` with a tuple message | P3 | XS | DONE |
 | C9 | 14 test files use `SourceFileLoader.load_module()`, removed in Python 3.15 | P2 | S | DONE |
 | C10 | `scripts/dataset_conversions/*` use an old lerobot API | P2 | S | DONE — deleted |
-| C11 | `--promote` renames a column to `observation.state.<x>`, which a lerobot diffusion policy never reads | P1 | M | VERIFIED (lerobot source read; not run) |
+| C11 | `--promote` renames a column to `observation.state.<x>`, which a lerobot diffusion policy never reads | P1 | M | PART DONE — dataset tool exists; robot side and `multi_task_dit` open (ROADMAP F2) |
 | A1 | `crisp_gym/scripts` mixes four kinds of program; a second `scripts/` folder at the root | P2 | L | VERIFIED |
 | A2 | GPU-side code is duplicated so scripts stay single-file | P2 | M–L | VERIFIED |
 | A3 | Dataset schema lives in string literals across 20+ files | P2 | M | VERIFIED |
@@ -682,7 +685,7 @@ and asks for one confirmation on the robot.
 | N3 | Required reading is about 270,000 characters in 8 documents; HANDOFF §2 has table cells of up to 2,938 characters | D1 | WP-17, WP-18 |
 | N4 | The "fake hardware" Franka of crisp_controllers_demos is MuJoCo with the arm only: gravity off, no gripper, no camera, and the Franka state broadcaster is not started, so there is no external-torque topic. An end-to-end test on it (K2) cannot use `dric_franka_oakw_umi` + `umi_robot_full_record.yaml` as they are (INFERRED from the launch file and the scene) | `crisp_controllers_demos/crisp_mujoco_sim`, `config/fr3/scene.xml`, `launch/franka.launch.py` | K2 |
 | N5 | To load a script by path in a test, the module must be registered in `sys.modules` before it is executed, or dataclasses fail. `load_module()` did this implicitly; its replacement must do it explicitly | C9 | WP-04 (done) |
-| N6 | `tests/test_reencode_resize_e2e.py` fails on PyAV 19.0.2 and passes on 15.1.0. The failure is in the test's own stand-in for lerobot's `get_video_info` (`int(stream.base_rate)`: PyAV 19 returns a rational that `int()` rejects), before and after WP-04. Not changed. Whether the real lerobot function has the same problem on PyAV 19 was not checked | the `DRIVER` string of that test | open |
+| N6 | `tests/test_reencode_resize_e2e.py` fails on PyAV 19.0.2 and passes on 15.1.0. The failure is in the test's own stand-in for lerobot's `get_video_info` (`int(stream.base_rate)`: PyAV 19 returns a rational that `int()` rejects), before and after WP-04. Not changed. Whether the real lerobot function has the same problem on PyAV 19 was not checked | the `DRIVER` string of that test | fixed `aa2ada5` |
 
 ### 6.5 Is the structure easy to manage?
 

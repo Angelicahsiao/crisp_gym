@@ -7,8 +7,8 @@ which order. Each work package in §6 is written to be done on its own, without
 re-deriving why.
 
 Written 2026-11-16 at commit `12f6b29`, branch `claude/determined-faraday-1z6rx0`;
-status columns last updated 2026-11-17 at `02fe74c`. State then:
-`python -m pytest` gives 740 passed, 13 skipped in 30 s (739 and 14 without
+status columns last updated 2026-11-17 at `36d133e`. State then:
+`python -m pytest` gives 756 passed, 13 skipped in 30 s (755 and 14 without
 PyAV); `ruff check .` is clean with ruff 0.12.0. The rule is zero failures, not
 a particular count.
 
@@ -20,6 +20,7 @@ Stop, say what differs, and ask. Do not force the steps onto different code.**
 | `CLAUDE.md` | the owner's three process rules | always |
 | `GUIDANCE.md` (this file) | how to work here; ordered work packages | always, first |
 | `HANDOFF.md` | data conventions and why; investigation records | the sections §1.2 below names for your task |
+| `ROADMAP.md` | the unfinished and untested FEATURES: what each is for, what is proven, how to finish it | when asked to finish, test or extend a feature; before picking a clean-up package |
 | `CODE_REVIEW.md` | the problem list with evidence (IDs such as C3, A6) | when a work package cites an ID |
 | `USAGE.md` | command lines for every workflow | when you run or document a workflow |
 | `RESEARCH_FORCE_TACTILE.md` | force / tactile research plan, simulators | when planning model experiments |
@@ -284,12 +285,16 @@ Rules that keep it from getting worse (apply from now on):
 Size: XS under 1 h, S under half a day, M 1–3 days, L more.
 "Robot" says whether a run on the robot is needed before it counts as done.
 
+**These are clean-up packages. Features come first: `ROADMAP.md` lists what is
+unfinished or untested and how to finish it. Do a package from this section
+when it stands in a feature's way, or when the owner asks for it.**
+
 ### 6.1 Order
 
 | step | packages | why this order |
 |---|---|---|
 | 1. No decision needed | WP-01, WP-04, WP-06, WP-08, WP-09 — **all done 2026-11-17** | small, safe, each proven by a test here |
-| 2. After one owner answer each | WP-10 (answered: next), then WP-02, WP-03, WP-05, WP-07 | silent misconfiguration and silently unused inputs |
+| 2. After one owner answer each | WP-02, WP-03, WP-05, WP-07 (WP-10 continues as ROADMAP F2) | silent misconfiguration and silently unused inputs |
 | 3. Needs the robot | WP-11, and the robot checks in §7 | measure before changing the loop |
 | 4. Structure, in this order | WP-12 → WP-13 (both unblocked by D-7) → WP-14 → WP-15 → WP-16 | each makes the next smaller and safer |
 | 5. Documents | WP-17, WP-18 | after the structure settles, or the map goes stale twice |
@@ -309,7 +314,7 @@ a shared ROS executor (A8) unless shutdown problems are seen.
 | WP-07 | C6 | remove the hard-coded `franka` branch | S | yes | D-4 | open |
 | WP-08 | A10 | commented-out prints, `print` in library code | XS | no | — | done `ce16193` |
 | WP-09 | K2 | `--help` smoke test for ROS-free scripts | S | no | — | done `b468ce0` |
-| WP-10 | C11 | make promoted columns reach the model | M | no | D-5 | open |
+| WP-10 | C11 | make promoted columns reach the model | M | no | D-5 | dataset tool done `013e8f6`; robot side open, see ROADMAP F2 |
 | WP-11 | C5 | `step` builds an observation nobody reads | M | yes | D-6 | open |
 | WP-12 | A3 | one schema module | M | no | D-7 | open |
 | WP-13 | A2 | a ROS-free `offline` subpackage | M–L | no | D-7 | open |
@@ -476,7 +481,12 @@ a shared ROS executor (A8) unless shutdown problems are seen.
 - **A second test** fails when a file is added to `crisp_gym/scripts` without
   being listed or excluded with a reason.
 
-#### WP-10 · make promoted columns reach the model (C11) — DECISION D-5
+#### WP-10 · make promoted columns reach the model (C11) — tool DONE, rest in ROADMAP F2
+
+- **Done 2026-11-17.** `crisp_gym/scripts/add_environment_state.py` (route (a)
+  below), 15 tests, USAGE §7 rewritten. Not run on a real dataset or with a
+  real training. The robot side and `multi_task_dit` are ROADMAP F2 parts B
+  and C. The text below is the original card.
 
 - **Problem (read in lerobot v0.4.4 and main; not run).**
   `postprocess_align_datasets.py --promote extra.foo` renames the column to
@@ -617,7 +627,8 @@ unit tests first; it is the part with the most states and the fewest tests.
 | D-6 | Remove `block` and `control_frequency`, or document them as dead? | document now, remove with WP-14 |
 | D-7 | May GPU-side scripts import ROS-free `crisp_gym` modules (ending single-file copying)? | **ANSWERED 2026-11-17: yes.** The rule "no crisp_py, no rclpy, no ROS" stays |
 | D-8 | Split HANDOFF into conventions and dated notes? | yes |
-| D-9 | Add one line to `CLAUDE.md` naming `GUIDANCE.md` as the first file to read? | **ANSWERED 2026-11-17: yes, done.** Still open: an `AGENTS.md` with the same line, for tools that read that name |
+| D-9 | Add one line to `CLAUDE.md` naming `GUIDANCE.md` as the first file to read, and an `AGENTS.md` for tools that read that name? | **ANSWERED 2026-11-17: yes to both, done** |
+| D-10 | `multi_task_dit` does not read `observation.environment_state`. Give it extra inputs by appending them to `observation.state` (changes the state layout)? | open; ROADMAP F2 part C |
 
 Robot-side checks still owed (from earlier sessions):
 
