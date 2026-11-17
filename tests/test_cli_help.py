@@ -13,7 +13,6 @@ Not covered, on purpose:
   * check_available_policies: it takes no arguments.
 """
 
-import importlib.util
 import subprocess
 import sys
 from pathlib import Path
@@ -40,15 +39,10 @@ ROS_FREE = [
     REPO / "scripts" / "policy_server.py",
 ]
 
-# Import torch, lerobot or av at the top, so they start only where those are.
+# Import torch or lerobot at the top, so they start only where those are.
 NEEDS_MORE = [
     pytest.param(SCRIPTS / "check_policy_openloop.py", marks=pytest.mark.lerobot),
-    pytest.param(
-        SCRIPTS / "reencode_dataset_videos.py",
-        marks=pytest.mark.skipif(
-            importlib.util.find_spec("av") is None, reason="needs the av package"
-        ),
-    ),
+    pytest.param(SCRIPTS / "reencode_dataset_videos.py", marks=pytest.mark.lerobot),
 ]
 
 
