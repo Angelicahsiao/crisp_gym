@@ -181,6 +181,7 @@ Repos involved (same owner, branch conventions apply to all):
 | `CODE_REVIEW.md` | Review of the whole package (2026-11-16, commit `afb4a18`): architecture map, contract files, and a prioritised backlog with file:line evidence — safety (workspace box ignores 0.0 bounds; no per-tick jump limit), silent misconfiguration, duplication, packaging, CI, docs. Records findings only; each fix still needs the owner's approval. Start there before planning refactors. |
 | `GUIDANCE.md` | Entry point for any change: rules, where each thing is decided, the invariants with their tests, work packages WP-01 … WP-18, open owner decisions. Keep its status and decision tables current. |
 | `ROADMAP.md` | The unfinished and untested features (F1 … F12): what each is for, what is proven (built / on fakes / for real), the order to finish it in, how to know it works, and a first-run checklist per machine. Keep its level column current. |
+| `RUN_SHEETS.md` | Commands for the owner to run on the GPU PC and the robot PC (tests on each, the comparison smoke run), with expected output, what to paste back, and a Result line per sheet. |
 | `crisp_gym/scripts/add_environment_state.py` | Offline, ROS-free: copies a dataset and joins chosen columns into `observation.environment_state`, the second low-dimensional input diffusion and ACT read (`multi_task_dit` does not). Adds the feature, statistics in all three places, and `meta/environment_state.json`. Refuses missing, constant, NaN and image columns. Tests: `tests/test_add_environment_state.py`. USAGE §7.1. |
 | `RESEARCH_FORCE_TACTILE.md` | Force / tactile research plan: questions, prior work by idea, laptop-class simulators, what was executed, staged experiments. |
 | `crisp_gym/sim/spring_pad.py` | MuJoCo, CPU, no ROS: a pad of taxels on a spring (position servo) pressed onto a peg, read with the `touch_grid` sensor. Shows stiffness x (command - measured) = summed taxel force. `pip install mujoco`. Tests: `tests/test_sim_spring_pad.py`. |
@@ -1104,11 +1105,23 @@ established so far — verify before contradicting them:
   diffusion and ACT read that key; `multi_task_dit` does NOT (its model reads
   `observation.state`, the images and the task text), so for it the only
   route is appending to `observation.state`, not decided. Nothing on the
-  robot side produces the key yet. TRAP for whoever builds that: a sensor in
-  the env's `sensor_configs` is added to `observation.state` automatically
-  (`observation.state.sensors_<name>`), which is why the deploy env keeps
-  `sensor_configs: []`; adding the torque sensor there widens the state from
-  10 to 17. ROADMAP F2 has the design order.
+  robot side produces the key yet.
+  **DECIDED (owner, 2026-11-17): extra inputs go INTO `observation.state`,
+  after the gripper** — `[pose 9, gripper 1, extras, (wrt-start 6)]` — because
+  `multi_task_dit` and GR00T read nothing else, and because the robot side
+  already works that way: a sensor in the env's `sensor_configs` is added to
+  `observation.state` automatically (`observation.state.sensors_<name>`),
+  `build_obs_frame` joins every `observation.state.*` in env order, the
+  worker converts dimensions 0-8 only and appends wrt-start last, and
+  `_verify_state_dim` compares the width with the checkpoint. So deployment
+  is a deploy env with the recording env's sensor entry, no new code (not
+  yet run). Missing on the data side: `--promote` renames a column but does
+  not rebuild the joined `observation.state`; for NEW recordings the record
+  YAML can simply use `observation.state.<name>` with `include_in_state:
+  true`. Order trap: the env joins cartesian, gripper, joints, effort, then
+  sensors; a dataset appended in another order passes every width check with
+  the numbers in the wrong slots. `add_environment_state.py` stays as the
+  diffusion / ACT-only alternative. ROADMAP F2.
 - **Simulation (2026-11-16).** The research plan and the simulators are in
   `RESEARCH_FORCE_TACTILE.md`; the starter is `crisp_gym/sim/spring_pad.py`
   (tests pass on MuJoCo 3.2.7 and 4.0.1). The `touch_grid` sensor plugin

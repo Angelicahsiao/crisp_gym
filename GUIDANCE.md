@@ -21,6 +21,7 @@ Stop, say what differs, and ask. Do not force the steps onto different code.**
 | `GUIDANCE.md` (this file) | how to work here; ordered work packages | always, first |
 | `HANDOFF.md` | data conventions and why; investigation records | the sections §1.2 below names for your task |
 | `ROADMAP.md` | the unfinished and untested FEATURES: what each is for, what is proven, how to finish it | when asked to finish, test or extend a feature; before picking a clean-up package |
+| `RUN_SHEETS.md` | commands for the owner to run on the GPU PC and the robot PC, with what to expect and what to paste back; their results | when a step needs a machine you do not have |
 | `CODE_REVIEW.md` | the problem list with evidence (IDs such as C3, A6) | when a work package cites an ID |
 | `USAGE.md` | command lines for every workflow | when you run or document a workflow |
 | `RESEARCH_FORCE_TACTILE.md` | force / tactile research plan, simulators | when planning model experiments |
@@ -623,12 +624,12 @@ unit tests first; it is the part with the most states and the fewest tests.
 | D-2 | Wrong state order: raise or warn? | raise |
 | D-3 | Default env at the deploy and record prompts? | the rig's env, e.g. `dric_franka_oakw_deploy_umi` / `dric_franka_oakw_umi` |
 | D-4 | Remove the hard-coded `--follower-config franka` branch? | yes |
-| D-5 | Extra model inputs through `observation.environment_state` (a) or appended to `observation.state` (b)? | **ANSWERED 2026-11-17: (a)** |
+| D-5 | Extra model inputs through `observation.environment_state` (a) or appended to `observation.state` (b)? | **ANSWERED 2026-11-17: (a)**, then superseded as the main route by D-10 the same day. The tool for (a) stays, for diffusion / ACT experiments |
 | D-6 | Remove `block` and `control_frequency`, or document them as dead? | document now, remove with WP-14 |
 | D-7 | May GPU-side scripts import ROS-free `crisp_gym` modules (ending single-file copying)? | **ANSWERED 2026-11-17: yes.** The rule "no crisp_py, no rclpy, no ROS" stays |
 | D-8 | Split HANDOFF into conventions and dated notes? | yes |
 | D-9 | Add one line to `CLAUDE.md` naming `GUIDANCE.md` as the first file to read, and an `AGENTS.md` for tools that read that name? | **ANSWERED 2026-11-17: yes to both, done** |
-| D-10 | `multi_task_dit` does not read `observation.environment_state`. Give it extra inputs by appending them to `observation.state` (changes the state layout)? | open; ROADMAP F2 part C |
+| D-10 | `multi_task_dit` and GR00T read `observation.state` only. Put extra inputs INTO `observation.state`, after the gripper (changes the state layout)? | **ANSWERED 2026-11-17: yes.** One route for every policy; the robot side already adds env sensors to the state. Missing: `--promote` must rebuild `observation.state`. ROADMAP F2 |
 
 Robot-side checks still owed (from earlier sessions):
 

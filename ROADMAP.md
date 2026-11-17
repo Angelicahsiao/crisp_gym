@@ -48,6 +48,8 @@ Paste back: everything the command printed.
 ```
 
 Then stop and wait. When the output comes back, read it before explaining it.
+The sheets written so far, with a place for their results, are in
+`RUN_SHEETS.md`.
 This loop (you prepare, the owner runs, you interpret) is how every finding in
 `HANDOFF.md` §7 was made.
 
@@ -114,7 +116,7 @@ feature's section in the same commit.
 | # | feature | level | what is missing | needs |
 |---|---|---|---|---|
 | F1 | Measured-pose vs command action (models M and C) | FAKES | no training run, no rollout | GPU PC, robot |
-| F2 | Torque, force or tactile as a model input | tool FAKES; deployment not built | real dataset run, training, the robot side, `multi_task_dit` | GPU PC, then code, then robot |
+| F2 | Torque, force or tactile as a model input | route decided; one dataset step not built | `--promote` must rebuild `observation.state`; then training and one robot start | code, GPU PC, robot |
 | F3 | Safety limits on the commanded pose | FAKES | never acted on a real arm; no workspace box chosen | robot |
 | F4 | One-camera Franka configs (`dric_franka_oakw_*`) | FAKES (YAML checks) | never started on the robot | robot |
 | F5 | Policy server and asynchronous inference | REAL on one machine | the robot-to-GPU link; async on the robot; speed options for `multi_task_dit` | robot + GPU PC |
@@ -124,7 +126,7 @@ feature's section in the same commit.
 | F9 | Tactile | ON HOLD (hardware) | recording on the robot, time stamps, the probe | owner |
 | F10 | The test suite in the real environments | never run there | one pytest run each on robot PC and GPU PC | owner |
 | F11 | Open measurements | — | delivered stiffness, duplicated configs, loop left-overs | robot |
-| F12 | Other trained-policy paths (GR00T, SmolVLA) | unknown to this document | ask the owner what has run | owner |
+| F12 | GR00T | in use by the owner; level on the current rig unknown here | ask which mode and which steps have run | owner |
 
 Order: **F10 → F4 → F3 → F1**, because F1's rollouts need the configs, the
 limits and trustworthy tests. F2 in parallel on the GPU PC. F6 with the next
@@ -167,7 +169,13 @@ of success, time and contact gap exists for 20–30 trials each.
 so neither commands a squeeze (F6). Do not compare the two open-loop errors
 with each other. Recordings use ONE stiffness; the answer may change with it.
 
-**Ask the owner.** Diffusion, `multi_task_dit`, or both? How many trials?
+**With GR00T.** Feed it the recording and the command copy as they are (no
+relative wrapper in its default mode). Its dataset gate will warn that the
+action of the command copy "is not the next measured pose": expected.
+Nothing records the action source in a GR00T checkpoint (F12).
+
+**Ask the owner.** Which policy: diffusion, `multi_task_dit`, GR00T? How many
+trials?
 
 ---
 
@@ -175,58 +183,70 @@ with each other. Recordings use ONE stiffness; the answer may change with it.
 
 **For.** Letting the policy feel contact, not only see it.
 
-**The fact everything hangs on** (lerobot source, confirmed on the owner's GPU
-PC): `diffusion` and `act` read `observation.state` and
-`observation.environment_state`. `multi_task_dit` reads `observation.state`
-only. Nothing reads `extra.*` or `observation.state.<name>`.
+**What each policy reads** (lerobot source; confirmed on the owner's GPU PC):
 
-**Exists.** `add_environment_state.py` writes a dataset copy with the chosen
-columns joined into `observation.environment_state` (USAGE §7.1). Tested on
-synthetic datasets only.
+| policy | low-dimensional inputs |
+|---|---|
+| `diffusion`, `act` | `observation.state` and `observation.environment_state` |
+| `multi_task_dit`, GR00T | `observation.state` only |
 
-**To finish, part A: training** [GPU PC].
-1. `--dry-run` on `franka_electricbox` with `extra.ext_torque`; then for real.
-2. `check_schema_drift.py` on the result.
-3. Smoke-train 100 steps with diffusion, from scratch. Confirm
-   `observation.environment_state` is in the checkpoint's `config.json`
-   `input_features` (command in USAGE §7.1).
-4. Only then a full training.
+Nothing reads `extra.*` or a separate `observation.state.<name>` column.
 
-**Part B: the robot side** [code, then robot]. Not built: nothing in
-`relative_lerobot_policy.py`, `policy_server.py`, `check_policy_openloop.py` or
-`deploy_preflight.py` mentions the key, so a checkpoint trained in part A can
-neither be checked open loop nor deployed yet. Design, in this order:
-1. *Stamp.* At training time copy the dataset's `meta/environment_state.json`,
-   and for each of its columns the `source` and parameters listed in
-   `meta/record_config.json`, into `pose_repr.json` (as `action.source` is).
-2. *Open loop first.* Make `check_policy_openloop.py` pass the column through
-   from the dataset. No robot needed; proves the model side.
-3. *Robot side.* Rebuild each column with the SAME record source that recorded
-   it (`SOURCE_REGISTRY[source](env, **params)`), join in the stamped order,
-   and send it as `observation.environment_state`. Refuse to start when a
-   source is missing or the width differs from the stamp.
-4. *The trap.* A sensor in the env's `sensor_configs` is added to
-   `observation.state` automatically (as `observation.state.sensors_<name>`),
-   which is why the deploy env has `sensor_configs: []`. Adding the torque
-   sensor there would widen the state from 10 to 17 and break the checkpoint.
-   `build_obs_frame` must leave out of the state what goes to the environment
-   state, and the state-width check must still pass.
+**Decided (owner, 2026-11-17): the extra values go INTO `observation.state`,
+after the gripper.** One route for every policy:
+`[pose 9, gripper 1, extras …, (wrt-start 6)]`. The robot side already works
+this way: a sensor listed in the env's `sensor_configs` is added to the state
+automatically, and `_verify_state_dim` compares the width with the checkpoint.
 
-**Part C: `multi_task_dit`.** It cannot use the environment state. The only
-route is to append the columns to `observation.state` itself. That changes the
-state layout (GUIDANCE §3 item 4): it needs the owner's yes, the wrt-start
-append must stay last, and deployment gets the same trap as B4 in reverse.
+**Exists.**
+- *New recordings need no tool*: in the record YAML give the column the key
+  `observation.state.<name>` and `include_in_state: true` (today it is
+  `extra.ext_torque` with `include_in_state: false`).
+- *Existing data*: `postprocess_align_datasets.py --promote` renames the column
+  to `observation.state.<name>` but does NOT add it to the joined
+  `observation.state`. That is the missing piece (CODE_REVIEW C11).
+- The training wrapper passes state dimensions 9 and up through untouched,
+  recomputes the statistics of the whole state, and lists the state's parts in
+  `pose_repr.json` (`state_components`) when the sub-keys add up to its width.
+- `add_environment_state.py` is the other route (diffusion and ACT only; no
+  robot side). Keep it for experiments. Do not build its robot side unless the
+  state route fails.
 
-**It works when.** A checkpoint lists the key; the open-loop check runs with
-it; on the robot, pressing the gripper by hand changes what the log shows
-being sent to the model.
+**To finish.**
+1. [cloud] Make `--promote` also rebuild `observation.state`: append the
+   promoted columns in the order given, extend its `names` and `shape`,
+   recompute its statistics in all three places. Copy the tests and the
+   refusals (missing, constant, NaN) from `tests/test_add_environment_state.py`.
+2. [GPU PC] Run it on `franka_electricbox` with `extra.ext_torque`.
+   `inspect_dataset.py` must show `observation.state` 17 wide.
+3. [GPU PC] Smoke-train 100 steps. `pose_repr.json` must list three state
+   parts (9, 1, 7) and wrt-start.
+4. [GPU PC] Open-loop check.
+5. [robot] A deploy env that is `dric_franka_oakw_deploy_umi` plus the SAME
+   `ext_torque` entry in `sensor_configs` as the recording env, nothing else.
+   Start it: the width check must pass with no code change.
+6. Compare with the same model trained without the extra input.
 
-**Traps.** A model given force may ignore it (FACTR, TA-VLA): compare against
-the same model without it, under occlusion, before believing it helps. A
-finetune from `--policy.path` keeps the old input list. Handheld data has no
-torque: this is a robot-only input unless tactile is used on both.
+**It works when.** The checkpoint's state is 17 (+6) wide; the deploy env
+starts; pressing the gripper by hand changes the state the log shows.
 
-**Ask the owner.** Part C: append to `observation.state` for `multi_task_dit`?
+**Traps.**
+- **Order.** The env joins the state as cartesian, gripper, joints, effort,
+  then the sensors in `sensor_configs` order. Dataset columns appended in
+  another order land in the wrong slots while every width check passes. Compare
+  once by hand: the sizes `_verify_state_dim` prints against `state_components`.
+- `has_effort_feedback: true` adds 7 more numbers (total joint torque): keep it
+  `false` on the deploy env unless that column was promoted too.
+- wrt-start stays last.
+- GR00T in its default mode forms the relative action as action minus the
+  matching STATE dimensions. Appending at the end keeps the pose at 0–8 and
+  the gripper at 9, which is what it needs, but this has not run with a wider
+  state: smoke-train and run `check_trained_groot.sh` first.
+- External torque rests at a bias (joint 1 about −1.3 Nm) that may differ from
+  day to day. Look at a resting stretch before trusting it as an input.
+- A model given force may ignore it (FACTR, TA-VLA): compare under occlusion.
+- A finetune from `--policy.path` keeps the old input list.
+- Robot only: handheld data has no joint torque.
 
 ---
 
@@ -424,13 +444,36 @@ find.
 
 ---
 
-### F12 · Other trained-policy paths
+### F12 · GR00T
 
-`dric_franka_oakw_deploy_groot.yaml`, the `groot_*` policy configs,
-`train_groot*.sh`, `groot_preflight.py`, and the SmolVLA findings of HANDOFF
-§4c exist. This document does not know which of them has run for real. Ask
-the owner before planning work on them, and read §4c first: it explains why a
-from-scratch diffusion policy beat a finetuned VLA on this rig.
+**For.** The owner's language-conditioned policy (lerobot's GR00T N1.7).
+
+**Exists.** Launchers `scripts/train_groot.sh` and `train_groot_server.sh`
+(they pin three flags lerobot's defaults get wrong), `check_gpu_groot.sh`,
+`groot_preflight.py` (is the dataset fit), `check_trained_groot.sh` (did the
+flags survive), the policy configs `groot_lerobot_policy` and
+`groot_se3_lerobot_policy`, the deploy env `dric_franka_oakw_deploy_groot`.
+USAGE §8 "Train GR00T N1.7", §9 "Deploy a GR00T checkpoint"; HANDOFF §4c.
+
+**How it differs from diffusion and `multi_task_dit`.** Each line has cost a
+run before:
+- It is fed the dataset AS RECORDED (absolute poses) and builds its relative
+  actions itself. Never give the default mode a relative-wrapper output.
+- Its checkpoint carries no `pose_repr.json` in the default mode. `state_input`
+  and `action_repr` are therefore pinned in the policy YAML, and `auto`
+  resolves wrongly. Choose the YAML by training mode (table in USAGE §9).
+- For the same reason nothing records the action source: a GR00T checkpoint
+  trained on the command copy looks the same as one trained on the recording.
+  Name the folders, or have the launcher write that note (a small code step).
+- The task string is a model input: a stale task label trains a wrong mapping.
+- It reads `observation.state` only (F2).
+- It is slow: measure the loop rate before judging its behaviour.
+
+**Level.** In use by the owner. This document does not know which steps have
+run on the one-camera rig, nor in which mode. Ask before planning.
+
+**SmolVLA** was tried and underperformed a from-scratch diffusion policy on
+this rig; HANDOFF §4c says why. Do not restart that without reading it.
 
 ---
 
@@ -443,10 +486,10 @@ in the USAGE section named.
 
 | run | where | look for |
 |---|---|---|
-| the test suite | F10 | failures to sort |
+| the test suite | `RUN_SHEETS.md` sheet 1 | failures to sort |
 | `add_environment_state.py --dry-run` on real data | USAGE §7.1 | the slice table; no refusal |
-| `swap_action_offline.py` | USAGE §14 | `meta/action_repr.json` in the copy |
-| a 100-step relative training on each | USAGE §8 | `pose_repr.json` with the right `action.source` |
+| `swap_action_offline.py` | `RUN_SHEETS.md` sheet 3 | `meta/action_repr.json` in the copy |
+| a 100-step relative training on each | `RUN_SHEETS.md` sheet 3 | `pose_repr.json` with the right `action.source` |
 | `check_policy_openloop.py` on each | USAGE §14 | no `ACTION SOURCE MISMATCH` |
 | `deploy_preflight.py` on a new checkpoint | USAGE §9 | every check green |
 | `policy_server.py` | GUIDE part 1 | `/healthz` answers `OK` |
@@ -455,7 +498,7 @@ in the USAGE section named.
 
 | run | where | look for |
 |---|---|---|
-| the test suite | F10 | failures to sort |
+| the test suite | `RUN_SHEETS.md` sheet 2 | failures to sort |
 | one recording with `dric_franka_oakw_umi` | USAGE §5 | starts; `inspect_dataset.py` shows the expected columns, incl. `extra.gripper_target` |
 | one deployment with `dric_franka_oakw_deploy_umi` | USAGE §9 | starts; the action source line; step-limit warnings rare |
 | the same through the server, then with `async_inference: true` | GUIDE part 1 | round-trip time; no pause between chunks |
@@ -468,4 +511,4 @@ in the USAGE section named.
 When a feature changes level, change §2 and its section in the same commit,
 and write the measured result in `HANDOFF.md`. When the owner answers a
 question listed here, write the answer into the section. Keep this file under
-500 lines; detail goes to the document a section names.
+550 lines; detail goes to the document a section names.

@@ -486,6 +486,15 @@ column the policy actually reads. Checked in the lerobot source (2026-11):
 Every other column — `extra.*`, and also `observation.state.<name>` — is loaded
 and normalised but never enters the network.
 
+**Decided 2026-11-17: extra inputs go into `observation.state` itself, after
+the gripper**, so one route serves diffusion, `multi_task_dit` and GR00T, and
+the robot side needs only the recording env's sensor entry in the deploy env.
+For a NEW recording, give the column the key `observation.state.<name>` and
+`include_in_state: true` in the record YAML. For EXISTING data the tool is
+not finished: `--promote` (§7.2) renames the column but does not yet add it
+to the joined `observation.state`. Steps and traps: ROADMAP F2. §7.1 below is
+the alternative that works today for diffusion and ACT, for training only.
+
 ### 7.1 `add_environment_state.py` (diffusion, ACT)
 
 Writes a COPY of the dataset in which the chosen columns, joined in the order

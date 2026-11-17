@@ -25,6 +25,7 @@ Each document answers one question. Start with the one that matches what you are
 | [REMOTE_INFERENCE.md](REMOTE_INFERENCE.md) | the websocket contract and wire protocol for serving a policy from the GPU machine | building or debugging the server |
 | **[GUIDANCE.md](GUIDANCE.md)** | *how do I work on this repository, and what should be done next?* — rules, where each thing is decided, what must not break, ordered work packages | before any code change; the first file an AI assistant should read |
 | **[ROADMAP.md](ROADMAP.md)** | *which features are unfinished or untested, and how do I finish one?* — what each is for, what is proven, the steps, a first-run checklist per machine | picking up a feature; planning robot or GPU time |
+| [RUN_SHEETS.md](RUN_SHEETS.md) | *what do I run on the GPU PC or the robot PC, and what should I see?* — copyable commands, expected output, what to paste back | you have machine time and want to move a feature forward |
 | [CODE_REVIEW.md](CODE_REVIEW.md) | *what is wrong, with what evidence?* — architecture map and the problem list with file:line evidence | when a work package in GUIDANCE.md cites a finding |
 | [RESEARCH_FORCE_TACTILE.md](RESEARCH_FORCE_TACTILE.md) | *how can force or tactile enter the policy, and where can I try it?* — prior work by idea, MuJoCo-class simulators, a staged experiment plan | planning contact-aware model experiments |
 | [HANDOFF.md](HANDOFF.md) | *what must I not break?* — pose/data conventions, invariants, verification procedure | before changing pose math, recording, or the data schema |
