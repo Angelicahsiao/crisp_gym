@@ -71,9 +71,13 @@ DRIVER = textwrap.dedent(r'''
         def get_video_info(path, video_encoder=None):
             with av.open(str(path)) as c:
                 s = c.streams.video[0]
+                # As lerobot's current source does it. int(base_rate), which lerobot
+                # 0.4.4 and 0.6.1 use, raises on PyAV 19, whose rational int() rejects.
+                rate = float(s.base_rate)
                 return {"video.height": s.height, "video.width": s.width,
                         "video.codec": s.codec.canonical_name, "video.pix_fmt": s.pix_fmt,
-                        "video.fps": int(s.base_rate), "video.channels": 3}
+                        "video.fps": int(rate) if rate.is_integer() else rate,
+                        "video.channels": 3}
 
         def reencode_video(*a, **k):
             raise AssertionError("--resize must not go through lerobot's reencode_video")
