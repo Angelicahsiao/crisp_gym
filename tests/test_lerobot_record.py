@@ -72,8 +72,9 @@ ROS_STUBS = [
     "crisp_py.sensors.sensor_config",
     "crisp_py.utils",
     "crisp_py.utils.geometry",
-    "pynput",
-    "pynput.keyboard",
+    # No pynput: crisp_gym no longer imports it, and lerobot 0.6 calls
+    # importlib.util.find_spec("pynput") when it is imported, which raises
+    # "pynput.__spec__ is None" on a hand-made stand-in like these.
 ]
 
 for _name in ROS_STUBS:

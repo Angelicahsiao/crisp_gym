@@ -37,16 +37,19 @@ if str(REPO) not in sys.path:
 SOURCE = REPO / "crisp_gym" / "policy" / "relative_lerobot_policy.py"
 OBS_IMAGES = "observation.images"
 
+
 # ── torch stand-in: _prepare only needs stack, and numpy's semantics for it
 # are identical. Deliberately NOT registered in sys.modules -- it is handed to
 # the exec'd closure directly, so this file has no import side effects on the
 # rest of the suite (tests/test_pose_math.py installs its own, richer stub).
-try:  # pragma: no cover - the robot/training envs have the real thing
-    import torch as _torch
+# Always the numpy one, even where torch is installed: numpy_obs_to_torch is
+# replaced by `dict` below, so the frames stay numpy arrays, and the real
+# torch.stack refuses those ("expected Tensor as element 0"). Found on the GPU
+# PC, the first run with real torch. These tests are about which keys exist and
+# in what order, not about tensors.
+def _stack(seq, dim=0):
+    return np.stack([np.asarray(x) for x in seq], axis=dim)
 
-    _stack = _torch.stack
-except ImportError:
-    _stack = lambda seq, dim=0: np.stack([np.asarray(x) for x in seq], axis=dim)  # noqa: E731
 
 torch = types.SimpleNamespace(stack=_stack)
 
