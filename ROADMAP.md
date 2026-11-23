@@ -28,8 +28,13 @@ several features deep without knowing whether the first one works.
 
 ### 1.2 You cannot run the real thing. The owner can.
 
-A cloud session has no robot, no GPU, no lerobot, no ROS. So the unit of work
-for a REAL step is a **run sheet**, not code:
+A cloud session has no robot, no GPU and no ROS, and the test suite runs
+without torch or lerobot. It CAN install lerobot with CPU-only torch in a
+separate environment (below) and smoke-test the GPU-PC path on small data. That
+catches import errors, wrong column names, shape mismatches and crashes before
+the owner spends time on them, but it moves nothing to REAL: CPU is not the
+GPU PC (its CUDA, memory, speed, exact package versions, real datasets). So the
+unit of work for a REAL step is still a **run sheet**, not code:
 
 1. one command per block, copyable, with real paths;
 2. what the output should show if it works, and what it shows if it does not;
@@ -52,6 +57,33 @@ The sheets written so far, with a place for their results, are in
 `RUN_SHEETS.md`.
 This loop (you prepare, the owner runs, you interpret) is how every finding in
 `HANDOFF.md` §7 was made.
+
+**A CPU lerobot environment for smoke runs.** Verified 2026-11-23: lerobot
+0.6.1, torch 2.11 CPU, Python 3.13, about 2 GB, a few minutes to install. Use a
+virtual environment of its own: never install lerobot into the environment
+the tests run in (`tests/requirements.txt` pins numpy), and never install
+`tests/requirements.txt` on the GPU PC.
+
+```bash
+python3 -m venv /tmp/lrvenv
+```
+
+```bash
+/tmp/lrvenv/bin/pip install "torch>=2.7,<2.12" "torchvision>=0.22,<0.27" --index-url https://download.pytorch.org/whl/cpu
+```
+
+```bash
+/tmp/lrvenv/bin/pip install "lerobot[training,dataset,diffusion,multi-task-dit]==0.6.1" --extra-index-url https://download.pytorch.org/whl/cpu
+```
+
+Without the extras, training stops at its first import (`accelerate`, then
+`diffusers`). What ran with it on simulated data (F7): writing and reading a
+dataset, the audit, `swap_action_offline.py`, 20 diffusion steps through
+`lerobot_relative_pose.py` (`--policy.device=cpu`, about 2.5 s a step) and 10
+`multi_task_dit` steps through `train_multi_task_dit_server.sh` (append
+`--policy.device=cpu`; it needs `NUM_WORKERS` of at least 1 and downloads the
+CLIP encoder from the Hugging Face hub, which was reachable). Keep such runs to
+tens of steps and say in the hand-over that they ran on CPU in a cloud session.
 
 ### 1.3 Thinnest path first
 

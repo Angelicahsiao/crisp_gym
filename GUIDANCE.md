@@ -43,9 +43,11 @@ Stop, say what differs, and ask. Do not force the steps onto different code.**
    `python -m pytest` and `ruff check . && ruff format --check .`
    with **ruff 0.12.0 exactly** (a newer ruff reformats 7 files differently).
 6. Work on the designated branch only. No pull request unless asked.
-7. Say what was not run. A cloud session has no ROS, torch, lerobot, GPU or
-   robot: a change to the robot path is "tested on fakes, not run on the robot"
-   until the owner runs it.
+7. Say what was not run. A cloud session has no ROS, GPU or robot, and the
+   tests run without torch or lerobot: a change to the robot path is "tested
+   on fakes, not run on the robot" until the owner runs it. A separate CPU
+   lerobot environment can smoke-test the GPU-PC path (ROADMAP §1.2); say so
+   when one was used, and still hand the owner a run sheet.
 8. Never delete a config file, a dataset column or a script without the
    owner's yes. "Referenced nowhere in the repository" is not "unused".
 
