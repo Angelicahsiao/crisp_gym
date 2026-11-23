@@ -235,3 +235,69 @@ lines of steps 4, 5, 8 and 9.
 The full trainings are ROADMAP F1 step 3 (USAGE §14): your usual batch size
 and steps, and for each policy the same settings and `--seed` on both
 datasets.
+
+### Part E · a FIRST pair (planned; the training part cannot run yet)
+
+**Why.** FACTR 2 (arXiv 2606.12406, 2026) reports more than 17 % higher
+success from one change to training, which it calls FIRST: frames just before
+and during contact are drawn more often. The model, the loss and the data stay
+the same. Its contact labels come from the size of the external joint torque,
+which this dataset records (`extra.ext_torque`). These numbers come from
+summaries of the paper; the paper itself could not be opened.
+
+**The rule.** FIRST is an extra PAIR beside the four runs above, never a swap
+inside them: measured + FIRST and command + FIRST, with the same sampler,
+settings and `--seed` as each other. A FIRST model against a plain one answers
+a different question (does re-sampling help), so read the two pairs apart.
+
+**Why the training part cannot run yet.** lerobot 0.6.1 (the GPU PC's) and
+0.7.0 have no weighted frame sampler: the training loop always builds a
+uniform `EpisodeAwareSampler`. Their `sample_weighting` option scales the loss
+per frame instead, and only for policies whose `forward` takes `reduction`;
+diffusion, `multi_task_dit` and GR00T do not, so it fails on all three. The
+pair needs a sampler in `lerobot_relative_pose.py` first. Not built; owner
+decision pending.
+
+11. What runs now: how many frames each phase would get. The audit with the
+    joint-torque contact flag (each joint against its resting level at the
+    start of the episode, 2 Nm), keeping its per-frame flags.
+
+```bash
+cd /workspace/team/anglica && python crisp_gym/crisp_gym/scripts/audit_command_residual.py /workspace/datasets/franka_electricbox/lerobot --contact-from torque --out /workspace/team/anglica/outputs/first_audit.json --dump-npz /workspace/team/anglica/outputs/first_frames.npz
+```
+
+**Works:** the report, with `Contact flag: torque, ...% of frames in contact`
+(the second audit run found 22.6 %), then `wrote .../first_frames.npz`.
+
+12. Contact, pre-contact (the second before each contact starts; one summary
+    says FACTR 2 uses 1 s, unconfirmed) and free frames. Reads the two files of
+    step 11, writes nothing.
+
+```bash
+python -c "
+import json, numpy as np
+d = np.load('/workspace/team/anglica/outputs/first_frames.npz')
+fps = json.load(open('/workspace/team/anglica/outputs/first_audit.json'))['fps']
+ep, c = d['episode'], d['contact'].astype(bool)
+pre, w, onsets = np.zeros_like(c), int(round(fps)), 0
+for e in np.unique(ep):
+    i = np.flatnonzero(ep == e)
+    s = np.flatnonzero(c[i] & ~np.r_[False, c[i][:-1]])
+    onsets += len(s)
+    for k in s:
+        pre[i[max(0, k - w):k]] = True
+pre &= ~c
+print(f'{len(c)} frames at {fps:g} Hz | contact {100*c.mean():.1f}% | pre-contact (1 s before) {100*pre.mean():.1f}% | free {100*(~c & ~pre).mean():.1f}% | {onsets / len(np.unique(ep)):.1f} contact onsets per episode')
+"
+```
+
+**Works:** one line: `103040 frames at ... Hz | contact ...% | pre-contact
+(1 s before) ...% | free ...% | ... contact onsets per episode`. The owner's
+torque plot shows three contact phases per episode, so about 3 onsets per
+episode is expected. Many more means the flag flickers around 2 Nm: rerun
+step 11 with `--torque-threshold 3` and compare.
+
+**Paste back:** the `Contact flag` line of step 11 and the line of step 12.
+They set the sampling weights if the sampler is built.
+
+**Result:** not run yet.
