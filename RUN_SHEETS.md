@@ -238,12 +238,17 @@ datasets.
 
 ### Part E · a FIRST pair (planned; the training part cannot run yet)
 
-**Why.** FACTR 2 (arXiv 2606.12406, 2026) reports more than 17 % higher
-success from one change to training, which it calls FIRST: frames just before
-and during contact are drawn more often. The model, the loss and the data stay
-the same. Its contact labels come from the size of the external joint torque,
-which this dataset records (`extra.ext_torque`). These numbers come from
-summaries of the paper; the paper itself could not be opened.
+**Why.** FACTR 2 (arXiv 2606.12406v2, read in full) changes one thing in
+training, which it calls FIRST: frames in the second before each contact
+starts (pre-contact) and during contact are drawn more often. The model, the
+loss and the data stay the same. Its contact labels come from the size of the
+external joint torque, which this dataset records (`extra.ext_torque`). Its
+best weights, free : pre-contact : contact, are 1 : 5 : 1, and 1 : 3 : 3 on its
+one task with sustained contact (cap screwing); weights above about 5 gave
+nothing more or made things worse, and up-sampling contact alone did not help.
+Its policies also take the torque as input, but the re-sampling mostly helped
+policies without any force input too (its Table 9), and that is the case for
+the two models here.
 
 **The rule.** FIRST is an extra PAIR beside the four runs above, never a swap
 inside them: measured + FIRST and command + FIRST, with the same sampler,
@@ -254,9 +259,10 @@ a different question (does re-sampling help), so read the two pairs apart.
 0.7.0 have no weighted frame sampler: the training loop always builds a
 uniform `EpisodeAwareSampler`. Their `sample_weighting` option scales the loss
 per frame instead, and only for policies whose `forward` takes `reduction`;
-diffusion, `multi_task_dit` and GR00T do not, so it fails on all three. The
-pair needs a sampler in `lerobot_relative_pose.py` first. Not built; owner
-decision pending.
+diffusion, `multi_task_dit` and GR00T do not, so it fails on all three. FACTR 2
+also tried weighting the loss by phase and found it worse than re-sampling (its
+Table 11), so that option is the wrong tool anyway. The pair needs a sampler in
+`lerobot_relative_pose.py` first. Not built; postponed by the owner.
 
 11. What runs now: how many frames each phase would get. The audit with the
     joint-torque contact flag (each joint against its resting level at the
@@ -269,9 +275,8 @@ cd /workspace/team/anglica && python crisp_gym/crisp_gym/scripts/audit_command_r
 **Works:** the report, with `Contact flag: torque, ...% of frames in contact`
 (the second audit run found 22.6 %), then `wrote .../first_frames.npz`.
 
-12. Contact, pre-contact (the second before each contact starts; one summary
-    says FACTR 2 uses 1 s, unconfirmed) and free frames. Reads the two files of
-    step 11, writes nothing.
+12. Contact, pre-contact (the second before each contact starts, as in
+    FACTR 2) and free frames. Reads the two files of step 11, writes nothing.
 
 ```bash
 python -c "
@@ -295,9 +300,11 @@ print(f'{len(c)} frames at {fps:g} Hz | contact {100*c.mean():.1f}% | pre-contac
 (1 s before) ...% | free ...% | ... contact onsets per episode`. The owner's
 torque plot shows three contact phases per episode, so about 3 onsets per
 episode is expected. Many more means the flag flickers around 2 Nm: rerun
-step 11 with `--torque-threshold 3` and compare.
+step 11 with `--torque-threshold 3` and compare. (The audit has one threshold;
+FACTR 2 uses two, a higher one to switch contact on and a lower one to switch
+it off, which avoids that flicker.)
 
 **Paste back:** the `Contact flag` line of step 11 and the line of step 12.
-They set the sampling weights if the sampler is built.
+With them, the paper's 1 : 5 : 1 turns into the share of each phase per batch.
 
 **Result:** not run yet.
