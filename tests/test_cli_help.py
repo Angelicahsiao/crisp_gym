@@ -38,8 +38,10 @@ ROS_FREE = [
     SCRIPTS / "deploy_preflight.py",
     REPO / "scripts" / "code_metrics.py",
     REPO / "scripts" / "policy_server.py",
-    # imports mujoco only when it simulates, so --help works without it
+    # import mujoco only when they simulate (and lerobot only when writing),
+    # so --help works without them
     REPO / "crisp_gym" / "sim" / "spring_pad.py",
+    REPO / "crisp_gym" / "sim" / "button_dataset.py",
 ]
 
 # Import torch or lerobot at the top, so they start only where those are.
@@ -86,5 +88,5 @@ def test_every_script_is_listed_or_excluded_on_purpose():
     listed = {p.name for p in ROS_FREE} | {p.values[0].name for p in NEEDS_MORE}
     on_disk = {p.name for p in SCRIPTS.glob("*.py")}
     assert on_disk - listed - excluded == set()
-    elsewhere = {"code_metrics.py", "policy_server.py", "spring_pad.py"}
+    elsewhere = {"code_metrics.py", "policy_server.py", "spring_pad.py", "button_dataset.py"}
     assert (listed | excluded) - on_disk - elsewhere == set()

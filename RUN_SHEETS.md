@@ -308,3 +308,166 @@ it off, which avoids that flicker.)
 With them, the paper's 1 : 5 : 1 turns into the share of each phase per batch.
 
 **Result:** not run yet.
+
+---
+
+## Sheet 4 · Simulated press-button data on the GPU PC
+
+**Why.** Three datasets of the same 200 simulated demonstrations, each pressing
+a spring button and then sliding on the panel beside it, at spring stiffness
+200, 400 and 800 N/m (`crisp_gym/sim/button_task.py`). They have the Franka
+recordings' column names, so the audit, the command copy and both trainings
+run on them unchanged, and the simulator knows the true contact force
+(`extra.contact_force`). No camera: the button's position is in
+`observation.state` after the gripper. Tested in a cloud session with lerobot
+0.6.1 on CPU: 12 episodes written and read back, the audit, the command copy,
+20 diffusion steps and 10 `multi_task_dit` steps (through the launcher) on
+both copies. Never run on the GPU PC.
+
+1. Get the newest code.
+
+```bash
+cd /workspace/team/anglica/crisp_gym && git pull && git log --oneline -1
+```
+
+2. Is MuJoCo there? (If this prints a version, skip step 3.)
+
+```bash
+python -c "import mujoco; print(mujoco.__version__)"
+```
+
+3. Only if step 2 failed. First see what the install would change:
+
+```bash
+uv pip install --dry-run mujoco
+```
+
+   **Works:** it adds `mujoco` and a few small packages and changes nothing
+   that is already installed. If it would change numpy or torch, stop and
+   paste what it printed. Otherwise install it:
+
+```bash
+uv pip install mujoco
+```
+
+4. One demonstration, printed. Writes nothing.
+
+```bash
+cd /workspace/team/anglica && python crisp_gym/crisp_gym/sim/button_dataset.py --preview --stiffness 400
+```
+
+**Works:** `clicked: yes`, and a line `command below measured, largest: X mm
+(clicking needs Y mm at this spring)` with X a little above Y.
+
+5. The three datasets, one per stiffness. Each takes a few minutes. The same
+   `--seed` makes the same 200 demonstrations (button, start, speeds) at each
+   stiffness.
+
+```bash
+cd /workspace/team/anglica && python crisp_gym/crisp_gym/sim/button_dataset.py --root /workspace/datasets/sim_button_k200/lerobot --stiffness 200 --episodes 200 --seed 0
+```
+
+```bash
+cd /workspace/team/anglica && python crisp_gym/crisp_gym/sim/button_dataset.py --root /workspace/datasets/sim_button_k400/lerobot --stiffness 400 --episodes 200 --seed 0
+```
+
+```bash
+cd /workspace/team/anglica && python crisp_gym/crisp_gym/sim/button_dataset.py --root /workspace/datasets/sim_button_k800/lerobot --stiffness 800 --episodes 200 --seed 0
+```
+
+**Works:** each ends with `Done: 200 episodes, ... frames, 0 skipped without a
+click, at ... N/m`. A few skipped is fine (they are replaced). If the folder
+already exists it refuses: delete it or pick another `--root`.
+
+6. The audit on the 400 N/m dataset. Here the right answers are known.
+
+```bash
+cd /workspace/team/anglica && python crisp_gym/crisp_gym/scripts/audit_command_residual.py /workspace/datasets/sim_button_k400/lerobot --k-pos 400 --out /workspace/team/anglica/outputs/sim_audit_k400.json
+```
+
+**Works:** in section B, `tau` close to 141 ms on x, y and z: that is the
+simulator's true lag, 2·√(2 kg / 400 N/m). Section C says skipped (the
+simulation has no joints). Section F shows the contact gap that a
+measured-pose label does not carry.
+
+7. The command copies.
+
+```bash
+cd /workspace/team/anglica && python crisp_gym/crisp_gym/scripts/swap_action_offline.py --input /workspace/datasets/sim_button_k200/lerobot --output /workspace/datasets/sim_button_k200_cmd/lerobot
+```
+
+```bash
+cd /workspace/team/anglica && python crisp_gym/crisp_gym/scripts/swap_action_offline.py --input /workspace/datasets/sim_button_k400/lerobot --output /workspace/datasets/sim_button_k400_cmd/lerobot
+```
+
+```bash
+cd /workspace/team/anglica && python crisp_gym/crisp_gym/scripts/swap_action_offline.py --input /workspace/datasets/sim_button_k800/lerobot --output /workspace/datasets/sim_button_k800_cmd/lerobot
+```
+
+**Works:** `Done: ... frames, 200 episodes.` for each.
+
+8. Diffusion, 100 steps, on the 400 N/m recording and its command copy.
+
+```bash
+cd /workspace/team/anglica && python crisp_gym/crisp_gym/scripts/lerobot_relative_pose.py \
+    --dataset.repo_id=sim_button_k400 \
+    --dataset.root=/workspace/datasets/sim_button_k400/lerobot \
+    --policy.type=diffusion --policy.device=cuda --policy.push_to_hub=false \
+    --policy.horizon=16 --policy.n_action_steps=8 --seed=1000 \
+    --output_dir=/workspace/team/anglica/outputs/train/sim_smoke_diffusion_measured \
+    --batch_size=8 --steps=100 --save_freq=100 --num_workers=4 --wandb.enable=false
+```
+
+```bash
+cd /workspace/team/anglica && python crisp_gym/crisp_gym/scripts/lerobot_relative_pose.py \
+    --dataset.repo_id=sim_button_k400_cmd \
+    --dataset.root=/workspace/datasets/sim_button_k400_cmd/lerobot \
+    --policy.type=diffusion --policy.device=cuda --policy.push_to_hub=false \
+    --policy.horizon=16 --policy.n_action_steps=8 --seed=1000 \
+    --output_dir=/workspace/team/anglica/outputs/train/sim_smoke_diffusion_command \
+    --batch_size=8 --steps=100 --save_freq=100 --num_workers=4 --wandb.enable=false
+```
+
+**Works:** `observation.state: widened 13 -> 19 dims`, `Wrapped dataset with
+RelativePoseDataset`, `Stamped .../pose_repr.json`, loss lines, and the run
+ends by itself.
+
+9. `multi_task_dit`, 100 steps each, through the launcher of sheet 3 (step 6
+   there puts it in `/workspace/team/anglica`). `SKIP_PREFLIGHT=1` because the
+   dataset gate fails on "no cameras", which is expected here; it is the gate's
+   only failure on these datasets.
+
+```bash
+cd /workspace/team/anglica && SKIP_PREFLIGHT=1 DATASET=/workspace/datasets/sim_button_k400/lerobot DATASET_NAME=sim_button_k400 OUT=/workspace/team/anglica/outputs/train/sim_smoke_dit_measured STEPS=100 SAVE_FREQ=100 BATCH_SIZE=16 NUM_WORKERS=4 ./train_multi_task_dit_server.sh --seed=1000
+```
+
+```bash
+cd /workspace/team/anglica && SKIP_PREFLIGHT=1 DATASET=/workspace/datasets/sim_button_k400_cmd/lerobot DATASET_NAME=sim_button_k400_cmd OUT=/workspace/team/anglica/outputs/train/sim_smoke_dit_command STEPS=100 SAVE_FREQ=100 BATCH_SIZE=16 NUM_WORKERS=4 ./train_multi_task_dit_server.sh --seed=1000
+```
+
+**Works:** loss lines, `End of training`, then `==> Finished.`
+
+10. What each run recorded.
+
+```bash
+python -c "
+import glob, json
+for f in sorted(glob.glob('/workspace/team/anglica/outputs/train/sim_smoke_*/pose_repr.json')):
+    print(f.split('/')[-2], '->', json.load(open(f))['action']['source']['kind'])
+"
+```
+
+**Works:** four lines; the two `..._command` say `command`, the two
+`..._measured` say `measured`.
+
+**Paste back:** the output of steps 2 and 4, the `Done` lines of steps 5 and
+7, sections B and F of step 6, the last 20 lines of steps 8 and 9, and the
+output of step 10.
+
+**Result:** not run yet.
+
+**After it works.** Delete the four `sim_smoke_*` folders and keep the six
+datasets. The full comparison is the same pair (recording against command
+copy) at each stiffness. Its answer needs the rollout script that runs a
+trained policy inside the simulation and counts clicks and force; that script
+is not built yet (owner: later).
