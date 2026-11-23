@@ -123,9 +123,9 @@ controllers: crisp_controllers (1 kHz) ◄─ crisp_py (50 Hz re-publish) ◄─
 | `crisp_gym/record` | what is recorded (`RecordConfig`) and the writer (`RecordingManager`) | rclpy, lerobot (manager only) |
 | `crisp_gym/policy` | policy registry, relative policy, inference worker, remote transport | no ROS, torch or lerobot at import time |
 | `crisp_gym/scripts` | entry points: robot, training, dataset tools, diagnostics | depends on the file; see CODE_REVIEW A1 |
-| `crisp_gym/sim` | small MuJoCo models to try ideas without the robot (`spring_pad.py`) | numpy; mujoco only when a simulation runs |
+| `crisp_gym/sim` | small MuJoCo models to try ideas without the robot (`spring_pad.py`; the press-button task `button_task.py` and its dataset writer `button_dataset.py`) | numpy; mujoco only when a simulation runs; `button_dataset.py` also `record_config`, and lerobot only when writing |
 | `scripts/` (root) | `policy_server.py`, shell launchers | lerobot on the GPU PC |
-| `tests` | 40 test files, run without ROS; fakes for torch / rclpy / lerobot | — |
+| `tests` | 43 test files, run without ROS; fakes for torch / rclpy / lerobot | — |
 
 ### Where is it decided?
 
@@ -467,13 +467,14 @@ a shared ROS executor (A8) unless shutdown problems are seen.
 
 - **Goal.** An import error in a GPU-side script fails CI instead of failing on
   the GPU PC.
-- **As done.** `tests/test_cli_help.py` starts 14 scripts with `--help` in a
-  subprocess: `audit_command_residual`, `inspect_dataset`,
-  `check_tactile_sync`, `check_schema_drift`, `fix_dataset_task`,
-  `swap_action_offline`, `migrate_euler_delta_to_rot6d`,
+- **As done.** `tests/test_cli_help.py` starts 16 scripts with `--help` in a
+  subprocess: `add_environment_state`, `audit_command_residual`,
+  `inspect_dataset`, `check_tactile_sync`, `check_schema_drift`,
+  `fix_dataset_task`, `swap_action_offline`, `migrate_euler_delta_to_rot6d`,
   `postprocess_align_datasets`, `viz_encoder_attention`, `groot_preflight`,
   `deploy_preflight`, `scripts/code_metrics.py`, `scripts/policy_server.py`,
-  `crisp_gym/sim/spring_pad.py`. Two more carry the `lerobot` marker
+  `crisp_gym/sim/spring_pad.py`, `crisp_gym/sim/button_dataset.py`. Two more
+  carry the `lerobot` marker
   (`check_policy_openloop`, `reencode_dataset_videos`); they have not run
   anywhere yet, so expect to look at them on the GPU PC.
 - **Left out on purpose.** The ROS entry points; and the three training

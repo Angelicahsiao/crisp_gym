@@ -78,7 +78,7 @@ writing yet.
 | a check before a rollout | `scripts/deploy_preflight.py`; `_verify_state_dim`, `_verify_image_keys` | — |
 | a limit on commands | a pure function in `util/safety.py`, called from `ManipulatorCartesianEnv.step` | `limit_target_step` |
 | a look at recorded data | a step in `audit_command_residual.py`, or a small read-only script | `check_tactile_sync.py` |
-| a simulation | `crisp_gym/sim/` | `spring_pad.py` |
+| a simulation | `crisp_gym/sim/` | `spring_pad.py`; `button_task.py` with its writer `button_dataset.py` |
 
 Do not build a second mechanism beside one of these.
 
@@ -121,7 +121,7 @@ feature's section in the same commit.
 | F4 | One-camera Franka configs (`dric_franka_oakw_*`) | FAKES (YAML checks) | never started on the robot | robot |
 | F5 | Policy server and asynchronous inference | REAL on one machine | the robot-to-GPU link; async on the robot; speed options for `multi_task_dit` | robot + GPU PC |
 | F6 | Gripper command as a label | FAKES | no dataset has it; the swap tool ignores the gripper | robot, then code |
-| F7 | Simulation | first step REAL in CI | a task and a dataset writer; `tactile_envs`; the real controller in MuJoCo | cloud, then owner's PC |
+| F7 | Simulation | press-button task and dataset writer BUILT; the tools ran on its data with the real lerobot 0.6.1 on CPU (cloud) | the GPU-PC run (sheet 4); a rollout script; `tactile_envs`; the real controller in MuJoCo | GPU PC, cloud, then owner's PC |
 | F8 | Residual model (relabel handheld data) | not started | everything; depends on F1 and F7 | research |
 | F9 | Tactile | ON HOLD (hardware) | recording on the robot, time stamps, the probe | owner |
 | F10 | The test suite in the real environments | never run there | one pytest run each on robot PC and GPU PC | owner |
@@ -352,25 +352,61 @@ applies its fixed effort once blocked.
 **For.** Trying label and input ideas with a known ground truth, without robot
 time. Plan and simulators: `RESEARCH_FORCE_TACTILE.md`.
 
-**Exists.** `crisp_gym/sim/spring_pad.py`: a 72-taxel pad on a spring pressed
-onto a peg; spring force equals taxel force; 11 tests in CI.
+**Exists.**
+- `crisp_gym/sim/spring_pad.py`: a 72-taxel pad on a spring pressed onto a
+  peg; spring force equals taxel force; 11 tests in CI.
+- `crisp_gym/sim/button_task.py`: the press-button task. The closed gripper's
+  two fingertips, a 6 × 12 skin each, on a 3-D spring of stiffness K; a spring
+  button (5–15 N to click, 2–4 mm travel, varied per episode); a scripted
+  demonstrator: approach, press until the click, hold, lift clear, slide on
+  the panel beside the button, lift. Frames at 15 Hz with the Franka
+  recording's columns, plus the true contact force and the button's state. No
+  camera: the button's position in the TCP frame goes into `observation.state`
+  after the gripper (D-10) and into `observation.environment_state`.
+  `crisp_gym/sim/button_dataset.py` previews an episode or writes one LeRobot
+  dataset per stiffness (USAGE §15). Tests: `tests/test_sim_button_task.py`,
+  `tests/test_sim_button_dataset.py`.
 
 **To finish.**
-1. [cloud] Grow it into a small task (reach, press with a wanted force, slide)
-   driven by a scripted expert, and a writer that stores episodes as a LeRobot
-   dataset with the REAL column names. Proof: `inspect_dataset.py`,
-   `check_schema_drift.py` and the residual steps of the audit (A, F, G) run on
-   it unchanged and report the gap the simulation was given.
-2. [cloud] Run F1 in simulation at several stiffness values.
-3. [owner's PC] `tactile_envs` (a Robotiq 2F-85 with taxel pads); it could not
+1. **Done 2026-11-23 (commit `768f6ba`).** [cloud] A small task driven by a
+   scripted expert, and a writer with the REAL column names. Proof, run in a
+   cloud session with lerobot 0.6.1 on CPU: `inspect_dataset.py`,
+   `check_schema_drift.py` and the whole audit run on it unchanged (its lag fit
+   gives the simulator's 2·√(m/K): 141 ms at 400 N/m, 200 ms at 200 N/m);
+   `swap_action_offline.py` makes the command copy; 20 diffusion steps and 10
+   `multi_task_dit` steps (through the launcher) train on both copies, each
+   checkpoint stamped `measured` / `command`.
+2. [owner, GPU PC] `RUN_SHEETS.md` sheet 4: the datasets at 200, 400 and
+   800 N/m, the audit, the command copies, smoke trainings of both policies.
+3. [cloud] A rollout script: load a trained checkpoint, run it in the
+   simulation through the same relative-pose conversion as deployment, and
+   count clicks, the force at the click and its overshoot. Without it the
+   comparison has training losses only. (Owner: later.)
+4. [GPU PC] Run F1 in simulation at the three stiffness values: the measured
+   and the command model for each, then the rollouts of step 3.
+5. [owner's PC] `tactile_envs` (a Robotiq 2F-85 with taxel pads); it could not
    be executed in a cloud session.
-4. [owner's PC] The real controller in MuJoCo (`FRANKA_FAKE_HARDWARE=true`).
+6. [owner's PC] The real controller in MuJoCo (`FRANKA_FAKE_HARDWARE=true`).
    That scene has the arm only: no gripper, camera or torque topic, so the
    usual configs do not start on it as they are.
 
-**Traps** (each pinned by a test in `tests/test_sim_spring_pad.py`). The touch
-sensor looks along its site's −z axis. Move the command, do not jump it. Use
-the simulator to compare variants, never for absolute numbers.
+**Traps.** Use the simulator to compare variants, never for absolute numbers.
+Pinned by `tests/test_sim_spring_pad.py`: the touch sensor looks along its
+site's −z axis; move the command, do not jump it. Found building the button
+task (the fixes are in `button_task.py`, the checks in its tests):
+- MuJoCo's contact softness scales with how hard a body is pushed: the light
+  button cap, pushed by its own spring, sank into the fingertips when they
+  lifted off. Stiffer contacts (`CONTACT_SOLREF`) fixed it.
+- One box per taxel gives up to four contacts each, and 144 boxes on the flat
+  panel flickered: one sphere per taxel.
+- Sliding with friction makes the fingertips hop by micrometres at every
+  contact setting tried, so the skins and the true force are frame averages.
+  Never read the contact at one physics step.
+- Sliding off the cap's edge pushes the button through its stop: the
+  demonstrator lifts clear first.
+- The DiT launcher's dataset gate fails on "no cameras": `SKIP_PREFLIGHT=1` for
+  simulated data, and nothing else fails. Simulated and robot contracts are
+  deliberately not mixable (their state inputs differ).
 
 ---
 

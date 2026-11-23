@@ -18,6 +18,8 @@ Contents:
 11. [Migrate legacy Euler + delta-command data to rot6d](#11-migrate-legacy-euler--delta-command-data-to-rot6d)
 12. [Diagnose a dropped control rate (loop timing)](#12-diagnose-a-dropped-control-rate-loop-timing)
 13. [Recording at high resolution without stalling teleop](#13-recording-at-high-resolution-without-stalling-teleop)
+14. [Audit the command-minus-measured residual (contact / tactile work)](#14-audit-the-command-minus-measured-residual-contact--tactile-work)
+15. [Simulated press-button data (MuJoCo, no robot)](#15-simulated-press-button-data-mujoco-no-robot)
 
 The keyboard recording manager is the same everywhere:
 **r** start/stop episode · **s** save episode · **d** delete episode · **q** quit
@@ -1753,3 +1755,87 @@ values, age_ms = tr.windows(stamps, taxels, frame_stamps, length=32, rate_hz=200
 
 The window is a causal hold on a time grid (never a later sample), because the
 stream has gaps and a model run online can only see the past.
+
+---
+
+## 15. Simulated press-button data (MuJoCo, no robot)
+
+`crisp_gym/sim/button_task.py` simulates the press-button task: the closed
+gripper's two fingertips, each with a 6 x 12 skin, held by a 3-D spring of
+stiffness K the way the Cartesian impedance controller holds the TCP. A
+scripted demonstrator approaches a spring button, presses until it clicks,
+holds, lifts clear, slides on the panel beside the button and lifts. Each
+episode varies the button (5–15 N to click, 2–4 mm travel), the start, the aim
+and the speeds. The simulator knows the true contact force, so the tools and
+the label comparison (§14) can be checked against a known answer.
+
+No ROS. Previewing needs `mujoco` (`pip install mujoco`); writing a dataset
+also needs lerobot, so do it on the GPU PC (RUN_SHEETS sheet 4 has every step,
+with a dry run before installing). One episode takes about a second on one CPU
+core.
+
+One episode, printed (writes nothing):
+
+```bash
+python crisp_gym/sim/button_dataset.py --preview --stiffness 400
+```
+
+A dataset, one per stiffness. The same `--seed` gives the same demonstrations
+at every stiffness; a demonstration that does not click is skipped and
+replaced. The folder must not exist yet.
+
+```bash
+python crisp_gym/sim/button_dataset.py --root /path/to/datasets/sim_button_k400/lerobot \
+    --stiffness 400 --episodes 200 --seed 0
+```
+
+What a dataset holds (15 Hz, no videos):
+
+| column | meaning |
+|---|---|
+| `observation.state.cartesian` | measured TCP pose, 9-D rot6d, as on the robot; the rotation is constant (TCP z down into the panel) |
+| `observation.state.gripper` | constant: a closed, position-controlled gripper |
+| `observation.state.button_in_tcp` | the button's top centre in the TCP frame, m: what a camera would show |
+| `observation.state` | the three above joined, 13-D (the extra input after the gripper, D-10) |
+| `observation.environment_state` | the button again; lerobot's diffusion refuses to train with neither an image nor this |
+| `action` | the measured pose of the next frame plus the gripper, 10-D (`next_tcp_pose`, lookahead 1) |
+| `extra.target_cartesian` | the command, 9-D |
+| `extra.tactile.left`, `.right` | normal force per taxel, N, 72 each (12 rows of 6), averaged over the frame |
+| `extra.contact_force` | true force on the fingertips, world frame, N, averaged over the frame; the robot cannot record this |
+| `extra.button_depth`, `extra.button_pressed` | how far the button is pushed in (m), and 1 once it is past its click point |
+
+`meta/record_config.json` is the recorder's own contract (the same action
+definition as a Franka recording, so checkpoints are stamped `measured`), and
+`meta/sim_config.json` holds the stiffness, the seed and every episode's
+parameters, enough to regenerate the dataset.
+
+Then the robot-data tools run on it as they are:
+
+- the audit (§14) with `--k-pos <the stiffness>`. Steps C and H skip
+  themselves (no joints). Step B's lag must come out as 2·√(2 kg / K): 141 ms
+  at 400 N/m.
+- `swap_action_offline.py` for the command copy, and the training commands of
+  §8 and §14 for the two models.
+- The `multi_task_dit` launcher needs `SKIP_PREFLIGHT=1`: its dataset gate
+  fails on "no cameras", which is expected here and its only failure.
+
+Simulated datasets are not mixable with robot data on purpose: their state
+inputs differ, and `RecordConfig.contracts_compatible` says so.
+
+From Python:
+
+```python
+import numpy as np
+from crisp_gym.sim import button_task as bt
+
+cfg = bt.ButtonTaskConfig(stiffness=400.0)
+episode = bt.run_episode(cfg, bt.sample_params(np.random.default_rng(0)))
+episode.clicked               # True
+episode.columns["action"]     # [frames, 10] float32, the dataset's columns
+episode.phases                # the demonstrator's phase at each frame
+```
+
+Not modelled: rotation, a soft skin, sensor noise, the arm's own friction, the
+real stack's timing, and a camera. Compare variants with it (measured against
+command label, stiffness against stiffness); do not carry its numbers to the
+robot.

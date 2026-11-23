@@ -185,6 +185,7 @@ Repos involved (same owner, branch conventions apply to all):
 | `crisp_gym/scripts/add_environment_state.py` | Offline, ROS-free: copies a dataset and joins chosen columns into `observation.environment_state`, the second low-dimensional input diffusion and ACT read (`multi_task_dit` does not). Adds the feature, statistics in all three places, and `meta/environment_state.json`. Refuses missing, constant, NaN and image columns. Tests: `tests/test_add_environment_state.py`. USAGE §7.1. |
 | `RESEARCH_FORCE_TACTILE.md` | Force / tactile research plan: questions, prior work by idea, laptop-class simulators, what was executed, staged experiments. |
 | `crisp_gym/sim/spring_pad.py` | MuJoCo, CPU, no ROS: a pad of taxels on a spring (position servo) pressed onto a peg, read with the `touch_grid` sensor. Shows stiffness x (command - measured) = summed taxel force. `pip install mujoco`. Tests: `tests/test_sim_spring_pad.py`. |
+| `crisp_gym/sim/button_task.py`, `crisp_gym/sim/button_dataset.py` | MuJoCo, CPU, no ROS: the press-button task (two 6 x 12 fingertip skins on a 3-D spring K press a spring button, then slide on the panel) with a scripted demonstrator; columns of a Franka recording plus the true contact force. `button_dataset.py` previews an episode or writes a LeRobot dataset (writing needs lerobot). USAGE §15, ROADMAP F7, RUN_SHEETS sheet 4. Tests: `tests/test_sim_button_task.py`, `tests/test_sim_button_dataset.py`. |
 | `tests/test_cli_help.py` | Starts every ROS-free script with `--help`; fails when a script is added to `crisp_gym/scripts` without being listed there or excluded with a reason. |
 | `GUIDE_REMOTE_SERVER_AND_TACTILE.md` | USER-FACING how-to for the policy server and the tactile scripts. Keep it in step with `scripts/policy_server.py` options, the `server:` YAML block and the audit's flags. |
 | `crisp_gym/scripts/inspect_dataset.py` | READ-ONLY layout of a dataset folder: info.json counts + every feature (shape, dtype), tactile_raw CSVs (count, DVC pointers not pulled, one episode's fields and rows), edit_report.json. Standard library only. Was an inline command given to the owner. |
@@ -1144,6 +1145,27 @@ established so far — verify before contradicting them:
   spring-like position actuators — the closest ready-made match). The "fake
   hardware" Franka of crisp_controllers_demos IS MuJoCo behind ros2_control:
   arm only, gravity off, no gripper, camera or external-torque topic.
+- **Simulated press-button data (2026-11-23).** `crisp_gym/sim/button_task.py`
+  and `button_dataset.py` (ROADMAP F7, USAGE §15). Checked in a cloud session
+  with lerobot 0.6.1 and CPU torch (both install there from PyPI and the
+  PyTorch CPU index): `inspect_dataset.py`, `check_schema_drift.py`, the audit,
+  `swap_action_offline.py`, diffusion and `multi_task_dit` (launcher,
+  `SKIP_PREFLIGHT=1` for the missing camera) run unchanged on its datasets,
+  and the checkpoints are stamped `measured` / `command`. The audit's step B
+  recovers the simulator's lag exactly, 2·√(m/K): 141 ms at 400 N/m, 200 ms
+  at 200 N/m. Its step D gives tactile alone R2 −0.5 to 0.3 on contact frames
+  even on noise-free simulated skins (x and y there are mostly sliding lag,
+  which normal forces cannot show; z should follow the summed force), in line
+  with the step-D weakness below; not investigated further. Physics found and
+  fixed while building it: the light button cap sank into the fingertips on
+  release (MuJoCo's softness scales with how hard a body is pushed; stiffer
+  contacts); 144 box contacts flickered on the panel (one sphere per taxel);
+  sliding off the cap's edge pushed the button through its stop (lift clear
+  first); and sliding with friction makes the fingertips hop by micrometres at
+  every setting tried (pyramidal and elliptic cones, softer and over-damped
+  panel contacts, noslip, a 4x smaller step; gone without friction), so the
+  skins and the true force are averaged per frame. About 1 s per episode on
+  one CPU core.
 - Planned order: audit existing data → robot-only ablation of measured-pose vs
   command action (true commands exist, no residual model needed) → residual
   model on robot data → relabel handheld data into a NEW column (never
