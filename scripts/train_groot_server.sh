@@ -8,7 +8,8 @@ cd "$WORKDIR"
 
 # ── GR00T N1.7 fine-tune (server / bind-mount variant) ───────────────────────
 #
-# The env-var sibling of scripts/train_groot.sh. Same gates, same pinned flags;
+# The env-var sibling of scripts/train_groot.sh. Same gates and pinned flags,
+# plus image augmentation (AUGMENT, below), which train_groot.sh does not have;
 # this one is driven by environment variables and defaults every path off its
 # OWN directory, for a training box where the script sits in a bind mount and
 # the platform decides the cwd. Use train_groot.sh when you want to pass flags
@@ -61,12 +62,23 @@ cd "$WORKDIR"
 #   push_to_hub=True            -> fails late, after the dataset has loaded
 # All three are pinned below. groot_preflight.py gates the run before any of it.
 #
+# IMAGE AUGMENTATION (AUGMENT), the same as train_multi_task_dit_server.sh.
+# lerobot's GR00T already applies the base checkpoint's train-time random crop
+# (crop_fraction 0.95 in nvidia/GR00T-N1.7-3B's processor_config.json) but NOT
+# its colour jitter: color_jitter_params is set there and never read by
+# lerobot 0.6.1's processor_groot.py. The default, noaffine, adds lerobot's
+# colour and sharpness jitter on training frames only, which is the missing
+# part; all adds lerobot's random rotate/shift on top of GR00T's crop; 0 trains
+# on the frames as recorded, as this script did before 2026-11-24.
+#
 #   ./train_groot_server.sh                          # uses the defaults below
 #   SE3=1 ./train_groot_server.sh                    # CROSS-EMBODIMENT mode, see below
 #   SE3=1 WRT_START=0 ./train_groot_server.sh        # ... with a 10-D relative state
 #   STEPS=2000 ./train_groot_server.sh               # smoke test
 #   EPOCHS=10 ./train_groot_server.sh                # schedule by epochs, see below
 #   BATCH_SIZE=16 ./train_groot_server.sh            # H200 has room; 32 is the default
+#   AUGMENT=all ./train_groot_server.sh              # augmentation incl. rotate/shift
+#   AUGMENT=0 ./train_groot_server.sh                # no augmentation (as before)
 #   DATASET_NAME=other_set ./train_groot_server.sh
 #   OUT=/mnt/nfs_share/runs/x ./train_groot_server.sh
 #   SKIP_PREFLIGHT=1 ./train_groot_server.sh         # bypass the gate
@@ -96,6 +108,10 @@ EPOCHS="${EPOCHS:-}"                # empty = schedule by STEPS
 BATCH_SIZE="${BATCH_SIZE:-32}"      # H200: 150 GB, room to spare. 32 GB card: try 2.
 SAVE_FREQ="${SAVE_FREQ:-20000}"
 NUM_WORKERS="${NUM_WORKERS:-8}"
+# noaffine: lerobot's colour/sharpness jitter without the random rotate/shift
+# all:      lerobot's full default set, rotate/shift included
+# 0:        no augmentation
+AUGMENT="${AUGMENT:-noaffine}"
 SKIP_PREFLIGHT="${SKIP_PREFLIGHT:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 
@@ -125,6 +141,10 @@ if [ -n "$EPOCHS" ] && ! awk -v e="$EPOCHS" 'BEGIN { exit !(e ~ /^[0-9]*\.?[0-9]
     echo "EPOCHS must be a positive number, got: $EPOCHS" >&2
     exit 2
 fi
+case "$AUGMENT" in
+    noaffine|all|0) ;;
+    *) echo "AUGMENT must be noaffine, all or 0, got: $AUGMENT" >&2; exit 2 ;;
+esac
 
 # Some datasets keep meta/ and data/ directly, others nest them under lerobot/.
 if [ ! -d "$DATASET/meta" ] && [ -d "$DATASET/lerobot/meta" ]; then
@@ -287,6 +307,23 @@ else
         --policy.use_relative_actions=true
         --policy.relative_exclude_joints='["gripper"]'
     )
+fi
+
+# Augmentation runs on training frames only: lerobot passes no transforms to
+# the held-out split, and none are applied at deploy.
+if [ "$AUGMENT" != "0" ]; then
+    CMD+=(--dataset.image_transforms.enable=true)
+fi
+if [ "$AUGMENT" = "noaffine" ]; then
+    # lerobot 0.6.1's default transforms MINUS "affine". The WHOLE list must be
+    # given: `--dataset.image_transforms.tfs.affine.weight=0` is rejected, and a
+    # JSON with only the affine entry REPLACES the list, leaving 0 transforms.
+    IMAGE_TFS='{"brightness": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"brightness": [0.8, 1.2]}}, '\
+'"contrast": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"contrast": [0.8, 1.2]}}, '\
+'"saturation": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"saturation": [0.5, 1.5]}}, '\
+'"hue": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"hue": [-0.05, 0.05]}}, '\
+'"sharpness": {"weight": 1.0, "type": "SharpnessJitter", "kwargs": {"sharpness": [0.5, 1.5]}}}'
+    CMD+=(--dataset.image_transforms.tfs="$IMAGE_TFS")
 fi
 
 CMD+=(
