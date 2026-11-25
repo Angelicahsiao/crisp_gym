@@ -63,6 +63,16 @@
 #                      stays absolute, so the preflight applies unchanged.
 #   --no-wrt-start     with --se3: 10-D relative state instead of the 16-D
 #                      UMI-parity [rel_pose9, gripper1, wrt_start6]
+#   --augment MODE     image augmentation on training frames, the same as
+#                      train_multi_task_dit_server.sh. noaffine (default):
+#                      lerobot's colour and sharpness jitter; all: also its
+#                      random rotate/shift; 0: none, as this script did before
+#                      2026-11-25. lerobot's GR00T already applies the base
+#                      checkpoint's train-time random crop (crop_fraction 0.95
+#                      in nvidia/GR00T-N1.7-3B's processor_config.json) but
+#                      never reads its color_jitter_params, so noaffine adds
+#                      only the missing part. It runs on the CPU in the data
+#                      workers at the stored resolution: see USAGE §8
 #   --skip-preflight   run without gating on groot_preflight.py
 #   --dry-run          print the command and exit
 #   --                 everything after this is appended to the lerobot command
@@ -77,7 +87,7 @@ REPO="$(cd "$HERE/.." && pwd)"
 
 DATASET="" OUTPUT="" REPO_ID="" JOB_NAME="" EPOCHS=""
 BATCH_SIZE=32 STEPS=100000 SAVE_FREQ=20000 NUM_WORKERS=8
-SKIP_PREFLIGHT=0 DRY_RUN=0 SE3=0 WRT_START=1
+SKIP_PREFLIGHT=0 DRY_RUN=0 SE3=0 WRT_START=1 AUGMENT=noaffine
 EXTRA=()
 
 # Every value-taking option goes through this first. Without it, a flag given
@@ -104,6 +114,7 @@ while [ $# -gt 0 ]; do
         --job-name)       need_value "$@"; JOB_NAME="$2"; shift 2 ;;
         --save-freq)      need_value "$@"; SAVE_FREQ="$2"; shift 2 ;;
         --num-workers)    need_value "$@"; NUM_WORKERS="$2"; shift 2 ;;
+        --augment)        need_value "$@"; AUGMENT="$2"; shift 2 ;;
         --se3)            SE3=1; shift ;;
         --no-wrt-start)   WRT_START=0; shift ;;
         --skip-preflight) SKIP_PREFLIGHT=1; shift ;;
@@ -128,6 +139,10 @@ if [ -n "$EPOCHS" ] && ! awk -v e="$EPOCHS" 'BEGIN { exit !(e ~ /^[0-9]*\.?[0-9]
     echo "--epochs must be a positive number, got: $EPOCHS" >&2
     exit 2
 fi
+case "$AUGMENT" in
+    noaffine|all|0) ;;
+    *) echo "--augment must be noaffine, all or 0, got: $AUGMENT" >&2; exit 2 ;;
+esac
 
 DATASET="$(cd "$DATASET" && pwd)"
 [ -n "$REPO_ID" ] || REPO_ID="$(basename "$(dirname "$DATASET")")/$(basename "$DATASET")"
@@ -262,6 +277,23 @@ else
         --policy.use_relative_actions=true
         --policy.relative_exclude_joints='["gripper"]'
     )
+fi
+
+# Augmentation runs on training frames only: lerobot passes no transforms to
+# the held-out split, and none are applied at deploy.
+if [ "$AUGMENT" != "0" ]; then
+    CMD+=(--dataset.image_transforms.enable=true)
+fi
+if [ "$AUGMENT" = "noaffine" ]; then
+    # lerobot 0.6.1's default transforms MINUS "affine". The WHOLE list must be
+    # given: `--dataset.image_transforms.tfs.affine.weight=0` is rejected, and a
+    # JSON with only the affine entry REPLACES the list, leaving 0 transforms.
+    IMAGE_TFS='{"brightness": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"brightness": [0.8, 1.2]}}, '\
+'"contrast": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"contrast": [0.8, 1.2]}}, '\
+'"saturation": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"saturation": [0.5, 1.5]}}, '\
+'"hue": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"hue": [-0.05, 0.05]}}, '\
+'"sharpness": {"weight": 1.0, "type": "SharpnessJitter", "kwargs": {"sharpness": [0.5, 1.5]}}}'
+    CMD+=(--dataset.image_transforms.tfs="$IMAGE_TFS")
 fi
 
 CMD+=(

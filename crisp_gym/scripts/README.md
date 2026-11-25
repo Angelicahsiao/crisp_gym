@@ -219,6 +219,7 @@ can be scp'd anywhere on their own.
 | `--job-name NAME` | default: the output directory's name |
 | `--se3` | cross-embodiment mode — see below |
 | `--no-wrt-start` | with `--se3`: 10-D relative state instead of the 16-D UMI-parity `[rel_pose9, gripper1, wrt_start6]` |
+| `--augment MODE` | image augmentation on training frames: `noaffine` (default; colour and sharpness jitter), `all` (also rotate/shift) or `0` (none). The same as the DiT launcher's `AUGMENT`; what it costs and why GR00T needs only the colour part: USAGE §8, "Image augmentation" |
 | `--skip-preflight` | launch without gating on `groot_preflight.py` |
 | `--dry-run` | print the command and exit |
 | `--` | everything after this is appended to the lerobot command |
@@ -323,6 +324,7 @@ STEPS=2000 ./train_groot_server.sh            # smoke test
 | `BATCH_SIZE` | `32` | |
 | `SAVE_FREQ` | `20000` | |
 | `NUM_WORKERS` | `8` | |
+| `AUGMENT` | `noaffine` | image augmentation, the same as `--augment` above |
 | `SKIP_PREFLIGHT` | `0` | `1` bypasses the dataset gate |
 | `SKIP_HUB_CHECK` | `0` | `1` bypasses the hub gate (fully cached offline) |
 | `DRY_RUN` | `0` | `1` prints the command and launches nothing |

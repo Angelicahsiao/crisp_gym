@@ -8,10 +8,9 @@ cd "$WORKDIR"
 
 # ── GR00T N1.7 fine-tune (server / bind-mount variant) ───────────────────────
 #
-# The env-var sibling of scripts/train_groot.sh. Same gates and pinned flags,
-# plus image augmentation (AUGMENT, below), which train_groot.sh does not have;
-# this one is driven by environment variables and defaults every path off its
-# OWN directory, for a training box where the script sits in a bind mount and
+# The env-var sibling of scripts/train_groot.sh. Same gates, same pinned flags,
+# same image augmentation (AUGMENT here, --augment there); this one is driven
+# by environment variables and defaults every path off its OWN directory, for a training box where the script sits in a bind mount and
 # the platform decides the cwd. Use train_groot.sh when you want to pass flags
 # and choose paths per run.
 #
@@ -69,7 +68,8 @@ cd "$WORKDIR"
 # lerobot 0.6.1's processor_groot.py. The default, noaffine, adds lerobot's
 # colour and sharpness jitter on training frames only, which is the missing
 # part; all adds lerobot's random rotate/shift on top of GR00T's crop; 0 trains
-# on the frames as recorded, as this script did before 2026-11-24.
+# on the frames as recorded, as this script did before 2026-11-24. It runs on
+# the CPU in the data workers at the stored resolution: see USAGE §8.
 #
 #   ./train_groot_server.sh                          # uses the defaults below
 #   SE3=1 ./train_groot_server.sh                    # CROSS-EMBODIMENT mode, see below

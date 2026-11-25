@@ -127,7 +127,7 @@ controllers: crisp_controllers (1 kHz) ◄─ crisp_py (50 Hz re-publish) ◄─
 | `crisp_gym/scripts` | entry points: robot, training, dataset tools, diagnostics | depends on the file; see CODE_REVIEW A1 |
 | `crisp_gym/sim` | small MuJoCo models to try ideas without the robot (`spring_pad.py`; the press-button task `button_task.py` and its dataset writer `button_dataset.py`) | numpy; mujoco only when a simulation runs; `button_dataset.py` also `record_config`, and lerobot only when writing |
 | `scripts/` (root) | `policy_server.py`, shell launchers | lerobot on the GPU PC |
-| `tests` | 43 test files, run without ROS; fakes for torch / rclpy / lerobot | — |
+| `tests` | 44 test files, run without ROS; fakes for torch / rclpy / lerobot | — |
 
 ### Where is it decided?
 

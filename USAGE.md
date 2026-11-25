@@ -925,6 +925,60 @@ checkers are in
 
 ---
 
+### Image augmentation (the `multi_task_dit` and GR00T launchers)
+
+The three launchers share one setting:
+
+| launcher | setting | default |
+|---|---|---|
+| `scripts/train_multi_task_dit_server.sh` | `AUGMENT=` | `noaffine` |
+| `scripts/train_groot_server.sh` | `AUGMENT=` | `noaffine` (no augmentation before 2026-11-24) |
+| `scripts/train_groot.sh` | `--augment` | `noaffine` (no augmentation before 2026-11-25) |
+
+- `noaffine`: lerobot's colour and sharpness jitter (brightness, contrast,
+  saturation, hue, sharpness; up to three of them per frame).
+- `all`: lerobot's full default set, which adds a random rotate and shift.
+- `0`: none.
+
+It applies to training frames only, never at deploy. Anything appended to the
+command overrides it, e.g. `--dataset.image_transforms.max_num_transforms=2`.
+
+```bash
+AUGMENT=0 ./train_groot_server.sh
+```
+
+```bash
+bash scripts/train_groot.sh --dataset DIR --output DIR --augment all
+```
+
+**GR00T already crops.** lerobot's GR00T applies the base checkpoint's
+train-time random crop (95 %, from `processor_config.json` of
+`nvidia/GR00T-N1.7-3B`) but never its colour jitter: that file sets
+`color_jitter_params`, and lerobot 0.6.1's `processor_groot.py` does not read
+it. So `noaffine` adds only the missing colour part; `all` adds lerobot's
+rotate and shift on top of GR00T's crop.
+
+**It costs CPU, not GPU.** lerobot augments in the data-loading workers, on the
+CPU, at the STORED resolution, before the model shrinks the image. Measured on
+one CPU core (a cloud session, 2026-11-25): about 200 ms for one 800x1280
+frame, 300 ms for the two frames of a `multi_task_dit` sample, and 16 ms for
+those two frames at 256x410. The DiT launcher's default batch is 320 samples of
+2 frames, 640 frames a step; GR00T's is 32 samples of 1 frame. A DiT step can
+therefore wait on data far longer than a GR00T step, although the model is
+much smaller. `reencode_dataset_videos.py` records ~27 s of waiting for data
+against ~1 s of GPU work for a `multi_task_dit` run on an 8-core H200 node.
+
+Check a run in lerobot's log line: `data_s` is the time spent waiting for data,
+`updt_s` the GPU step. When `data_s` is the larger, the CPU is the limit:
+
+- train on a smaller stored copy: `reencode_dataset_videos.py --resize 320 512`
+  (§6.2's tool; it keeps the aspect ratio and the full view, and both models
+  shrink further anyway, the DiT to 236x236, GR00T to 256 on the short side).
+  Recording stays at 800x1280 (HANDOFF §4b); this is a training copy.
+- more `NUM_WORKERS`, if the machine has the cores;
+- `AUGMENT=0` (or `--augment 0`) once, to see how much of the wait is the
+  augmentation and how much the video decoding.
+
 ## 9. Deploy a trained policy
 
 The policy outputs **relative** rot6d poses. At each step compose with the
