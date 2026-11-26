@@ -187,8 +187,9 @@ def test_an_episode_file_holds_the_documented_arrays(tmp_path):
 class FakeVideo:
     """Episodes 0..2 of 6 frames, already at whatever size is asked for."""
 
-    def __init__(self, hw=IMAGE_HW):
+    def __init__(self, hw=IMAGE_HW, no_image=None):
         self.decoded = []
+        self.no_image = no_image or {}  # episode -> frames without an image
         self.source = types.SimpleNamespace(
             ranges={0: (0, 6), 1: (6, 12), 2: (12, 18)},
             frame=lambda ep, i: np.zeros((*hw, 3), np.uint8),
@@ -196,6 +197,10 @@ class FakeVideo:
 
     def frames(self, episode, sizes):
         self.decoded.append(episode)
+        self.last_missing = list(self.no_image.get(episode, []))
+        self.last_missing_reason = (
+            "IndexError: Invalid frame index=4806" if self.last_missing else ""
+        )
         return [np.zeros((6, h, w, 3), np.uint8) for h, w in sizes]
 
 
@@ -227,6 +232,7 @@ def test_a_run_tracks_the_labelled_episodes_and_writes_the_summary(tmp_path, cap
         "query_frame": "0",
         "visible_share": "1.0",
         "jumps": "0",
+        "undecodable_frames": "0",
     }
     assert any("not in the dataset" in r.getMessage() for r in caplog.records)
 
@@ -271,8 +277,13 @@ def test_a_preview_is_drawn_for_the_episodes_asked_for(tmp_path):
 # ── decoding ──────────────────────────────────────────────────────────────────
 
 
-def _fake_dataset(rows, query_result):
+def _fake_dataset(rows, query_result, broken_rows=()):
     frames = [np.full((3, 8, 10), (r % 7) / 7.0, np.float32) for r in range(rows)]
+
+    def item(i):
+        if i in broken_rows:
+            raise IndexError(f"Invalid frame index={i}; must be less than {i}")
+        return {"cam": frames[i]}
 
     class Hf:
         data = types.SimpleNamespace(
@@ -281,13 +292,13 @@ def _fake_dataset(rows, query_result):
             )
         )
 
-    ds_obj = type(
-        "DS", (), {"__getitem__": lambda self, i: {"cam": frames[i]}, "hf_dataset": Hf()}
-    )()
+    ds_obj = type("DS", (), {"__getitem__": lambda self, i: item(i), "hf_dataset": Hf()})()
     queried = []
 
     def _query_videos(ts, ep):
         queried.append(len(ts["cam"]))
+        if any(round(t * 15) in broken_rows for t in ts["cam"]):
+            raise IndexError("Invalid frame index; must be less than the video's frame count")
         return {"cam": query_result(ts["cam"])}
 
     ds_obj.reader = types.SimpleNamespace(_query_videos=_query_videos)
@@ -320,6 +331,70 @@ def test_a_fast_decoder_that_disagrees_with_dataset_rows_is_not_used(caplog):
     assert [int(f[0, 0, 0]) for f in out] == [round((r % 7) / 7 * 255) for r in range(rows)]
     assert queried == [3]  # tried once, then row by row
     assert any("frame by frame" in r.getMessage() for r in caplog.records)
+
+
+def _matching_query(ts):
+    return np.stack([np.full((3, 8, 10), (round(t * 15) % 7) / 7.0, np.float32) for t in ts])
+
+
+def test_a_frame_without_an_image_is_filled_from_its_neighbour_and_recorded():
+    """The failure seen on a real dataset: the last row of an episode maps one
+    frame past the end of its video file, so neither decoding path can read it."""
+    pytest.importorskip("cv2")
+    rows = 20
+    source, frames, queried = _fake_dataset(rows, _matching_query, broken_rows={19})
+    video = tp.EpisodeVideo(source, chunk=8)
+    video._checked = True  # the first-episode check passed earlier
+    (out,) = video.frames(0, [(8, 10)])
+    assert out.shape == (rows, 8, 10, 3)
+    assert video.last_missing == [19]
+    assert "Invalid frame index" in video.last_missing_reason
+    np.testing.assert_array_equal(out[19], out[18])  # the nearest decoded frame
+    assert [int(f[0, 0, 0]) for f in out[:19]] == [round((r % 7) / 7 * 255) for r in range(19)]
+    (again,) = video.frames(0, [(8, 10)])  # a healthy call starts a fresh record
+    assert video.last_missing == [19]
+
+
+def test_a_frame_without_an_image_in_the_middle_takes_the_earlier_neighbour():
+    pytest.importorskip("cv2")
+    source, frames, _ = _fake_dataset(10, _matching_query, broken_rows={4})
+    video = tp.EpisodeVideo(source, chunk=4)
+    video._checked = True
+    (out,) = video.frames(0, [(8, 10)])
+    assert video.last_missing == [4]
+    np.testing.assert_array_equal(out[4], out[3])
+
+
+def test_an_episode_with_no_image_at_all_is_an_error():
+    pytest.importorskip("cv2")
+    source, _, _ = _fake_dataset(3, _matching_query, broken_rows={0, 1, 2})
+    video = tp.EpisodeVideo(source, chunk=4)
+    video._checked = True
+    with pytest.raises(RuntimeError, match="no frame of episode 0 could be decoded"):
+        video.frames(0, [(8, 10)])
+
+
+def test_the_run_marks_frames_without_an_image_and_reports_them(tmp_path, caplog):
+    video = FakeVideo(no_image={0: [5]})
+    q = queries({0: labels(door_frame=2), 1: labels(door_frame=1)})
+    tp.run(video, q, fake_track(), tmp_path)
+    with np.load(tmp_path / "episode_000000.npz") as d:
+        assert d["undecodable_frames"].tolist() == [5]
+        assert not d["visible"][5].any() and (d["visibility"][5] == 0).all()
+        assert d["visible"][4, 0]  # its neighbours are untouched
+    with np.load(tmp_path / "episode_000001.npz") as d:
+        assert d["undecodable_frames"].tolist() == []
+    with open(tmp_path / "summary.csv") as f:
+        table = list(csv.DictReader(f))
+    assert {r["undecodable_frames"] for r in table if r["episode"] == "0"} == {"1"}
+    assert {r["undecodable_frames"] for r in table if r["episode"] == "1"} == {"0"}
+    messages = " ".join(r.getMessage() for r in caplog.records)
+    assert "episode 0: frame(s) [5] have no image" in messages
+    assert "{0: [5]}" in messages
+    # a rerun that skips the tracked episodes still reports it
+    caplog.clear()
+    tp.run(FakeVideo(), q, fake_track(), tmp_path)
+    assert "{0: [5]}" in " ".join(r.getMessage() for r in caplog.records)
 
 
 if __name__ == "__main__":

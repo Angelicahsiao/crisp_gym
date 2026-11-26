@@ -40,6 +40,8 @@ OUTPUT (--out)
         visibility     float32 [T, N]     the tracker's visibility x confidence
         query_frames   int32   [N]        the clicked frame; -1 = not visible
         query_xy       float32 [N, 2]     the click; NaN = not visible
+        undecodable_frames int32 [k]      frames of the episode whose image could
+                       not be decoded (see below); empty for a healthy episode
         points, image_size, track_size, checkpoint, episode
       T = the episode's frames in dataset order, N = the points in the
       order of the queries file.
@@ -53,6 +55,15 @@ OUTPUT (--out)
 
 Episodes with an .npz already are skipped unless --overwrite, so an
 interrupted run continues where it stopped.
+
+A FRAME WITHOUT AN IMAGE
+
+    lerobot finds a row's image at round(timestamp x fps) in the video file.
+    When that lands past the end of the file (a video one frame shorter than
+    the episode's rows), the row has no image. Such a frame is tracked on its
+    neighbour's image, marked not visible, listed in undecodable_frames and
+    in the summary, and named in the log: anything else that reads that
+    row's image through lerobot fails the same way.
 """
 
 from __future__ import annotations
@@ -287,6 +298,18 @@ class EpisodeVideo:
     def _rows(self, episode: int, rows) -> list[np.ndarray]:
         return [to_hwc_uint8(self.ds[int(r)][self.camera]) for r in rows]
 
+    def _rows_tolerant(self, rows, lo: int) -> list[np.ndarray | None]:
+        """Row by row; a row whose image cannot be decoded becomes None and is recorded."""
+        out = []
+        for r in rows:
+            try:
+                out.append(to_hwc_uint8(self.ds[int(r)][self.camera]))
+            except Exception as exc:  # noqa: BLE001 — recorded and reported, not hidden
+                self.last_missing.append(int(r) - lo)
+                self.last_missing_reason = f"{type(exc).__name__}: {exc}"
+                out.append(None)
+        return out
+
     def _chunk_fast(self, episode: int, rows) -> list[np.ndarray]:
         ts = [float(self.timestamps[r]) for r in rows]
         frames = self._query({self.camera: ts}, int(episode))[self.camera]
@@ -295,11 +318,17 @@ class EpisodeVideo:
         return [to_hwc_uint8(f) for f in frames]
 
     def frames(self, episode: int, sizes: list[tuple[int, int]]) -> list[np.ndarray]:
-        """The episode at each requested (H, W), as [T, H, W, 3] uint8 arrays."""
+        """The episode at each requested (H, W), as [T, H, W, 3] uint8 arrays.
+
+        Frames whose image cannot be decoded are filled with the nearest
+        decoded frame; their indices are left in ``self.last_missing``.
+        """
         import cv2
 
         lo, hi = self.source.ranges[int(episode)]
         rows = list(range(lo, hi))
+        self.last_missing: list[int] = []
+        self.last_missing_reason = ""
         if self._query is not None and not self._checked:
             probe = [lo, (lo + hi - 1) // 2, hi - 1]
             try:
@@ -319,14 +348,31 @@ class EpisodeVideo:
         out = [[] for _ in sizes]
         for k in range(0, len(rows), self.chunk):
             part = rows[k : k + self.chunk]
-            frames = self._chunk_fast(episode, part) if self._query else self._rows(episode, part)
+            try:
+                frames = (
+                    self._chunk_fast(episode, part) if self._query else self._rows(episode, part)
+                )
+            except Exception:  # noqa: BLE001 — find out which rows, one by one
+                frames = self._rows_tolerant(part, lo)
             for f in frames:
                 for j, (h, w) in enumerate(sizes):
                     out[j].append(
-                        f
+                        None
+                        if f is None
+                        else f
                         if f.shape[:2] == (h, w)
                         else cv2.resize(f, (w, h), interpolation=cv2.INTER_LINEAR)
                     )
+        if self.last_missing:
+            good = [i for i, f in enumerate(out[0]) if f is not None]
+            if not good:
+                raise RuntimeError(
+                    f"no frame of episode {episode} could be decoded: {self.last_missing_reason}"
+                )
+            for i in self.last_missing:
+                nearest = min(good, key=lambda g: (abs(g - i), g > i))  # ties: the earlier one
+                for o in out:
+                    o[i] = o[nearest]
         return [np.stack(o) for o in out]
 
 
@@ -403,21 +449,40 @@ def run(
     pw = int(preview_width)
     ph = int(round(pw * image_hw[0] / image_hw[1]))
     rows, t_start = [], time.time()
+    broken: dict[int, list[int]] = {}
     for n, ep in enumerate(todo, 1):
         path = out_dir / f"episode_{ep:06d}.npz"
         if path.exists() and not overwrite and ep not in preview:
             logger.info("[%d/%d] episode %d: already tracked", n, len(todo), ep)
             with np.load(path) as old:
                 result = {k: old[k] for k in ("tracks", "visible", "query_frames")}
+                no_image = old["undecodable_frames"].tolist() if "undecodable_frames" in old else []
+            if no_image:
+                broken[ep] = no_image
             rows += [
-                {"episode": ep, **r} for r in summarize(result, points, image_hw, jump_fraction)
+                {"episode": ep, **r, "undecodable_frames": len(no_image)}
+                for r in summarize(result, points, image_hw, jump_fraction)
             ]
             continue
         t0 = time.time()
         sizes = [TRACK_SIZE] + ([(ph, pw)] if ep in preview else [])
         decoded = video.frames(ep, sizes)
+        no_image = sorted(getattr(video, "last_missing", []) or [])
         xy, qf = episode_queries(labelled[ep], points)
         result = track_episode(decoded[0], xy, qf, image_hw, track_fn)
+        if no_image:
+            # Tracked on a neighbour's image: not an observation of these frames.
+            result["visible"][no_image] = False
+            result["visibility"][no_image] = 0.0
+            logger.warning(
+                "episode %d: frame(s) %s have no image (%s). Tracked on the nearest "
+                "frame and marked not visible.",
+                ep,
+                no_image,
+                getattr(video, "last_missing_reason", ""),
+            )
+            broken[ep] = no_image
+        result["undecodable_frames"] = np.asarray(no_image, np.int32)
         save_episode(
             path,
             result,
@@ -428,7 +493,7 @@ def run(
             episode=ep,
         )
         summary = summarize(result, points, image_hw, jump_fraction)
-        rows += [{"episode": ep, **r} for r in summary]
+        rows += [{"episode": ep, **r, "undecodable_frames": len(no_image)} for r in summary]
         if ep in preview:
             made = write_preview(out_dir, ep, decoded[1], result, points, pw / image_hw[1], fps)
             logger.info("  preview: %s", ", ".join(p.name for p in made))
@@ -448,7 +513,15 @@ def run(
         )
     with open(out_dir / "summary.csv", "w", newline="") as f:
         writer = csv.DictWriter(
-            f, fieldnames=["episode", "point", "query_frame", "visible_share", "jumps"]
+            f,
+            fieldnames=[
+                "episode",
+                "point",
+                "query_frame",
+                "visible_share",
+                "jumps",
+                "undecodable_frames",
+            ],
         )
         writer.writeheader()
         writer.writerows(rows)
@@ -456,6 +529,13 @@ def run(
     logger.info("done: %d episode(s) in %.0f s -> %s", len(todo), time.time() - t_start, out_dir)
     if flagged:
         logger.warning("episodes with suspicious jumps (look at them with --preview): %s", flagged)
+    if broken:
+        logger.warning(
+            "frames without an image in the dataset (episode: frames): %s. lerobot reads a "
+            "row's image the same way everywhere, so anything that asks for these rows' "
+            "images fails like this run did.",
+            broken,
+        )
     return rows
 
 
