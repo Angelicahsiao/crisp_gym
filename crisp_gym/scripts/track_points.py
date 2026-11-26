@@ -215,31 +215,53 @@ def save_episode(
 # ── previews ─────────────────────────────────────────────────────────────────
 
 
+HIDDEN_BGR = (170, 170, 170)
+
+
+def _label(out, text, xy, color, scale: float) -> None:
+    import cv2
+
+    cv2.putText(out, text, xy, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 3, cv2.LINE_AA)
+    cv2.putText(out, text, xy, cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
+
+
 def draw(
     frame_bgr: np.ndarray, result: dict, t: int, points, scale: float, trail: int = 12
 ) -> np.ndarray:
-    """Tracks at frame t on one (preview-size, BGR) frame."""
+    """Tracks at frame t on one (preview-size, BGR) frame.
+
+    Visible: a filled dot in the point's colour, with its recent visible trail.
+    Hidden: a grey cross and a grey label, so the two cannot be confused even
+    in a small screenshot. A point not yet clicked, or never visible, is not drawn.
+    """
     import cv2
 
     out = frame_bgr.copy()
-    r = max(4, int(round(out.shape[1] / 160)))
+    r = max(5, int(round(out.shape[1] / 110)))
     for i, name in enumerate(points):
-        if result["query_frames"][i] < 0:
+        q = int(result["query_frames"][i])
+        if q < 0 or t < q:
             continue
         color = COLORS_BGR[i % len(COLORS_BGR)]
-        lo = max(int(result["query_frames"][i]), t - trail)
+        lo = max(q, t - trail)
         pts = [result["tracks"][k, i] * scale for k in range(lo, t + 1) if result["visible"][k, i]]
         for a, b in zip(pts, pts[1:]):
             cv2.line(
                 out, tuple(int(round(v)) for v in a), tuple(int(round(v)) for v in b), color, 2
             )
         x, y = (int(round(v)) for v in result["tracks"][t, i] * scale)
-        visible = bool(result["visible"][t, i])
-        cv2.circle(out, (x, y), r, color, -1 if visible else 2)
-        cv2.putText(out, name, (x + r + 3, y - r), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 3)
-        cv2.putText(out, name, (x + r + 3, y - r), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
-    cv2.putText(out, f"frame {t}", (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3)
-    cv2.putText(out, f"frame {t}", (8, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+        if result["visible"][t, i]:
+            cv2.circle(out, (x, y), r + 3, (0, 0, 0), -1, cv2.LINE_AA)
+            cv2.circle(out, (x, y), r + 2, (255, 255, 255), -1, cv2.LINE_AA)
+            cv2.circle(out, (x, y), r, color, -1, cv2.LINE_AA)
+            _label(out, name, (x + r + 3, y - r), color, 0.45)
+        else:
+            for dx, dy in ((r, r), (r, -r)):
+                cv2.line(out, (x - dx, y - dy), (x + dx, y + dy), (0, 0, 0), 4, cv2.LINE_AA)
+                cv2.line(out, (x - dx, y - dy), (x + dx, y + dy), HIDDEN_BGR, 2, cv2.LINE_AA)
+            _label(out, name + " (hidden)", (x + r + 3, y - r), HIDDEN_BGR, 0.4)
+    _label(out, f"frame {t}", (8, 20), (255, 255, 255), 0.55)
+    _label(out, "dot = visible, grey x = hidden", (8, out.shape[0] - 10), (255, 255, 255), 0.4)
     return out
 
 
