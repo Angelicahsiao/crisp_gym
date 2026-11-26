@@ -522,3 +522,24 @@ to `--out` at once, and a restart continues where you stopped. The output
 format is in the script's docstring. It needs lerobot (to decode the video)
 and reuses `check_policy_openloop.py`'s episode lookup, so keep both scripts
 in the same folder.
+
+### `track_points.py` (GPU PC, CUDA)
+
+Runs RoboTracker from the clicks and writes, per episode, every point's
+position and visibility in every frame (`episode_NNNNNN.npz`), a
+`summary.csv` (share of frames visible after the click, suspicious jumps),
+and MP4 + PNG previews for the episodes given to `--preview`. It does not
+change the dataset. Needs a CUDA GPU and a robotrack clone; the weights
+download on first use.
+
+```bash
+python crisp_gym/scripts/track_points.py \
+    --root /workspace/datasets/umi_electricbox/lerobot \
+    --queries /workspace/datasets/umi_electricbox/track_queries.json \
+    --robotrack-repo /workspace/team/anglica/robotrack \
+    --out /workspace/datasets/umi_electricbox/tracks \
+    --preview 0 10 40
+```
+
+Look at the previews and the flagged episodes before building anything on the
+tracks. A rerun skips episodes already tracked (`--overwrite` to redo them).
