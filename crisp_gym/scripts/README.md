@@ -565,3 +565,30 @@ python crisp_gym/scripts/track_points.py \
 
 Look at the previews and the flagged episodes before building anything on the
 tracks. A rerun skips episodes already tracked (`--overwrite` to redo them).
+
+### `build_track_dataset.py` (GPU PC) — step 3: the training copy
+
+Writes a NEW dataset (the source is not changed) whose action is
+`[pose 9, (x, y, visible) per point, gripper]`, with the track values
+normalized to the image (`x / (W-1)`, `y / (H-1)`), shifted one row like the
+pose, and held at the last visible position while a point is hidden. It also
+hides a point for a few frames around each flagged jump, and where two points
+on one object (`button_a`/`button_b`) suddenly change their distance. Videos
+are copied unchanged; statistics are recomputed; `meta/track_targets.json`
+describes the layout.
+
+```bash
+python crisp_gym/scripts/build_track_dataset.py \
+    --root /workspace/datasets/franka_electricbox/lerobot \
+    --tracks /workspace/datasets/franka_electricbox/tracks \
+    --queries /workspace/datasets/franka_electricbox/track_queries.json \
+    --out /workspace/datasets/franka_electricbox_tracks/lerobot
+```
+
+Train on it with `lerobot_relative_pose.py` as usual (`--dataset.root` = the
+new folder, `--policy.type=multi_task_dit`). For a dataset with
+`meta/track_targets.json`, and only then, the multi_task_dit loss weights the
+track dims by `--track-loss-weight` (default 0.25; pose and gripper keep 1)
+and leaves hidden points' positions out; `--no-track-loss-patch` weights every
+dim equally instead. Any other dataset trains exactly as before. Deployment
+is unchanged: the pose is read from dims 0–8 and the gripper from the last.

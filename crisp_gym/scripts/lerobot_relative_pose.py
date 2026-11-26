@@ -382,6 +382,281 @@ def recompute_relative_stats(wrapped: RelativePoseDataset, num_samples: int = 20
         logger.info(f"Recomputed relative-pose stats for '{k}' over {len(data)} frames.")
 
 
+# ── Track targets (optional) ──────────────────────────────────────────────────
+#
+# A dataset built by build_track_dataset.py carries point tracks in its action,
+# between the pose and the gripper: [pose9, (x, y, visible) per point, gripper],
+# and says so in meta/track_targets.json. For such a dataset, and ONLY for it,
+# the multi_task_dit loss is replaced by one that
+#   * weights the track dims by --track-loss-weight (pose and gripper keep 1),
+#   * leaves a point's x, y out of the loss where the point is hidden (its
+#     visible dim is 0): those values are a held placeholder, not a position.
+# A dataset without the stamp is trained exactly as before: nothing is patched.
+# The relative conversion already passes dims past the pose through unchanged,
+# and the recomputed action stats cover them, so nothing else changes.
+
+TRACK_STAMP = "meta/track_targets.json"
+DEFAULT_TRACK_LOSS_WEIGHT = 0.25
+
+_TRACK_LOSS = None          # the active TrackLoss while the patch is installed
+_ORIGINAL_LOSSES: dict = {}  # (class, name) -> original method, to restore
+
+
+def find_track_targets(dataset) -> dict | None:
+    """The dataset's track-target stamp (meta/track_targets.json), or None."""
+    import json
+    from pathlib import Path
+
+    root = getattr(dataset, "root", None)
+    if root is None:
+        return None
+    f = Path(root) / TRACK_STAMP
+    return json.loads(f.read_text()) if f.exists() else None
+
+
+class TrackLoss:
+    """Per-dim weights and the hidden-point mask for the action loss.
+
+    Args:
+        stamp: meta/track_targets.json of the dataset.
+        action_min, action_max: the action's min/max stats (what the policy's
+            MIN_MAX normalizer uses), to read visibility back from the
+            normalized action exactly as lerobot normalized it.
+        weight: loss weight of every track dim; pose and gripper dims keep 1.
+    """
+
+    def __init__(self, stamp: dict, action_min, action_max, weight: float):
+        dim = len(stamp["action_names"])
+        self.weight = float(weight)
+        w = torch.ones(dim)
+        w[list(stamp["track_dims"])] = self.weight
+        self.weights = w
+        self.pos_dims, self.vis_of_pos = [], []
+        for point in stamp["points"]:
+            for d in stamp["position_dims"][point]:
+                self.pos_dims.append(int(d))
+                self.vis_of_pos.append(int(stamp["visibility_dims"][point]))
+        lo = torch.as_tensor(np.asarray(action_min, np.float32))
+        hi = torch.as_tensor(np.asarray(action_max, np.float32))
+        if lo.numel() != dim or hi.numel() != dim:
+            raise ValueError(f"action stats have {lo.numel()} dims, the track stamp describes {dim}")
+        self.vmin, self.vmax = lo[self.vis_of_pos], hi[self.vis_of_pos]
+
+    def visible(self, action_norm: torch.Tensor) -> torch.Tensor:
+        """For each position dim: is its point visible? (..., len(pos_dims)) bool.
+
+        Inverts lerobot's MIN_MAX normalization of the visible dims (2 (x - min)
+        / (max - min) - 1). A visible dim that is constant over the dataset has
+        no usable inverse (lerobot maps it to -1); its constant value decides.
+        """
+        v = action_norm[..., self.vis_of_pos]
+        lo, hi = self.vmin.to(v), self.vmax.to(v)
+        span = hi - lo
+        raw = (v + 1) / 2 * span + lo
+        raw = torch.where(span.abs() < 1e-6, lo.expand_as(raw), raw)
+        return raw > 0.5
+
+    def reduce(self, loss: torch.Tensor, action_norm: torch.Tensor, pad=None) -> torch.Tensor:
+        """Weighted mean of the element-wise loss (B, H, D) over the kept elements.
+
+        With all weights 1 and nothing hidden this is the plain mean (or, with
+        `pad`, lerobot's padding-masked mean): the same number as unpatched.
+        """
+        m = torch.ones_like(loss)
+        m[..., self.pos_dims] = self.visible(action_norm).to(loss.dtype)
+        if pad is not None:
+            m = m * (~pad).unsqueeze(-1).to(loss.dtype)
+        wm = m * self.weights.to(loss)
+        return (loss * wm).sum() / wm.sum().clamp_min(1e-12)
+
+    def track_share(self) -> float:
+        """Share of the loss weight on track dims when every point is visible."""
+        total = float(self.weights.sum())
+        return float(self.weights[self.weights != 1].sum()) / total if total else 0.0
+
+
+def _track_reduce(objective, loss, batch, clean):
+    pad = None
+    if objective.do_mask_loss_for_padding and "action_is_pad" in batch:
+        pad = batch["action_is_pad"]
+    return _TRACK_LOSS.reduce(loss, clean, pad)
+
+
+def _mtdit_diffusion_loss(self, model, batch, conditioning_vec):
+    """multi_task_dit DiffusionObjective.compute_loss (lerobot 0.6.1), reduction replaced."""
+    import torch.nn.functional as F
+
+    clean_actions = batch[_ACTION]
+    noise = torch.randn_like(clean_actions)
+    timesteps = torch.randint(
+        low=0,
+        high=self.noise_scheduler.config.num_train_timesteps,
+        size=(clean_actions.shape[0],),
+        device=clean_actions.device,
+    ).long()
+    noisy_actions = self.noise_scheduler.add_noise(clean_actions, noise, timesteps)
+    prediction_type = self.noise_scheduler.config.prediction_type
+    if prediction_type == "epsilon":
+        target = noise
+    elif prediction_type == "sample":
+        target = clean_actions
+    else:
+        raise ValueError(f"Unsupported prediction type: {prediction_type}")
+    predicted = model(noisy_actions, timesteps, conditioning_vec=conditioning_vec)
+    loss = F.mse_loss(predicted, target, reduction="none")
+    return _track_reduce(self, loss, batch, clean_actions)
+
+
+def _mtdit_flow_loss(self, model, batch, conditioning_vec):
+    """multi_task_dit FlowMatchingObjective.compute_loss (lerobot 0.6.1), reduction replaced."""
+    import torch.nn.functional as F
+
+    data = batch[_ACTION]
+    batch_size = data.shape[0]
+    noise = torch.randn_like(data)
+    t = self._sample_timesteps(batch_size, data.device)
+    t_expanded = t.view(-1, 1, 1)
+    x_t = t_expanded * data + (1 - (1 - self.config.sigma_min) * t_expanded) * noise
+    target_velocity = data - (1 - self.config.sigma_min) * noise
+    predicted_velocity = model(x_t, t, conditioning_vec=conditioning_vec)
+    loss = F.mse_loss(predicted_velocity, target_velocity, reduction="none")
+    return _track_reduce(self, loss, batch, data)
+
+
+_ACTION = "action"
+
+# What the replaced functions must still look like. If lerobot changes them,
+# the copies above are out of date: refuse rather than train on a stale copy.
+_LOSS_FINGERPRINTS = {
+    "DiffusionObjective": (
+        "noise = torch.randn_like(clean_actions)",
+        "noisy_actions = self.noise_scheduler.add_noise(clean_actions, noise, timesteps)",
+        "predicted = model(noisy_actions, timesteps, conditioning_vec=conditioning_vec)",
+        'loss = F.mse_loss(predicted, target, reduction="none")',
+        "return loss.mean()",
+    ),
+    "FlowMatchingObjective": (
+        "noise = torch.randn_like(data)",
+        "t = self._sample_timesteps(batch_size, device)",
+        "x_t = t_expanded * data + (1 - (1 - self.config.sigma_min) * t_expanded) * noise",
+        "target_velocity = data - (1 - self.config.sigma_min) * noise",
+        'loss = F.mse_loss(predicted_velocity, target_velocity, reduction="none")',
+        "return loss.mean()",
+    ),
+}
+
+
+def install_track_loss(policy_type: str, stamp: dict, action_stats: dict, weight: float) -> TrackLoss:
+    """Replace multi_task_dit's loss with the track-aware one. Returns the TrackLoss.
+
+    Raises:
+        RuntimeError: another policy type (its loss is not patched here), or a
+            lerobot whose multi_task_dit loss no longer matches the copy.
+    """
+    import inspect
+
+    global _TRACK_LOSS
+    if policy_type != "multi_task_dit":
+        raise RuntimeError(
+            f"the track-target loss is implemented for multi_task_dit, not {policy_type!r}. "
+            "Train with --no-track-loss-patch to weight every action dim equally instead."
+        )
+    import lerobot.policies.multi_task_dit.modeling_multi_task_dit as mtdit
+
+    replacements = {"DiffusionObjective": _mtdit_diffusion_loss, "FlowMatchingObjective": _mtdit_flow_loss}
+    for name, fingerprint in _LOSS_FINGERPRINTS.items():
+        cls = getattr(mtdit, name)
+        original = _ORIGINAL_LOSSES.get((cls, "compute_loss"), cls.compute_loss)
+        source = inspect.getsource(original)
+        missing = [line for line in fingerprint if line not in source]
+        if missing:
+            raise RuntimeError(
+                f"lerobot's multi_task_dit {name}.compute_loss changed (missing: {missing}). The "
+                "track-target loss copies it from lerobot 0.6.1; update the copy in "
+                "lerobot_relative_pose.py, or train with --no-track-loss-patch."
+            )
+    if getattr(mtdit, "ACTION", _ACTION) != _ACTION:
+        raise RuntimeError(f"lerobot's ACTION key is {mtdit.ACTION!r}, expected {_ACTION!r}")
+    _TRACK_LOSS = TrackLoss(stamp, action_stats["min"], action_stats["max"], weight)
+    for name, fn in replacements.items():
+        cls = getattr(mtdit, name)
+        _ORIGINAL_LOSSES.setdefault((cls, "compute_loss"), cls.compute_loss)
+        cls.compute_loss = fn
+    return _TRACK_LOSS
+
+
+def uninstall_track_loss() -> None:
+    """Put lerobot's own loss functions back (tests, or a second run in one process)."""
+    global _TRACK_LOSS
+    for (cls, name), original in list(_ORIGINAL_LOSSES.items()):
+        setattr(cls, name, original)
+    _ORIGINAL_LOSSES.clear()
+    _TRACK_LOSS = None
+
+
+def configure_track_targets(dataset, stats: dict, policy_type: str, weight: float | None,
+                            patch: bool) -> dict | None:
+    """Decide what a dataset's track targets mean for this run; install the loss if asked.
+
+    Returns the record for pose_repr.json, or None for a dataset without track
+    targets (then nothing is installed, whatever the flags say).
+    """
+    stamp = find_track_targets(dataset)
+    if stamp is None:
+        if weight is not None or not patch:
+            logger.warning("--track-loss-weight / --no-track-loss-patch given, but this dataset has "
+                           "no %s: ignored, training as usual.", TRACK_STAMP)
+        return None
+    action_dim = len(np.asarray(stats[POSE_ACTION_KEY]["min"]).reshape(-1))
+    if len(stamp["action_names"]) != action_dim:
+        raise RuntimeError(f"{TRACK_STAMP} describes {len(stamp['action_names'])} action dims, "
+                           f"the dataset's action has {action_dim}")
+    w = DEFAULT_TRACK_LOSS_WEIGHT if weight is None else float(weight)
+    record = {k: stamp[k] for k in ("points", "action_names", "track_dims", "position_dims",
+                                    "visibility_dims", "coordinates", "row_shift", "image_size",
+                                    "camera") if k in stamp}
+    if patch:
+        tl = install_track_loss(policy_type, stamp, stats[POSE_ACTION_KEY], w)
+        logger.info(
+            "Track targets: %d points in action dims %s; loss weight %.3g (%.0f%% of the loss "
+            "weight when every point is visible); hidden positions left out of the loss.",
+            len(stamp["points"]), stamp["track_dims"], w, 100 * tl.track_share(),
+        )
+        record.update(loss_patch=True, loss_weight=w, hidden_positions_in_loss=False)
+    else:
+        logger.info("Track targets present, loss patch OFF: every action dim weighted equally, "
+                    "hidden (held) positions included.")
+        record.update(loss_patch=False, loss_weight=1.0, hidden_positions_in_loss=True)
+    return record
+
+
+def _pop_track_flags(argv: list[str]) -> tuple[float | None, bool, list[str]]:
+    """Consume --track-loss-weight W and --no-track-loss-patch (ours, not lerobot's).
+
+    Returns:
+        (weight or None for the default, patch on/off, remaining_argv)
+    """
+    weight, patch, remaining = None, True, []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--no-track-loss-patch":
+            patch = False
+        elif a == "--track-loss-weight":
+            if i + 1 >= len(argv):
+                raise SystemExit("--track-loss-weight needs a value")
+            weight = float(argv[i + 1])
+            i += 1
+        elif a.startswith("--track-loss-weight="):
+            weight = float(a.split("=", 1)[1])
+        else:
+            remaining.append(a)
+        i += 1
+    if weight is not None and weight < 0:
+        raise SystemExit("--track-loss-weight must be >= 0")
+    return weight, patch, remaining
+
+
 # ── Provenance stamping ───────────────────────────────────────────────────────
 
 def _installed_lerobot_version() -> str:
@@ -403,7 +678,7 @@ def _installed_lerobot_version() -> str:
             return "unknown"
 
 
-def stamp_pose_repr(cfg, dataset, epoch_plan=None) -> None:
+def stamp_pose_repr(cfg, dataset, epoch_plan=None, track_targets: dict | None = None) -> None:
     """Write pose_repr.json next to the checkpoints (HANDOFF §4.2).
 
     Records what the model ACTUALLY sees, so the serving side (remote policy
@@ -516,6 +791,11 @@ def stamp_pose_repr(cfg, dataset, epoch_plan=None) -> None:
         }
         if epoch_plan is not None:
             info["schedule"] = epoch_plan.as_dict()
+        if track_targets is not None:
+            # The action carries point tracks between pose and gripper; deploy
+            # still reads the pose from dims 0-8 and the gripper from the last.
+            info["action"]["layout"] = list(track_targets["action_names"])
+            info["track_targets"] = track_targets
         out_dir = Path(cfg.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "pose_repr.json").write_text(json.dumps(info, indent=2))
@@ -623,6 +903,12 @@ def main():
     epochs and the target checkpoint is the N-epoch model. Without --epochs the
     schedule is untouched and the equivalent epoch count is only logged.
 
+    CLI: --track-loss-weight W / --no-track-loss-patch matter only for a
+    dataset built by build_track_dataset.py (it has meta/track_targets.json):
+    the multi_task_dit loss then weights the track dims by W (default
+    DEFAULT_TRACK_LOSS_WEIGHT) and leaves hidden points' positions out. Any
+    other dataset trains exactly as before; the flags are ignored with a warning.
+
     These are OUR flags — stripped from argv before draccus parses the rest.
     """
     import sys
@@ -630,6 +916,7 @@ def main():
     import lerobot.scripts.lerobot_train as lerobot_train
 
     append_wrt, remaining = _pop_wrt_start_flag(sys.argv[1:])
+    track_weight, track_patch, remaining = _pop_track_flags(remaining)
     schedule_epochs, epochs, remaining = _setup_epochs(remaining)
     sys.argv = [sys.argv[0]] + remaining
     logging.basicConfig(level=logging.INFO)
@@ -642,10 +929,14 @@ def main():
         wrapped = RelativePoseDataset(dataset, append_wrt_start_to_state=append_wrt)
         logger.info("Wrapped dataset with RelativePoseDataset (UMI-style relative poses).")
         recompute_relative_stats(wrapped)
+        # Only a dataset stamped by build_track_dataset.py changes anything here.
+        tracks = configure_track_targets(
+            dataset, wrapped.meta.stats, getattr(cfg.policy, "type", None), track_weight, track_patch
+        )
         # AFTER wrapping: the wrapper is what the dataloader sees, so its len()
         # is the epoch denominator. BEFORE lerobot_train.main() reads cfg.steps.
         plan = schedule_epochs(cfg, wrapped, epochs) if schedule_epochs else None
-        stamp_pose_repr(cfg, wrapped, epoch_plan=plan)
+        stamp_pose_repr(cfg, wrapped, epoch_plan=plan, track_targets=tracks)
         return wrapped
 
     if hasattr(lerobot_train, "make_train_eval_datasets"):  # lerobot >= 0.5
