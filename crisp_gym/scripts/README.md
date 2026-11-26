@@ -497,3 +497,28 @@ python3 check_policy_openloop.py \
 
 It expects a local copy of `lerobot_relative_pose.py` in the same folder and is
 oriented to the relative pipeline.
+
+## Point-track labels
+
+### `click_track_points.py` (GPU PC, where the dataset is)
+
+Records, for every episode, where a fixed set of named points is (for example
+two on the button and two on the door) and on which frame. These are the
+query points a point tracker such as RoboTracker follows; the tracker itself
+does not find objects. The tool serves a page on the GPU machine; open it from
+your own computer through an SSH tunnel (forward port 8899).
+
+```bash
+python crisp_gym/scripts/click_track_points.py \
+    --root /workspace/datasets/umi_electricbox/lerobot \
+    --camera observation.images.oakw_cam \
+    --points button_a button_b door_a door_b \
+    --out /workspace/datasets/umi_electricbox/track_queries.json
+```
+
+Click each point (X = not visible in this episode), Enter saves and opens the
+next unlabelled episode; arrow keys step frames. Each saved episode is written
+to `--out` at once, and a restart continues where you stopped. The output
+format is in the script's docstring. It needs lerobot (to decode the video)
+and reuses `check_policy_openloop.py`'s episode lookup, so keep both scripts
+in the same folder.
