@@ -42,6 +42,15 @@ Click the same physical spot in every episode, on a part with texture (an
 edge, a corner, a printed mark): a tracker cannot hold a point on a plain
 surface. RoboTracker tracks FORWARD from the query frame, so the earliest
 frame where the point is clearly visible is the best one to click on.
+
+SUGGESTIONS (--suggestions, optional)
+
+    prefill_track_points.py carries one clicked episode's points into every
+    episode. With its output given here, an episode you have not saved yet
+    opens with those points already placed (dashed, labelled "?"): Enter
+    accepts them, "redo" next to a point in the list removes it so you can
+    click it yourself. A point without a suggestion is clicked as usual.
+    Nothing is saved until you press Enter.
 """
 
 from __future__ import annotations
@@ -197,6 +206,48 @@ class LabelStore:
         os.replace(tmp, self.path)
 
 
+def load_suggestions(path, store: "LabelStore") -> dict:
+    """Suggested clicks per episode, checked against the labels being made.
+
+    The file must be for the same point names (in the same order) and the
+    same image size; the camera must match too. Episodes the dataset does not
+    have, and clicks outside their episode or the image, are dropped with a
+    warning. A labels file is accepted as well (its clicks become suggestions).
+
+    Returns {episode (str): {point: {frame, x, y} or None}}.
+    """
+    data = json.loads(Path(path).read_text())
+    problems = [
+        f"{key}: the suggestions have {data.get(key)!r}, these labels {store.data[key]!r}"
+        for key in ("points", "image_size", "camera")
+        if data.get(key) != store.data[key]
+    ]
+    if problems:
+        raise LabelError(f"{path} does not fit these labels:\n  " + "\n  ".join(problems))
+    out, dropped = {}, []
+    for ep, clicks in (data.get("episodes") or {}).items():
+        if int(ep) not in store.episode_frames:
+            dropped.append(f"episode {ep}: not in this dataset")
+            continue
+        assignment = {}
+        for name in store.points:
+            click = (clicks or {}).get(name)
+            if click is None:
+                assignment[name] = None
+                continue
+            try:
+                single = store.validate(int(ep), {**{n: None for n in store.points}, name: click})
+                assignment[name] = single[name]
+            except LabelError as exc:
+                dropped.append(f"episode {ep}, {name}: {exc}")
+                assignment[name] = None
+        out[str(int(ep))] = assignment
+    if dropped:
+        logger.warning("%d suggestion(s) dropped:\n  %s", len(dropped), "\n  ".join(dropped[:20]))
+    logger.info("suggestions for %d episode(s) from %s", len(out), path)
+    return out
+
+
 # ── frames ────────────────────────────────────────────────────────────────────
 
 def to_hwc_uint8(image) -> np.ndarray:
@@ -268,8 +319,9 @@ class ClickServer:
     """Serves the click page and its API for one frame source and one label store."""
 
     def __init__(self, source, store: LabelStore, host: str = "127.0.0.1", port: int = 8899,
-                 cache_size: int = 256):
+                 cache_size: int = 256, suggestions: dict | None = None):
         self.source, self.store = source, store
+        self.suggestions = dict(suggestions or {})
         self._cache: collections.OrderedDict = collections.OrderedDict()
         self._cache_size = int(cache_size)
         self._cache_lock = threading.Lock()
@@ -326,6 +378,7 @@ class ClickServer:
             "episodes": sorted(frames),
             "n_frames": {str(e): n for e, n in frames.items()},
             "labels": {str(e): self.store.get(e) for e in self.store.labelled()},
+            "suggestions": self.suggestions,
             "out": str(self.store.path),
         }
 
@@ -452,7 +505,7 @@ PAGE = r"""<!doctype html>
 </main>
 <script>
 const COLORS = ["#ff3b30","#34c759","#0a84ff","#ffcc00","#bf5af2","#ff9f0a","#64d2ff","#ff375f"];
-let S = null, ep = null, frame = 0, assign = {}, order = [], dirty = false;
+let S = null, ep = null, frame = 0, assign = {}, order = [], dirty = false, suggested = new Set();
 const view = document.getElementById("view"), ctx = view.getContext("2d");
 const img = new Image();
 const $ = id => document.getElementById(id);
@@ -479,9 +532,16 @@ function firstUnlabelled(after) {
 
 function openEpisode(e) {
   if (dirty && !confirm("This episode has unsaved clicks. Leave it?")) return;
-  ep = e; assign = {}; order = []; dirty = false; say("");
+  ep = e; assign = {}; order = []; dirty = false; suggested = new Set(); say("");
   const saved = S.labels[String(e)];
+  const sugg = (S.suggestions || {})[String(e)];
   if (saved) { for (const p of S.points) { assign[p] = saved[p]; order.push(p); } }
+  else if (sugg) {
+    for (const p of S.points) {
+      const c = sugg[p];
+      if (c) { assign[p] = {frame: c.frame, x: c.x, y: c.y}; order.push(p); suggested.add(p); }
+    }
+  }
   const clicked = Object.values(assign).filter(c => c);
   frame = clicked.length ? Math.min(...clicked.map(c => c.frame)) : 0;
   $("slider").max = nFrames() - 1;
@@ -510,11 +570,13 @@ function fit() {
 }
 window.addEventListener("resize", () => { fit(); draw(); });
 
-function marker(c, x, y, label, color) {
+function marker(c, x, y, label, color, dashed) {
   const k = scaleOf(c.canvas), r = 7 * k;
   c.lineWidth = 2 * k;
+  if (dashed) { c.setLineDash([4 * k, 3 * k]); label = label + " ?"; }
   c.strokeStyle = "#000"; c.beginPath(); c.arc(x, y, r + k, 0, 2 * Math.PI); c.stroke();
   c.strokeStyle = color; c.beginPath(); c.arc(x, y, r, 0, 2 * Math.PI); c.stroke();
+  c.setLineDash([]);
   c.beginPath(); c.moveTo(x - r * 1.6, y); c.lineTo(x + r * 1.6, y); c.moveTo(x, y - r * 1.6); c.lineTo(x, y + r * 1.6); c.stroke();
   c.font = "bold " + (13 * k) + "px system-ui, sans-serif";
   const tw = c.measureText(label).width;
@@ -529,7 +591,7 @@ function draw() {
   ctx.drawImage(img, 0, 0);
   S.points.forEach((p, i) => {
     const c = assign[p];
-    if (c && c.frame === frame) marker(ctx, c.x + 0.5, c.y + 0.5, p, COLORS[i % COLORS.length]);
+    if (c && c.frame === frame) marker(ctx, c.x + 0.5, c.y + 0.5, p, COLORS[i % COLORS.length], suggested.has(p));
   });
 }
 
@@ -537,7 +599,9 @@ function render() {
   const idx = S.episodes.indexOf(ep);
   $("where").textContent = "Episode " + ep + " (" + (idx + 1) + " of " + S.episodes.length + ") · frame " + frame + " / " + (nFrames() - 1);
   const p = nextPoint();
-  $("prompt").textContent = p ? "Click: " + p : "All points set — press Enter to save";
+  $("prompt").textContent = p ? "Click: " + p + (suggested.size ? "  (dashed = suggested)" : "")
+    : suggested.size ? "Suggested points are dashed — Enter accepts them, or redo a wrong one"
+    : "All points set — press Enter to save";
   $("progress").textContent = Object.keys(S.labels).length + " of " + S.episodes.length + " episodes labelled" + (dirty ? " · unsaved" : "");
   const list = $("list"); list.innerHTML = "";
   S.points.forEach((name, i) => {
@@ -549,8 +613,15 @@ function render() {
     if (!(name in assign)) where.textContent = "—";
     else if (assign[name] === null) where.textContent = "not visible";
     else {
-      const a = document.createElement("a"); a.textContent = "frame " + assign[name].frame;
+      const a = document.createElement("a");
+      a.textContent = (suggested.has(name) ? "suggested, frame " : "frame ") + assign[name].frame;
       a.onclick = () => showFrame(assign[name].frame); where.append(a);
+    }
+    if (name in assign) {
+      const redo = document.createElement("a"); redo.textContent = "redo"; redo.className = "redo";
+      redo.title = "remove this point and click it again";
+      redo.onclick = () => { delete assign[name]; order = order.filter(n => n !== name); suggested.delete(name); dirty = true; draw(); render(); };
+      where.append(" \u00b7 ", redo);
     }
     li.append(where); list.append(li);
   });
@@ -587,7 +658,7 @@ view.addEventListener("click", ev => {
   order.push(p); dirty = true; say(""); draw(); render();
 });
 
-function undo() { const p = order.pop(); if (p !== undefined) { delete assign[p]; dirty = true; draw(); render(); } }
+function undo() { const p = order.pop(); if (p !== undefined) { delete assign[p]; suggested.delete(p); dirty = true; draw(); render(); } }
 function skip() { const p = nextPoint(); if (p) { assign[p] = null; order.push(p); dirty = true; render(); } }
 async function save() {
   if (nextPoint()) { say("Set every point first (click it, or X for not visible)."); return; }
@@ -645,6 +716,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--points", nargs="+", required=True,
                    help="point names in click order, e.g. button_a button_b door_a door_b")
     p.add_argument("--out", required=True, help="labels JSON; resumed when it already exists")
+    p.add_argument("--suggestions", default=None,
+                   help="suggested clicks from prefill_track_points.py, placed in unsaved episodes")
     p.add_argument("--host", default="127.0.0.1",
                    help="interface to serve on. 127.0.0.1 = reachable only through an SSH tunnel")
     p.add_argument("--port", type=int, default=8899)
@@ -667,7 +740,14 @@ def main(argv: list[str] | None = None) -> int:
     except LabelError as exc:
         logger.error("%s", exc)
         return 2
-    server = ClickServer(source, store, host=args.host, port=args.port)
+    suggestions = None
+    if args.suggestions:
+        try:
+            suggestions = load_suggestions(args.suggestions, store)
+        except LabelError as exc:
+            logger.error("%s", exc)
+            return 2
+    server = ClickServer(source, store, host=args.host, port=args.port, suggestions=suggestions)
     logger.info("%d episodes, %d frames, images %dx%d; %d already labelled",
                 len(frames), sum(frames.values()), image_size[1], image_size[0], len(store.labelled()))
     logger.info("serving on http://%s:%d  (labels -> %s)", args.host, server.port, store.path)

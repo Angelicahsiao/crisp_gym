@@ -523,6 +523,28 @@ format is in the script's docstring. It needs lerobot (to decode the video)
 and reuses `check_policy_openloop.py`'s episode lookup, so keep both scripts
 in the same folder.
 
+### `prefill_track_points.py` (GPU PC, CUDA) — optional, before clicking
+
+Carries one clicked episode's points into every episode of a dataset (the
+reference may be from another dataset of the same task, e.g. the UMI clicks
+for a robot dataset). Each suggestion comes from RoboTracker on a two-image
+clip [reference frame, episode frame 0]; a point the tracker does not find
+(visibility < 0.6) gets no suggestion.
+
+```bash
+python crisp_gym/scripts/prefill_track_points.py \
+    --root /workspace/datasets/franka_electricbox/lerobot \
+    --reference-root /workspace/datasets/umi_electricbox/lerobot \
+    --reference-queries /workspace/datasets/umi_electricbox/track_queries.json \
+    --reference-episode 0 \
+    --robotrack-repo /workspace/team/anglica/robotrack \
+    --out /workspace/datasets/franka_electricbox/track_suggestions.json
+```
+
+Then add `--suggestions /workspace/datasets/franka_electricbox/track_suggestions.json`
+to `click_track_points.py`: unsaved episodes open with the suggested points
+placed (dashed, "?"). Enter accepts them; "redo" next to a point re-clicks it.
+
 ### `track_points.py` (GPU PC, CUDA)
 
 Runs RoboTracker from the clicks and writes, per episode, every point's
