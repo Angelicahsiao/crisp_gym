@@ -585,7 +585,15 @@ python crisp_gym/scripts/build_track_dataset.py \
     --out /workspace/datasets/franka_electricbox_tracks/lerobot
 ```
 
-Train on it with `lerobot_relative_pose.py` as usual (`--dataset.root` = the
+On the training server, `scripts/train_tracks_server.sh` does this build and
+then the training in one go, through `train_multi_task_dit_server.sh` (copy
+both beside the crisp_gym clone; only `DATASET` is required):
+
+```bash
+DATASET=/workspace/datasets/franka_electricbox/lerobot ./train_tracks_server.sh
+```
+
+Or train on it with `lerobot_relative_pose.py` directly (`--dataset.root` = the
 new folder, `--policy.type=multi_task_dit`). For a dataset with
 `meta/track_targets.json`, and only then, the multi_task_dit loss weights the
 track dims by `--track-loss-weight` (default 0.25; pose and gripper keep 1)
