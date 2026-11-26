@@ -576,3 +576,65 @@ the `Done` lines of step 4, and the table and the two `[openloop]` lines of
 each run in step 6.
 
 **Result:** not run yet.
+
+---
+
+## Sheet 6 · The first DiT pair, rolled out in the simulation (ROADMAP F7, steps 3–4)
+
+**Why.** Sheet 5 trained the measured and the command model at 400 N/m. This
+runs each of them, closed loop, on 50 new button setups (seed 2: neither the
+training data, seed 0, nor the held-out check, seed 1) for 20 s each, and
+counts clicks. It is the first answer to Q1 in simulation. The model side is
+the deploy code itself (`relative_lerobot_policy.inference_worker`, the same
+frames, the same composition against the pose at observation time, the same
+30 mm step limit), so a model that fails here would fail the same way on the
+robot. Tested in a cloud session on CPU with that worker and a 10-step
+checkpoint, and with fake models: one that pushes past the button clicks it,
+one that commands the button's top never does. Needs sheet 5 first.
+
+1. Get the newest code.
+
+```bash
+cd /workspace/team/anglica/crisp_gym && git pull && git log --oneline -1
+```
+
+2. Print the rollout command with both epoch-target checkpoints. It reuses
+   the CLIP text encoder the DiT launcher downloaded (`HF_HOME`).
+
+```bash
+cd /workspace/team/anglica && python -c "
+import glob, re
+paths = []
+for run in ('measured', 'command'):
+    out = '/workspace/team/anglica/outputs/train/sim_dit_k400_' + run
+    step = int(re.findall(r'target checkpoint at step (\d+)', open(out + '/train.log').read())[0])
+    ckpt = [d for d in glob.glob(out + '/checkpoints/*') if d.split('/')[-1].isdigit() and int(d.split('/')[-1]) == step][0]
+    paths.append(ckpt + '/pretrained_model')
+print('HF_HOME=/workspace/team/anglica/.home/.cache/huggingface python crisp_gym/crisp_gym/sim/button_rollout.py --checkpoint ' + paths[0] + ' --checkpoint ' + paths[1] + ' --out /workspace/team/anglica/outputs/sim_rollouts_k400.json')
+"
+```
+
+**Works:** one line starting `HF_HOME=`.
+
+3. Run the printed line from `/workspace/team/anglica`. It takes several
+   minutes (100 rollouts of up to 20 s of physics on the CPU).
+
+**Works:** per checkpoint a line `...: arm action = {'kind': 'measured', ...}`
+(or `'command'`), progress lines every 10 rollouts, then a table:
+
+| column | meaning |
+|---|---|
+| `click` | share of rollouts in which the button clicked |
+| `+slide` | clicked, then slid at least 10 mm on the panel at 1 N or more |
+| `to click` | median time to the click |
+| `push/need` | median of the largest force in the second after the click over the force that button needs: about 1 = just enough, much more = slamming |
+| `peak F` | the largest force in any rollout |
+| `artef` | rollouts with a simulation artefact (fingertips sunk into the panel, button pushed through its stop); listed in the JSON, read the rest without them |
+
+The `scripted demonstrator` row is the reference and should read 100 % /
+100 % with `push/need` near 1.00. If the command model clicks clearly more
+often than the measured one, the command label matters at this stiffness.
+
+**Paste back:** the two `arm action` lines and the table.
+
+**Result:** not run yet.

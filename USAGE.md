@@ -1889,6 +1889,26 @@ episode.columns["action"]     # [frames, 10] float32, the dataset's columns
 episode.phases                # the demonstrator's phase at each frame
 ```
 
+**Roll a trained checkpoint out in the simulation.** `button_rollout.py` plays
+each checkpoint, closed loop, on new button setups (seed 2) and prints a table:
+how often the button clicks, how often it clicks and then slides on the panel,
+time to the click, how hard it pushes after the click against what the button
+needs, the peak force, and simulation artefacts. The scripted demonstrator on
+the same setups is the reference row. The model side is the deploy worker of
+`relative_lerobot_policy.py`, so the frames, the relative-pose conversion, the
+composition against the pose at observation time and the 30 mm step limit are
+the robot's. Needs lerobot, torch and mujoco (the GPU PC); RUN_SHEETS sheet 6
+has the commands. The deploy path passes `observation.state`, the task and
+images, never `observation.environment_state`, so this serves
+`multi_task_dit` and GR00T, not diffusion trained on that input.
+
+```bash
+python crisp_gym/sim/button_rollout.py \
+    --checkpoint outputs/train/sim_dit_k400_measured/checkpoints/<step>/pretrained_model \
+    --checkpoint outputs/train/sim_dit_k400_command/checkpoints/<step>/pretrained_model \
+    --out outputs/sim_rollouts_k400.json
+```
+
 Not modelled: rotation, a soft skin, sensor noise, the arm's own friction, the
 real stack's timing, and a camera. Compare variants with it (measured against
 command label, stiffness against stiffness); do not carry its numbers to the

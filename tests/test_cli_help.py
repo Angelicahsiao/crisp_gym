@@ -42,6 +42,7 @@ ROS_FREE = [
     # so --help works without them
     REPO / "crisp_gym" / "sim" / "spring_pad.py",
     REPO / "crisp_gym" / "sim" / "button_dataset.py",
+    REPO / "crisp_gym" / "sim" / "button_rollout.py",
 ]
 
 # Import torch or lerobot at the top, so they start only where those are.
@@ -88,5 +89,11 @@ def test_every_script_is_listed_or_excluded_on_purpose():
     listed = {p.name for p in ROS_FREE} | {p.values[0].name for p in NEEDS_MORE}
     on_disk = {p.name for p in SCRIPTS.glob("*.py")}
     assert on_disk - listed - excluded == set()
-    elsewhere = {"code_metrics.py", "policy_server.py", "spring_pad.py", "button_dataset.py"}
+    elsewhere = {
+        "code_metrics.py",
+        "policy_server.py",
+        "spring_pad.py",
+        "button_dataset.py",
+        "button_rollout.py",
+    }
     assert (listed | excluded) - on_disk - elsewhere == set()

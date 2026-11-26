@@ -153,7 +153,7 @@ feature's section in the same commit.
 | F4 | One-camera Franka configs (`dric_franka_oakw_*`) | FAKES (YAML checks) | never started on the robot | robot |
 | F5 | Policy server and asynchronous inference | REAL on one machine | the robot-to-GPU link; async on the robot; speed options for `multi_task_dit` | robot + GPU PC |
 | F6 | Gripper command as a label | FAKES | no dataset has it; the swap tool ignores the gripper | robot, then code |
-| F7 | Simulation | press-button task and dataset writer REAL (GPU PC, sheet 4, 2026-11-26) | the first DiT pair (sheet 5); a rollout script; `tactile_envs`; the real controller in MuJoCo | GPU PC, cloud, then owner's PC |
+| F7 | Simulation | press-button task and dataset writer REAL (GPU PC, sheet 4, 2026-11-26); rollout script BUILT | the first DiT pair (sheet 5) and its rollouts (sheet 6); `tactile_envs`; the real controller in MuJoCo | GPU PC, then owner's PC |
 | F8 | Residual model (relabel handheld data) | not started | everything; depends on F1 and F7 | research |
 | F9 | Tactile | ON HOLD (hardware) | recording on the robot, time stamps, the probe | owner |
 | F10 | The test suite in the real environments | never run there | one pytest run each on robot PC and GPU PC | owner |
@@ -398,6 +398,10 @@ time. Plan and simulators: `RESEARCH_FORCE_TACTILE.md`.
   `crisp_gym/sim/button_dataset.py` previews an episode or writes one LeRobot
   dataset per stiffness (USAGE §15). Tests: `tests/test_sim_button_task.py`,
   `tests/test_sim_button_dataset.py`.
+- `crisp_gym/sim/button_rollout.py`: runs trained checkpoints closed loop on
+  new setups through the deploy worker and counts clicks, slides and forces,
+  with the scripted demonstrator as the reference. Tests:
+  `tests/test_sim_button_rollout.py`.
 
 **To finish.**
 1. **Done 2026-11-23 (commit `768f6ba`).** [cloud] A small task driven by a
@@ -411,11 +415,14 @@ time. Plan and simulators: `RESEARCH_FORCE_TACTILE.md`.
 2. **Done 2026-11-26 (owner, GPU PC).** `RUN_SHEETS.md` sheet 4: the
    datasets, the audit (it recovers the simulator's lag and force), the command
    copies, smoke trainings of both policies with the right stamps. HANDOFF §7.
-3. [cloud] A rollout script: load a trained checkpoint, run it in the
-   simulation through the same relative-pose conversion as deployment, and
-   count clicks, the force at the click and its overshoot. Without it the
-   comparison has training losses only. (Owner, 2026-11-26: next, after the
-   first pair of step 4 is training.)
+3. **Built 2026-11-26.** [cloud] `button_rollout.py`: the deploy worker of
+   `relative_lerobot_policy.py` in a thread, the deploy frames, composition and
+   30 mm step limit, 50 setups of seed 2, 20 s each (owner's choices). Checked
+   on CPU with the real worker and a 10-step checkpoint, and with fake models
+   (pushing past the button clicks, commanding its top never does). Not yet on
+   the GPU PC: `RUN_SHEETS.md` sheet 6. "Force at the click" was dropped as a
+   measure: at the click the force always equals what the button needs; the
+   push in the second after the click is reported instead.
 4. [GPU PC] Run F1 in simulation. Owner's choice (2026-11-26): `multi_task_dit`
    only, 200 epochs, first the pair at 400 N/m (`RUN_SHEETS.md` sheet 5), then
    200 and 800 N/m once the rollouts of step 3 show an answer.

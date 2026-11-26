@@ -185,6 +185,7 @@ Repos involved (same owner, branch conventions apply to all):
 | `crisp_gym/scripts/add_environment_state.py` | Offline, ROS-free: copies a dataset and joins chosen columns into `observation.environment_state`, the second low-dimensional input diffusion and ACT read (`multi_task_dit` does not). Adds the feature, statistics in all three places, and `meta/environment_state.json`. Refuses missing, constant, NaN and image columns. Tests: `tests/test_add_environment_state.py`. USAGE §7.1. |
 | `RESEARCH_FORCE_TACTILE.md` | Force / tactile research plan: questions, prior work by idea, laptop-class simulators, what was executed, staged experiments. |
 | `crisp_gym/sim/spring_pad.py` | MuJoCo, CPU, no ROS: a pad of taxels on a spring (position servo) pressed onto a peg, read with the `touch_grid` sensor. Shows stiffness x (command - measured) = summed taxel force. `pip install mujoco`. Tests: `tests/test_sim_spring_pad.py`. |
+| `crisp_gym/sim/button_rollout.py` | Closed-loop rollouts of trained checkpoints in the press-button simulation through the deploy worker of `relative_lerobot_policy.py`; clicks, slides, forces, the scripted demonstrator as reference. USAGE §15, RUN_SHEETS sheet 6. Tests: `tests/test_sim_button_rollout.py`. |
 | `crisp_gym/sim/button_task.py`, `crisp_gym/sim/button_dataset.py` | MuJoCo, CPU, no ROS: the press-button task (two 6 x 12 fingertip skins on a 3-D spring K press a spring button, then slide on the panel) with a scripted demonstrator; columns of a Franka recording plus the true contact force. `button_dataset.py` previews an episode or writes a LeRobot dataset (writing needs lerobot). USAGE §15, ROADMAP F7, RUN_SHEETS sheet 4. Tests: `tests/test_sim_button_task.py`, `tests/test_sim_button_dataset.py`. |
 | `tests/test_cli_help.py` | Starts every ROS-free script with `--help`; fails when a script is added to `crisp_gym/scripts` without being listed there or excluded with a reason. |
 | `GUIDE_REMOTE_SERVER_AND_TACTILE.md` | USER-FACING how-to for the policy server and the tactile scripts. Keep it in step with `scripts/policy_server.py` options, the `server:` YAML block and the audit's flags. |
@@ -1177,6 +1178,15 @@ established so far — verify before contradicting them:
   episodes, which also weighs on the R2 of −300 from `ur_electricbox`'s 10
   episodes below. Next: sheet 5 (one DiT pair at 400 N/m, 200 epochs; the
   owner's choice) and the rollout script (ROADMAP F7).
+- **The deploy path never sends `observation.environment_state` (found
+  2026-11-26, building the rollout).** `numpy_obs_to_torch`
+  (`util/lerobot_features.py`) passes `observation.state*`, `task` and
+  `observation.images*` only, and `build_obs_frame` builds no environment
+  state. A checkpoint that reads it (diffusion or ACT trained after
+  `add_environment_state.py`, ROADMAP F2's alternative route) gets it in
+  training and nothing on the robot. `multi_task_dit` and GR00T do not read it,
+  so the simulated datasets' copy of the button position there is harmless.
+  Not fixed; another reason for the `observation.state` route (D-10).
 - Planned order: audit existing data → robot-only ablation of measured-pose vs
   command action (true commands exist, no residual model needed) → residual
   model on robot data → relabel handheld data into a NEW column (never
