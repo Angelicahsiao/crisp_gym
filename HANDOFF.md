@@ -1153,10 +1153,7 @@ established so far — verify before contradicting them:
   `SKIP_PREFLIGHT=1` for the missing camera) run unchanged on its datasets,
   and the checkpoints are stamped `measured` / `command`. The audit's step B
   recovers the simulator's lag exactly, 2·√(m/K): 141 ms at 400 N/m, 200 ms
-  at 200 N/m. Its step D gives tactile alone R2 −0.5 to 0.3 on contact frames
-  even on noise-free simulated skins (x and y there are mostly sliding lag,
-  which normal forces cannot show; z should follow the summed force), in line
-  with the step-D weakness below; not investigated further. Physics found and
+  at 200 N/m. Physics found and
   fixed while building it: the light button cap sank into the fingertips on
   release (MuJoCo's softness scales with how hard a body is pushed; stiffer
   contacts); 144 box contacts flickered on the panel (one sphere per taxel);
@@ -1166,6 +1163,20 @@ established so far — verify before contradicting them:
   panel contacts, noslip, a 4x smaller step; gone without friction), so the
   skins and the true force are averaged per frame. About 1 s per episode on
   one CPU core.
+- **Simulated data on the GPU PC (2026-11-26, owner, RUN_SHEETS sheet 4).**
+  The 400 N/m dataset (200 episodes, 20,111 frames) and its audit match what
+  the simulator was given: lag 141.4 / 141.6 / 142.0 ms against 141.4; largest
+  contact spring force 15.2 N against the hardest button's 15 N; the command
+  leads along base z only. DiT and diffusion smoke runs on both copies stamped
+  `measured` / `command` correctly. CORRECTION to the entry above: on the 12
+  cloud episodes the audit's step D gave tactile alone R2 −0.5 to 0.3, and that
+  entry read it as the step-D weakness. On these 200 episodes the same step
+  gives R2 0.95 for the vertical residual on contact frames (x and y 0.0: the
+  skins measure normal force only, the sideways gap is sliding friction), and
+  tactile + velocity 0.77 / 0.77 / 0.98. So the weak result was mostly too few
+  episodes, which also weighs on the R2 of −300 from `ur_electricbox`'s 10
+  episodes below. Next: sheet 5 (one DiT pair at 400 N/m, 200 epochs; the
+  owner's choice) and the rollout script (ROADMAP F7).
 - Planned order: audit existing data → robot-only ablation of measured-pose vs
   command action (true commands exist, no residual model needed) → residual
   model on robot data → relabel handheld data into a NEW column (never

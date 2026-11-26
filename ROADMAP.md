@@ -153,7 +153,7 @@ feature's section in the same commit.
 | F4 | One-camera Franka configs (`dric_franka_oakw_*`) | FAKES (YAML checks) | never started on the robot | robot |
 | F5 | Policy server and asynchronous inference | REAL on one machine | the robot-to-GPU link; async on the robot; speed options for `multi_task_dit` | robot + GPU PC |
 | F6 | Gripper command as a label | FAKES | no dataset has it; the swap tool ignores the gripper | robot, then code |
-| F7 | Simulation | press-button task and dataset writer BUILT; the tools ran on its data with the real lerobot 0.6.1 on CPU (cloud) | the GPU-PC run (sheet 4); a rollout script; `tactile_envs`; the real controller in MuJoCo | GPU PC, cloud, then owner's PC |
+| F7 | Simulation | press-button task and dataset writer REAL (GPU PC, sheet 4, 2026-11-26) | the first DiT pair (sheet 5); a rollout script; `tactile_envs`; the real controller in MuJoCo | GPU PC, cloud, then owner's PC |
 | F8 | Residual model (relabel handheld data) | not started | everything; depends on F1 and F7 | research |
 | F9 | Tactile | ON HOLD (hardware) | recording on the robot, time stamps, the probe | owner |
 | F10 | The test suite in the real environments | never run there | one pytest run each on robot PC and GPU PC | owner |
@@ -408,14 +408,17 @@ time. Plan and simulators: `RESEARCH_FORCE_TACTILE.md`.
    `swap_action_offline.py` makes the command copy; 20 diffusion steps and 10
    `multi_task_dit` steps (through the launcher) train on both copies, each
    checkpoint stamped `measured` / `command`.
-2. [owner, GPU PC] `RUN_SHEETS.md` sheet 4: the datasets at 200, 400 and
-   800 N/m, the audit, the command copies, smoke trainings of both policies.
+2. **Done 2026-11-26 (owner, GPU PC).** `RUN_SHEETS.md` sheet 4: the
+   datasets, the audit (it recovers the simulator's lag and force), the command
+   copies, smoke trainings of both policies with the right stamps. HANDOFF §7.
 3. [cloud] A rollout script: load a trained checkpoint, run it in the
    simulation through the same relative-pose conversion as deployment, and
    count clicks, the force at the click and its overshoot. Without it the
-   comparison has training losses only. (Owner: later.)
-4. [GPU PC] Run F1 in simulation at the three stiffness values: the measured
-   and the command model for each, then the rollouts of step 3.
+   comparison has training losses only. (Owner, 2026-11-26: next, after the
+   first pair of step 4 is training.)
+4. [GPU PC] Run F1 in simulation. Owner's choice (2026-11-26): `multi_task_dit`
+   only, 200 epochs, first the pair at 400 N/m (`RUN_SHEETS.md` sheet 5), then
+   200 and 800 N/m once the rollouts of step 3 show an answer.
 5. [owner's PC] `tactile_envs` (a Robotiq 2F-85 with taxel pads); it could not
    be executed in a cloud session.
 6. [owner's PC] The real controller in MuJoCo (`FRANKA_FAKE_HARDWARE=true`).

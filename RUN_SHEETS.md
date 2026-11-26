@@ -464,10 +464,115 @@ for f in sorted(glob.glob('/workspace/team/anglica/outputs/train/sim_smoke_*/pos
 7, sections B and F of step 6, the last 20 lines of steps 8 and 9, and the
 output of step 10.
 
-**Result:** not run yet.
+**Result (2026-11-26, owner, GPU PC):** works.
+- Step 5: `sim_button_k400` written, 200 episodes, 20,111 frames. The 200 and
+  800 N/m `Done` lines were not pasted.
+- Step 6, the audit, against the values the simulator was given: tracking lag
+  141.4 / 141.6 / 142.0 ms (x / y / z) against 141.4 expected; largest contact
+  spring force 15.2 N against the hardest button's 15 N; in contact the command
+  leads along base z only (−12.4 mm mean, x and y about 0); no step over the
+  30 mm limit. Section F: 10.5 mm median gap in contact at the best lookahead,
+  0.6 mm in free motion. Section D: tactile alone predicts the vertical
+  residual with R² 0.95 on contact frames (x and y 0.0: the skins measure
+  normal force only, the sideways gap is sliding friction); tactile + velocity
+  0.77 / 0.77 / 0.98.
+- Step 10: the four smoke checkpoints stamped `command` / `measured`
+  correctly; the folders were deleted afterwards. The logs of steps 8 and 9
+  were not pasted.
 
 **After it works.** Delete the four `sim_smoke_*` folders and keep the six
 datasets. The full comparison is the same pair (recording against command
 copy) at each stiffness. Its answer needs the rollout script that runs a
 trained policy inside the simulation and counts clicks and force; that script
 is not built yet (owner: later).
+
+---
+
+## Sheet 5 · `multi_task_dit` on the simulated data at 400 N/m (full trainings)
+
+**Why.** The first pair of the measured-vs-command comparison in simulation
+(ROADMAP F7 step 4): two models, the same settings and seed, differing only in
+the action label, trained 200 epochs (UMI's schedule for its transformer). The
+owner chose this one pair first (2026-11-26): it shows the answer at one
+stiffness before GPU time goes into 200 and 800 N/m. Which model presses the
+button better needs the rollout script (F7 step 3, not built yet); these are
+the checkpoints it will be tested on. The open-loop check here only shows that
+each model learned its own label, on demonstrations it never saw.
+
+1. Get the newest code, and check that the launcher beside the clone is the
+   repository's (sheet 3, step 6).
+
+```bash
+cd /workspace/team/anglica/crisp_gym && git pull && git log --oneline -1
+```
+
+```bash
+diff -q /workspace/team/anglica/train_multi_task_dit_server.sh /workspace/team/anglica/crisp_gym/scripts/train_multi_task_dit_server.sh && echo "same as the repository"
+```
+
+   If it differs, copy the repository's version over it:
+
+```bash
+cp /workspace/team/anglica/crisp_gym/scripts/train_multi_task_dit_server.sh /workspace/team/anglica/
+```
+
+2. The measured model. `SKIP_PREFLIGHT=1` as in sheet 4: the gate fails only
+   on "no cameras".
+
+```bash
+cd /workspace/team/anglica && SKIP_PREFLIGHT=1 EPOCHS=200 DATASET=/workspace/datasets/sim_button_k400/lerobot DATASET_NAME=sim_button_k400 OUT=/workspace/team/anglica/outputs/train/sim_dit_k400_measured ./train_multi_task_dit_server.sh --seed=1000
+```
+
+3. The command model: the same, on the command copy.
+
+```bash
+cd /workspace/team/anglica && SKIP_PREFLIGHT=1 EPOCHS=200 DATASET=/workspace/datasets/sim_button_k400_cmd/lerobot DATASET_NAME=sim_button_k400_cmd OUT=/workspace/team/anglica/outputs/train/sim_dit_k400_command ./train_multi_task_dit_server.sh --seed=1000
+```
+
+**Works (steps 2 and 3):** near the start, `[epochs]` lines: `--epochs 200 ->
+epoch target = ceil(200 x N / 320) = ... steps` and `target checkpoint at step
+...`, with the same N in both runs (the copy has the same frames). Then loss
+lines, `End of training` and `==> Finished.` There are no camera images, so
+these should run much faster than your image trainings.
+
+4. Twenty demonstrations the models never saw (seed 1; the trainings used
+   seed 0), and their command copy.
+
+```bash
+cd /workspace/team/anglica && python crisp_gym/crisp_gym/sim/button_dataset.py --root /workspace/datasets/sim_button_k400_heldout/lerobot --stiffness 400 --episodes 20 --seed 1
+```
+
+```bash
+cd /workspace/team/anglica && python crisp_gym/crisp_gym/scripts/swap_action_offline.py --input /workspace/datasets/sim_button_k400_heldout/lerobot --output /workspace/datasets/sim_button_k400_heldout_cmd/lerobot
+```
+
+5. Print the two open-loop commands, each pointing at its run's epoch-target
+   checkpoint (read from its `train.log`), and each against the held-out copy
+   with its own label.
+
+```bash
+cd /workspace/team/anglica && python -c "
+import glob, re
+for run in ('measured', 'command'):
+    out = '/workspace/team/anglica/outputs/train/sim_dit_k400_' + run
+    step = int(re.findall(r'target checkpoint at step (\d+)', open(out + '/train.log').read())[0])
+    ckpt = [d for d in glob.glob(out + '/checkpoints/*') if d.split('/')[-1].isdigit() and int(d.split('/')[-1]) == step][0]
+    data = 'sim_button_k400_heldout' + ('_cmd' if run == 'command' else '')
+    print('python crisp_gym/crisp_gym/scripts/check_policy_openloop.py --path ' + ckpt + '/pretrained_model --repo-id ' + data + ' --root /workspace/datasets/' + data + '/lerobot --episodes 0 1 2 3 4')
+"
+```
+
+**Works:** two lines starting `python crisp_gym/crisp_gym/scripts/check_policy_openloop.py`.
+
+6. Run the two printed lines, one after the other, from
+   `/workspace/team/anglica`.
+
+**Works:** each ends with a `[openloop] verdict:` line. GOOD (err/move ≤ 0.3)
+means the model reproduces demonstrations it never saw. Either model may be
+weaker in contact; the rollouts decide which presses better, not this.
+
+**Paste back:** the `[epochs]` lines and the last 20 lines of steps 2 and 3,
+the `Done` lines of step 4, and the table and the two `[openloop]` lines of
+each run in step 6.
+
+**Result:** not run yet.
