@@ -638,3 +638,69 @@ often than the measured one, the command label matters at this stiffness.
 **Paste back:** the two `arm action` lines and the table.
 
 **Result:** not run yet.
+
+---
+
+## Sheet 7 · Faster DiT trainings at higher learning rates (command label, 400 N/m)
+
+**Why.** Sheet 5's models are underfit. On their own training episodes they
+score err/move 0.82 (measured) and 0.77 (command), POOR, while a
+nearest-neighbour lookup on the same inputs reaches 0.25. In sheet 6 neither
+clicked: the measured model never pushes, and the command model pushes on the
+panel 20–40 mm from the button. Both trained at lerobot's DiT default learning
+rate, 2e-5, and each took over 4 h because the GPU waited for data. `IN_MEMORY=1`
+(2026-11-27) removes the wait. This sheet trains the command model at 1e-4 and
+3e-4 (500 warmup steps, 200 epochs each) and checks both open loop, on training
+and held-out episodes. If one reaches PARTIAL or better, it gets its measured
+twin and the rollouts on the next sheet.
+
+1. Get the newest code, and copy the launcher beside the clone (it gained
+   `IN_MEMORY`).
+
+```bash
+cd /workspace/team/anglica/crisp_gym && git pull && git log --oneline -1
+```
+
+```bash
+cp /workspace/team/anglica/crisp_gym/scripts/train_multi_task_dit_server.sh /workspace/team/anglica/
+```
+
+**Works:** the log line is the commit of this sheet or a later one.
+
+2. Learning rate 1e-4.
+
+```bash
+cd /workspace/team/anglica && SKIP_PREFLIGHT=1 IN_MEMORY=1 EPOCHS=200 WARMUP_STEPS=500 DATASET=/workspace/datasets/sim_button_k400_cmd/lerobot DATASET_NAME=sim_button_k400_cmd OUT=/workspace/team/anglica/outputs/train/sim_dit_k400_command_lr1e-4 ./train_multi_task_dit_server.sh --seed=1000 --policy.optimizer_lr=1e-4
+```
+
+**Works:**
+- early in the log, `Holding the 20111 frames in memory (--in-memory).`;
+- the `[epochs]` lines with the same target as sheet 5, step 12570;
+- loss lines whose `data_s` is well below `updt_s` (sheet 5: 0.7 s of data per
+  0.06 s step). The run should take well under an hour.
+
+`lr:` is logged as the average over the last 200 steps, so it reads below
+1.0e-04 until the warmup is over, about at the step-800 line.
+
+3. Learning rate 3e-4: the same, with a new folder.
+
+```bash
+cd /workspace/team/anglica && SKIP_PREFLIGHT=1 IN_MEMORY=1 EPOCHS=200 WARMUP_STEPS=500 DATASET=/workspace/datasets/sim_button_k400_cmd/lerobot DATASET_NAME=sim_button_k400_cmd OUT=/workspace/team/anglica/outputs/train/sim_dit_k400_command_lr3e-4 ./train_multi_task_dit_server.sh --seed=1000 --policy.optimizer_lr=3e-4
+```
+
+4. The open-loop check of both, on 5 training and 5 held-out episodes, at the
+   200-epoch checkpoint.
+
+```bash
+cd /workspace/team/anglica && for run in lr1e-4 lr3e-4; do for ds in sim_button_k400_cmd sim_button_k400_heldout_cmd; do echo "== $run on $ds"; python crisp_gym/crisp_gym/scripts/check_policy_openloop.py --path outputs/train/sim_dit_k400_command_$run/checkpoints/012570/pretrained_model --repo-id $ds --root /workspace/datasets/$ds/lerobot --episodes 0 1 2 3 4 2>&1 | grep "re-observe after\|verdict:"; done; done
+```
+
+**Works:** 8 lines, two per run and dataset. Sheet 5's command model (2e-5) at
+the same checkpoint read 0.77 on training episodes and 0.85 held-out; the
+nearest-neighbour lookup reads 0.25 and 0.31.
+
+**Paste back:** for each run the first two and the last loss line
+(`grep "loss:" outputs/train/sim_dit_k400_command_lr1e-4/train.log | sed -n '1,2p;$p'`,
+and the same for lr3e-4), and the 8 lines of step 4.
+
+**Result:** not run yet.
