@@ -498,6 +498,28 @@ python3 check_policy_openloop.py \
 It expects a local copy of `lerobot_relative_pose.py` in the same folder and is
 oriented to the relative pipeline.
 
+**Checkpoints trained with point tracks** (multi_task_dit or GR00T SE3=1 on a
+`build_track_dataset.py` copy): the pose table is unchanged (it reads dims 0–8
+and the gripper). With `--repo-id` set to the **track copy**, a track section
+follows it: per step and per point, the pixel error against the tracker, the
+error of "the point stays where it is now" (so err/move reads like the pose
+table's), and how often the predicted visibility matches the tracker's.
+`--track-sheets DIR` also draws them: one PNG per episode (`--track-sheet-frames`
+evenly spread frames, default 8) and one MP4 of all evaluated frames. Solid line
+= recorded path, light circles on a dashed line = predicted, ring = where the
+point is now, squares = the re-observe step, grey × = a step predicted hidden.
+
+```bash
+python3 check_policy_openloop.py \
+    --path outputs/train/<run>/checkpoints/<step>/pretrained_model \
+    --repo-id datasets/franka_electricbox_tracks/lerobot \
+    --episodes 0 1 2 --stride 5 --max-frames 200 \
+    --track-sheets outputs/openloop_tracks
+```
+
+A checkpoint without tracks runs exactly as before; `--track-sheets` is then
+ignored with a warning.
+
 ## Point-track labels
 
 ### `click_track_points.py` (GPU PC, where the dataset is)
