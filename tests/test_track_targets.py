@@ -390,7 +390,7 @@ def test_the_patch_can_be_left_off_and_other_policies_are_refused(lrp, tmp_path)
         _stamped(tmp_path), {"action": UNIT}, "multi_task_dit", None, False
     )
     assert rec["loss_patch"] is False and m.DiffusionObjective.compute_loss is before
-    with pytest.raises(RuntimeError, match="implemented for multi_task_dit, not 'diffusion'"):
+    with pytest.raises(RuntimeError, match="implemented for multi_task_dit and groot, not 'diffusion'"):
         lrp.configure_track_targets(_stamped(tmp_path), {"action": UNIT}, "diffusion", None, True)
     with pytest.raises(RuntimeError, match="describes 16 action dims, the dataset's action has 10"):
         lrp.configure_track_targets(
@@ -469,6 +469,98 @@ def test_a_built_copy_loads_in_lerobot_with_the_wider_action(tmp_path):
     assert on_disk["track_dims"] == list(range(9, 15)) == stamp["track_dims"]
     with pytest.raises(SystemExit, match="exists already"):
         btd.build(src_root, tmp_path / "tracks", tmp_path / "out")
+
+
+# ── GR00T N1.7 ────────────────────────────────────────────────────────────────
+
+
+def _tiny_groot_head():
+    """lerobot's real GR00T N1.7 action head, at a tiny random size."""
+    import copy
+
+    from lerobot.policies.groot import groot_n1_7 as g
+
+    d = copy.deepcopy(g.GR00T_N1_7_DEFAULTS)
+    small = dict(d)
+    small["diffusion_model_cfg"] = {**d["diffusion_model_cfg"], "num_layers": 2, "num_attention_heads": 2,
+                                    "attention_head_dim": 16, "output_dim": 64}
+    small.update(hidden_size=64, input_embedding_dim=32, backbone_embedding_dim=48)
+    if d.get("vl_self_attention_cfg"):
+        small["vl_self_attention_cfg"] = {**d["vl_self_attention_cfg"], "num_layers": 1,
+                                          "num_attention_heads": 2, "attention_head_dim": 24}
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(0)
+    return g.GR00TN17ActionHead(g.GR00TN17Config(**small)).train(), small
+
+
+def _groot_inputs(small, visible_b=True):
+    import torch
+    from transformers.feature_extraction_utils import BatchFeature
+
+    B, L, H, Dmax = 2, 7, small["action_horizon"], small["max_action_dim"]
+    torch.manual_seed(1)
+    bb = BatchFeature({"backbone_features": torch.randn(B, L, 48),
+                       "backbone_attention_mask": torch.ones(B, L, dtype=torch.bool),
+                       "image_mask": torch.zeros(B, L, dtype=torch.bool)})
+    act = torch.zeros(B, H, Dmax)
+    act[..., :D] = torch.rand(B, H, D) * 2 - 1
+    act[..., 11] = 1.0                                   # button_a visible
+    act[..., 14] = 1.0 if visible_b else -1.0            # button_b visible or hidden
+    mask = torch.zeros(B, H, Dmax)
+    mask[:, :16, :D] = 1.0                               # GR00T's own horizon / dim padding
+    ai = BatchFeature({"state": torch.randn(B, 1, small["max_state_dim"]), "action": act,
+                       "action_mask": mask, "embodiment_id": torch.zeros(B, dtype=torch.long)})
+    return bb, ai
+
+
+@needs_lerobot
+def test_the_groot_loss_with_weight_one_is_groots_own(lrp):
+    """GR00T's head is not repeatable call to call even with one seed, so the
+    comparison is within one call: GR00T's own loss, kept beside the new one."""
+    import torch
+
+    head, small = _tiny_groot_head()
+    bb, ai = _groot_inputs(small)
+    lrp.install_track_loss("groot", STAMP, UNIT, 1.0)
+    out = head(bb, ai)
+    torch.testing.assert_close(out["loss"], out["loss_unweighted"], rtol=0, atol=0)
+    # and that kept number is GR00T's formula on its own outputs
+    torch.testing.assert_close(out["loss_unweighted"],
+                               out["action_loss"].sum() / (out["action_mask"].sum() + 1e-6), rtol=0, atol=0)
+
+
+@needs_lerobot
+def test_the_groot_loss_weights_track_dims_and_skips_hidden_positions(lrp):
+    import torch
+
+    head, small = _tiny_groot_head()
+    bb, ai = _groot_inputs(small, visible_b=False)
+    lrp.install_track_loss("groot", STAMP, UNIT, 0.25)
+    torch.manual_seed(5)
+    out = head(bb, ai)
+    w = torch.ones(small["max_action_dim"])
+    w[9:15] = 0.25
+    keep = torch.ones_like(out["action_loss"])
+    keep[..., [12, 13]] = 0.0                            # button_b hidden: its x, y out
+    expect = (out["action_loss"] * w * keep).sum() / ((out["action_mask"] * w * keep).sum() + 1e-6)
+    torch.testing.assert_close(out["loss"], expect)
+    assert float(out["loss"]) != pytest.approx(float(out["action_loss"].sum() / (out["action_mask"].sum() + 1e-6)))
+
+
+@needs_lerobot
+def test_groot_with_its_own_relative_actions_is_refused_and_uninstall_restores(lrp):
+    import types
+
+    from lerobot.policies.groot import groot_n1_7 as g
+
+    before = g.GR00TN17ActionHead.forward
+    with pytest.raises(RuntimeError, match="use_relative_actions=false"):
+        lrp.install_track_loss("groot", STAMP, UNIT, 0.25, policy_cfg=types.SimpleNamespace(use_relative_actions=True))
+    assert g.GR00TN17ActionHead.forward is before
+    lrp.install_track_loss("groot", STAMP, UNIT, 0.25, policy_cfg=types.SimpleNamespace(use_relative_actions=False))
+    assert g.GR00TN17ActionHead.forward is not before
+    lrp.uninstall_track_loss()
+    assert g.GR00TN17ActionHead.forward is before
 
 
 if __name__ == "__main__":

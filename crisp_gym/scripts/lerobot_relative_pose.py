@@ -387,7 +387,8 @@ def recompute_relative_stats(wrapped: RelativePoseDataset, num_samples: int = 20
 # A dataset built by build_track_dataset.py carries point tracks in its action,
 # between the pose and the gripper: [pose9, (x, y, visible) per point, gripper],
 # and says so in meta/track_targets.json. For such a dataset, and ONLY for it,
-# the multi_task_dit loss is replaced by one that
+# the multi_task_dit loss (or GR00T N1.7's, see install_track_loss) is replaced
+# by one that
 #   * weights the track dims by --track-loss-weight (pose and gripper keep 1),
 #   * leaves a point's x, y out of the loss where the point is hidden (its
 #     visible dim is 0): those values are a held placeholder, not a position.
@@ -469,6 +470,23 @@ class TrackLoss:
         wm = m * self.weights.to(loss)
         return (loss * wm).sum() / wm.sum().clamp_min(1e-12)
 
+    def reduce_groot(self, action_loss: torch.Tensor, action_mask: torch.Tensor,
+                     action_norm: torch.Tensor) -> torch.Tensor:
+        """GR00T N1.7's loss, sum(err * mask) / (sum(mask) + 1e-6), with the weights and hidden mask.
+
+        `action_loss` is GR00T's element-wise error already multiplied by its
+        own mask (horizon and action-dim padding); `action_norm` its normalized,
+        padded action. With all weights 1 and nothing hidden this is GR00T's
+        own number.
+        """
+        dim = self.weights.numel()
+        w = torch.ones(action_loss.shape[-1], dtype=action_loss.dtype, device=action_loss.device)
+        w[:dim] = self.weights.to(w)
+        m = torch.ones_like(action_loss)
+        m[..., self.pos_dims] = self.visible(action_norm).to(action_loss.dtype)
+        wm = w * m
+        return (action_loss * wm).sum() / ((action_mask * wm).sum() + 1e-6)
+
     def track_share(self) -> float:
         """Share of the loss weight on track dims when every point is visible."""
         total = float(self.weights.sum())
@@ -546,19 +564,85 @@ _LOSS_FINGERPRINTS = {
 }
 
 
-def install_track_loss(policy_type: str, stamp: dict, action_stats: dict, weight: float) -> TrackLoss:
-    """Replace multi_task_dit's loss with the track-aware one. Returns the TrackLoss.
+_GROOT_FINGERPRINT = (
+    "actions = action_input.action",
+    'action_loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask',
+    "loss = action_loss.sum() / (action_mask.sum() + 1e-6)",
+    '"action_loss": action_loss,',
+    '"action_mask": action_mask,',
+)
 
-    Raises:
-        RuntimeError: another policy type (its loss is not patched here), or a
-            lerobot whose multi_task_dit loss no longer matches the copy.
+
+def _make_groot_forward(original):
+    """GR00T N1.7 action head forward, with the loss recomputed from what it returns."""
+    def forward(self, backbone_output, action_input):
+        out = original(self, backbone_output, action_input)
+        out["loss_unweighted"] = out["loss"]      # GR00T's own number, for comparison
+        out["loss"] = _TRACK_LOSS.reduce_groot(out["action_loss"], out["action_mask"], action_input.action)
+        return out
+
+    forward.__wrapped__ = original
+    return forward
+
+
+def _install_groot(stamp: dict, action_stats: dict, weight: float, policy_cfg) -> TrackLoss:
+    """GR00T N1.7: the loss is recomputed from the head's element-wise error.
+
+    Only in crisp_gym's relative mode (GR00T's own relative actions OFF, as
+    train_groot_server.sh SE3=1 sets): there the action is one vector,
+    min-max normalized with the dataset stats, the track dims keep their
+    positions, and visibility reads back exactly as for multi_task_dit. GR00T's
+    own relative mode slices the STATE with the ACTION's indices, which a
+    22-value action against a 10-value state cannot satisfy.
     """
     import inspect
 
     global _TRACK_LOSS
+    if policy_cfg is not None and getattr(policy_cfg, "use_relative_actions", False):
+        raise RuntimeError(
+            "track targets with GR00T need use_relative_actions=false (train_groot_server.sh SE3=1): "
+            "GR00T's own relative conversion pairs every action dim with the state dim at the same "
+            "index, and the track dims have none."
+        )
+    from lerobot.policies.groot import groot_n1_7
+
+    cls = groot_n1_7.GR00TN17ActionHead
+    original = _ORIGINAL_LOSSES.get((cls, "forward"), cls.forward)
+    source = inspect.getsource(original)
+    missing = [line for line in _GROOT_FINGERPRINT if line not in source]
+    if missing:
+        raise RuntimeError(
+            f"lerobot's GR00T N1.7 action head changed (missing: {missing}). The track-target loss "
+            "recomputes its loss from lerobot 0.6.1's outputs; update lerobot_relative_pose.py, or "
+            "train with --no-track-loss-patch."
+        )
+    _TRACK_LOSS = TrackLoss(stamp, action_stats["min"], action_stats["max"], weight)
+    _ORIGINAL_LOSSES.setdefault((cls, "forward"), cls.forward)
+    cls.forward = _make_groot_forward(original)
+    return _TRACK_LOSS
+
+
+def install_track_loss(policy_type: str, stamp: dict, action_stats: dict, weight: float,
+                       policy_cfg=None) -> TrackLoss:
+    """Make the policy's loss track-aware. Returns the TrackLoss.
+
+    multi_task_dit: its two loss functions are replaced by copies with the
+    reduction changed. groot: the N1.7 action head's loss is recomputed from
+    the element-wise error it returns (see _install_groot).
+
+    Raises:
+        RuntimeError: another policy type, a lerobot whose code no longer
+            matches what the patch was written against, or GR00T with its own
+            relative actions on.
+    """
+    import inspect
+
+    global _TRACK_LOSS
+    if policy_type == "groot":
+        return _install_groot(stamp, action_stats, weight, policy_cfg)
     if policy_type != "multi_task_dit":
         raise RuntimeError(
-            f"the track-target loss is implemented for multi_task_dit, not {policy_type!r}. "
+            f"the track-target loss is implemented for multi_task_dit and groot, not {policy_type!r}. "
             "Train with --no-track-loss-patch to weight every action dim equally instead."
         )
     import lerobot.policies.multi_task_dit.modeling_multi_task_dit as mtdit
@@ -595,7 +679,7 @@ def uninstall_track_loss() -> None:
 
 
 def configure_track_targets(dataset, stats: dict, policy_type: str, weight: float | None,
-                            patch: bool) -> dict | None:
+                            patch: bool, policy_cfg=None) -> dict | None:
     """Decide what a dataset's track targets mean for this run; install the loss if asked.
 
     Returns the record for pose_repr.json, or None for a dataset without track
@@ -616,7 +700,7 @@ def configure_track_targets(dataset, stats: dict, policy_type: str, weight: floa
                                     "visibility_dims", "coordinates", "row_shift", "image_size",
                                     "camera") if k in stamp}
     if patch:
-        tl = install_track_loss(policy_type, stamp, stats[POSE_ACTION_KEY], w)
+        tl = install_track_loss(policy_type, stamp, stats[POSE_ACTION_KEY], w, policy_cfg=policy_cfg)
         logger.info(
             "Track targets: %d points in action dims %s; loss weight %.3g (%.0f%% of the loss "
             "weight when every point is visible); hidden positions left out of the loss.",
@@ -931,7 +1015,8 @@ def main():
         recompute_relative_stats(wrapped)
         # Only a dataset stamped by build_track_dataset.py changes anything here.
         tracks = configure_track_targets(
-            dataset, wrapped.meta.stats, getattr(cfg.policy, "type", None), track_weight, track_patch
+            dataset, wrapped.meta.stats, getattr(cfg.policy, "type", None), track_weight, track_patch,
+            policy_cfg=getattr(cfg, "policy", None),
         )
         # AFTER wrapping: the wrapper is what the dataloader sees, so its len()
         # is the epoch denominator. BEFORE lerobot_train.main() reads cfg.steps.

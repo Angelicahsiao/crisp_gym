@@ -72,6 +72,8 @@ cd "$WORKDIR"
 #   SKIP_PREFLIGHT=1 ./train_groot_server.sh         # bypass the gate
 #   SKIP_HUB_CHECK=1 ./train_groot_server.sh         # bypass the hub gate
 #   DRY_RUN=1 ./train_groot_server.sh                # print the command, launch nothing
+#   SE3=1 DATASET=.../franka_electricbox_tracks/lerobot ./train_groot_server.sh
+#                                                    # POINT-TRACK targets, see below
 #
 # Anything passed on the command line is appended to the lerobot command.
 #
@@ -83,6 +85,24 @@ cd "$WORKDIR"
 # crisp_gym/util/epoch_steps.py, which is plain lerobot_train plus the schedule
 # (no data transform); with SE3=1 the relative-pose launcher takes the flag
 # itself. See crisp_gym/util/epoch_steps.py.
+
+# POINT-TRACK TARGETS — a dataset built by build_track_dataset.py (it has
+# meta/track_targets.json) carries point tracks in its action, between pose and
+# gripper. GR00T trains on it only with SE3=1:
+#   * GR00T's OWN relative mode pairs every action dim with the state dim at
+#     the same index (it slices the state with the action's indices); the 12
+#     track dims have no state dims, so SE3=0 is refused.
+#   * With SE3=1 crisp_gym's wrapper makes the pose relative and passes the
+#     track dims through; GR00T sees one action vector; the wrapper finds the
+#     track stamp and recomputes GR00T's loss with the track dims weighted by
+#     TRACK_LOSS_WEIGHT (default 0.25) and hidden points' positions left out.
+#   TRACK_LOSS_WEIGHT=0.1     a different weight
+#   NO_TRACK_LOSS_PATCH=1     every action dim weighted equally
+# Compare against SE3=1 on the SOURCE dataset (no tracks), not against SE3=0:
+# the two modes train on different action representations. Deployment is
+# unchanged: pose from dims 0-8, gripper from the last dim.
+TRACK_LOSS_WEIGHT="${TRACK_LOSS_WEIGHT:-}"
+NO_TRACK_LOSS_PATCH="${NO_TRACK_LOSS_PATCH:-0}"
 
 DATASET_NAME="${DATASET_NAME:-open_electribox_sum}"
 DATASET="${DATASET:-$WORKDIR/datasets/$DATASET_NAME}"
@@ -134,6 +154,27 @@ if [ ! -f "$DATASET/meta/info.json" ]; then
     echo "No meta/info.json under $DATASET" >&2
     echo "Set DATASET=/full/path/to/dataset or DATASET_NAME=<name>." >&2
     exit 2
+fi
+
+# Point-track targets: only in SE3 mode (see POINT-TRACK TARGETS above).
+TRACKS=0
+[ -f "$DATASET/meta/track_targets.json" ] && TRACKS=1
+if [ "$TRACKS" -eq 1 ] && [ "$SE3" -eq 0 ]; then
+    echo "$DATASET carries point-track targets (meta/track_targets.json)." >&2
+    echo "GR00T trains on it only with SE3=1: its own relative mode pairs each action dim" >&2
+    echo "with the state dim at the same index, and the track dims have none." >&2
+    exit 2
+fi
+if [ -n "$TRACK_LOSS_WEIGHT" ] && ! awk -v w="$TRACK_LOSS_WEIGHT" 'BEGIN { exit !(w ~ /^[0-9]*\.?[0-9]+$/) }'; then
+    echo "TRACK_LOSS_WEIGHT must be a non-negative number, got: $TRACK_LOSS_WEIGHT" >&2
+    exit 2
+fi
+if [ -n "$TRACK_LOSS_WEIGHT" ] && [ "$NO_TRACK_LOSS_PATCH" != "0" ]; then
+    echo "TRACK_LOSS_WEIGHT and NO_TRACK_LOSS_PATCH=1 contradict each other: pick one." >&2
+    exit 2
+fi
+if [ "$TRACKS" -eq 0 ] && { [ -n "$TRACK_LOSS_WEIGHT" ] || [ "$NO_TRACK_LOSS_PATCH" != "0" ]; }; then
+    echo "WARNING: TRACK_LOSS_WEIGHT / NO_TRACK_LOSS_PATCH ignored: $DATASET has no point-track targets." >&2
 fi
 
 # The gate runs BEFORE the HOME redirect below, deliberately. It only reads
@@ -282,6 +323,13 @@ if [ "$SE3" -ne 0 ]; then
     # state again. Nothing to exclude either -- the gripper dim is passed
     # through by the wrapper untouched.
     CMD+=(--policy.use_relative_actions=false)
+    # Read by the wrapper, not by lerobot (it strips them first).
+    if [ "$TRACKS" -eq 1 ] && [ -n "$TRACK_LOSS_WEIGHT" ]; then
+        CMD+=(--track-loss-weight "$TRACK_LOSS_WEIGHT")
+    fi
+    if [ "$TRACKS" -eq 1 ] && [ "$NO_TRACK_LOSS_PATCH" != "0" ]; then
+        CMD+=(--no-track-loss-patch)
+    fi
 else
     CMD+=(
         --policy.use_relative_actions=true

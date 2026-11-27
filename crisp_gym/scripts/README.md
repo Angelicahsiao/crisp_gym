@@ -600,3 +600,12 @@ track dims by `--track-loss-weight` (default 0.25; pose and gripper keep 1)
 and leaves hidden points' positions out; `--no-track-loss-patch` weights every
 dim equally instead. Any other dataset trains exactly as before. Deployment
 is unchanged: the pose is read from dims 0–8 and the gripper from the last.
+
+GR00T N1.7 trains on the same copy, in `SE3=1` mode only
+(`train_groot_server.sh`: `SE3=1 DATASET=... TRACK_LOSS_WEIGHT=0.25`;
+`train_groot.sh`: `--se3 --track-loss-weight 0.25`). GR00T's own relative mode
+pairs each action dim with the state dim at the same index, which the track
+dims do not have, so both scripts refuse a track dataset without SE3. In SE3
+mode the wrapper recomputes GR00T's loss from the element-wise error its
+action head returns, with the same weights and hidden-point mask. Compare
+against SE3 on the source dataset, not against GR00T's default mode.

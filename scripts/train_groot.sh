@@ -63,6 +63,15 @@
 #                      stays absolute, so the preflight applies unchanged.
 #   --no-wrt-start     with --se3: 10-D relative state instead of the 16-D
 #                      UMI-parity [rel_pose9, gripper1, wrt_start6]
+#   --track-loss-weight W   with --se3, for a dataset built by
+#                      build_track_dataset.py (meta/track_targets.json): weight
+#                      of the point-track dims in the loss (default 0.25; pose
+#                      and gripper keep 1). Such a dataset REQUIRES --se3:
+#                      GR00T's own relative mode pairs each action dim with the
+#                      state dim at the same index, and track dims have none.
+#                      Compare against --se3 on the source dataset.
+#   --no-track-loss-patch   with --se3 on such a dataset: weight every action
+#                      dim equally
 #   --skip-preflight   run without gating on groot_preflight.py
 #   --dry-run          print the command and exit
 #   --                 everything after this is appended to the lerobot command
@@ -78,6 +87,7 @@ REPO="$(cd "$HERE/.." && pwd)"
 DATASET="" OUTPUT="" REPO_ID="" JOB_NAME="" EPOCHS=""
 BATCH_SIZE=32 STEPS=100000 SAVE_FREQ=20000 NUM_WORKERS=8
 SKIP_PREFLIGHT=0 DRY_RUN=0 SE3=0 WRT_START=1
+TRACK_LOSS_WEIGHT="" NO_TRACK_LOSS_PATCH=0
 EXTRA=()
 
 # Every value-taking option goes through this first. Without it, a flag given
@@ -106,6 +116,8 @@ while [ $# -gt 0 ]; do
         --num-workers)    need_value "$@"; NUM_WORKERS="$2"; shift 2 ;;
         --se3)            SE3=1; shift ;;
         --no-wrt-start)   WRT_START=0; shift ;;
+        --track-loss-weight) need_value "$@"; TRACK_LOSS_WEIGHT="$2"; shift 2 ;;
+        --no-track-loss-patch) NO_TRACK_LOSS_PATCH=1; shift ;;
         --skip-preflight) SKIP_PREFLIGHT=1; shift ;;
         --dry-run)        DRY_RUN=1; shift ;;
         --)               shift; EXTRA=("$@"); break ;;
@@ -130,6 +142,27 @@ if [ -n "$EPOCHS" ] && ! awk -v e="$EPOCHS" 'BEGIN { exit !(e ~ /^[0-9]*\.?[0-9]
 fi
 
 DATASET="$(cd "$DATASET" && pwd)"
+
+# Point-track targets: only with --se3 (see --track-loss-weight above).
+TRACKS=0
+[ -f "$DATASET/meta/track_targets.json" ] && TRACKS=1
+if [ "$TRACKS" -eq 1 ] && [ "$SE3" -eq 0 ]; then
+    echo "$DATASET carries point-track targets (meta/track_targets.json); train it with --se3." >&2
+    echo "GR00T's own relative mode pairs each action dim with the state dim at the same index," >&2
+    echo "and the track dims have none." >&2
+    exit 2
+fi
+if [ -n "$TRACK_LOSS_WEIGHT" ] && ! awk -v w="$TRACK_LOSS_WEIGHT" 'BEGIN { exit !(w ~ /^[0-9]*\.?[0-9]+$/) }'; then
+    echo "--track-loss-weight must be a non-negative number, got: $TRACK_LOSS_WEIGHT" >&2
+    exit 2
+fi
+if [ -n "$TRACK_LOSS_WEIGHT" ] && [ "$NO_TRACK_LOSS_PATCH" -eq 1 ]; then
+    echo "--track-loss-weight and --no-track-loss-patch contradict each other: pick one." >&2
+    exit 2
+fi
+if [ "$TRACKS" -eq 0 ] && { [ -n "$TRACK_LOSS_WEIGHT" ] || [ "$NO_TRACK_LOSS_PATCH" -eq 1 ]; }; then
+    echo "WARNING: --track-loss-weight / --no-track-loss-patch ignored: $DATASET has no point-track targets." >&2
+fi
 [ -n "$REPO_ID" ] || REPO_ID="$(basename "$(dirname "$DATASET")")/$(basename "$DATASET")"
 [ -n "$JOB_NAME" ] || JOB_NAME="$(basename "$OUTPUT")"
 
@@ -257,6 +290,13 @@ if [ "$SE3" -eq 1 ]; then
     # The wrapper already made the action relative; GR00T must not subtract the
     # state again, and there is nothing left for relative_exclude_joints to do.
     CMD+=(--policy.use_relative_actions=false)
+    # Read by the wrapper, not by lerobot (it strips them first).
+    if [ "$TRACKS" -eq 1 ] && [ -n "$TRACK_LOSS_WEIGHT" ]; then
+        CMD+=(--track-loss-weight "$TRACK_LOSS_WEIGHT")
+    fi
+    if [ "$TRACKS" -eq 1 ] && [ "$NO_TRACK_LOSS_PATCH" -eq 1 ]; then
+        CMD+=(--no-track-loss-patch)
+    fi
 else
     CMD+=(
         --policy.use_relative_actions=true
