@@ -517,6 +517,12 @@ python3 check_policy_openloop.py \
     --track-sheets outputs/openloop_tracks
 ```
 
+On a dataset **without** recorded tracks (for example UMI data for a
+Franka-trained track model) there is nothing to compare against: the report
+says how often the model predicts each point visible, and `--track-sheets`
+draws the predicted paths alone, so you can see where the model puts the points
+in the new images.
+
 A checkpoint without tracks runs exactly as before; `--track-sheets` is then
 ignored with a warning.
 

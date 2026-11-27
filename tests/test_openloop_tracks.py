@@ -350,5 +350,56 @@ def test_sheets_and_videos_are_written_per_episode(tmp_path):
         cap.release()
 
 
+# ── a track model on a dataset WITHOUT recorded tracks (predicted only) ──────
+
+
+def test_predicted_visibility_is_the_share_of_chunks_per_point_and_step():
+    xy, vis = _chunk(K=4)
+    a = _rows(xy, vis)                                   # both points visible throughout
+    vis_b = vis.copy()
+    vis_b[2:, 0] = 0.2                                   # button_a predicted hidden from step 2
+    b = _rows(xy, vis_b)
+    assert ol.predicted_visibility([a, b], LAYOUT, 0) == [1.0, 1.0]
+    assert ol.predicted_visibility([a, b], LAYOUT, 3) == [0.5, 1.0]
+    assert np.isnan(ol.predicted_visibility([a, b], LAYOUT, 9)).all()  # no chunk that long
+
+
+def test_the_predicted_only_section_says_there_is_no_error_to_report(caplog):
+    xy, vis = _chunk(K=4)
+    with caplog.at_level(logging.INFO):
+        ol.log_predicted_tracks([_rows(xy, vis)] * 3, LAYOUT, exec_steps=3)
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "PREDICTED ONLY (3 frames)" in text and "no error to report" in text
+    assert "step 2" in text and "100.0%" in text
+
+
+@needs_cv2
+def test_a_tile_without_recorded_tracks_draws_the_prediction_only():
+    xy, vis = _chunk()
+    image = np.zeros((*IMAGE_HW, 3), np.uint8)
+    pred = _rows(xy + np.array([0.0, 40.0]), vis)
+    tile = ol.draw_track_tile(image, pred, None, None, None, LAYOUT, exec_steps=3, title="t")
+    H, W = IMAGE_HW
+    assert tile.shape == (H + 60, W, 3)
+    body = tile[20:20 + H].astype(int)
+    light = np.array([int(c + (255 - c) * 0.45) for c in ol.TRACK_COLOURS[0]])
+    colour = np.array(ol.TRACK_COLOURS[0])
+    # the predicted path (y = 140) is drawn; nothing in the solid colour where a recording would be (y = 100)
+    assert (np.abs(body[136:145, 95:205] - light).sum(-1) < 60).any()
+    assert not (np.abs(body[97:104, 95:205] - colour).sum(-1) < 30).any()
+
+
+@needs_cv2
+def test_sheets_are_written_without_recorded_tracks(tmp_path):
+    import cv2
+
+    xy, vis = _chunk()
+    png = cv2.imencode(".png", np.zeros((*IMAGE_HW, 3), np.uint8))[1].tobytes()
+    frames = [{"episode": 2, "frame": f, "row": f, "image": png, "pred": _rows(xy, vis),
+               "rec": None, "now_xy": None, "now_vis": None} for f in range(0, 30, 5)]
+    written = ol.write_track_sheets(tmp_path, frames, LAYOUT, exec_steps=3, per_sheet=4, video_fps=3.0)
+    assert any(w.endswith("episode_002_tracks.png") for w in written)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

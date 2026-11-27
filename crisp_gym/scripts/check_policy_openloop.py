@@ -69,9 +69,12 @@ the pixel error against the tracker, the error of "the point stays where it is
 now" (so err/move reads like the pose table's), and how often the predicted
 visibility matches the tracker's. --track-sheets DIR also draws them: per
 episode a PNG of evenly spread frames and an MP4 of all evaluated frames, each
-showing the recorded and predicted path of every point over the chunk. A
-checkpoint without tracks runs exactly as before; --track-sheets is then
-ignored with a warning.
+showing the recorded and predicted path of every point over the chunk. On a
+dataset WITHOUT recorded tracks (another dataset of the task, e.g. UMI data
+for a Franka-trained model) there is nothing to compare against: the report
+says how often the model predicts each point visible, and --track-sheets draws
+the predicted paths alone. A checkpoint without tracks runs exactly as before;
+--track-sheets is then ignored with a warning.
 
 Usage (GPU PC, training env, script next to lerobot_relative_pose.py):
     python3 check_policy_openloop.py \
@@ -697,7 +700,8 @@ def draw_track_tile(image_rgb, pred, rec, now_xy, now_vis, layout, exec_steps: i
       squares             the re-observe step (filled: recorded, hollow: predicted)
 
     Positions are fractions of the camera frame, so they are drawn at the same
-    place whatever size the image is shown at.
+    place whatever size the image is shown at. ``rec`` None (a dataset without
+    recorded tracks) draws the predicted paths only.
     """
     import cv2
 
@@ -714,9 +718,12 @@ def draw_track_tile(image_rgb, pred, rec, now_xy, now_vis, layout, exec_steps: i
         q = np.asarray(xy, dtype=float) * to_tile
         return int(round(q[0])), int(round(q[1]))
 
-    K = min(len(pred), len(rec))
+    K = len(pred) if rec is None else min(len(pred), len(rec))
     p_xy, p_vis = track_pixels(np.asarray(pred, dtype=float)[:K], layout)
-    r_xy, r_vis = track_pixels(np.asarray(rec, dtype=float)[:K], layout)
+    if rec is None:  # nothing recorded: no recorded path, dots or squares
+        r_xy, r_vis = np.zeros_like(p_xy), np.zeros_like(p_vis)
+    else:
+        r_xy, r_vis = track_pixels(np.asarray(rec, dtype=float)[:K], layout)
     reobs = min(exec_steps, K) - 1
     for i, name in enumerate(layout["points"]):
         colour = TRACK_COLOURS[i % len(TRACK_COLOURS)]
@@ -764,19 +771,22 @@ def draw_track_tile(image_rgb, pred, rec, now_xy, now_vis, layout, exec_steps: i
     # legend line 1: the marks
     y = bar + h + 14
     x = 6
-    cv2.line(canvas, (x, y - 4), (x + 18, y - 4), (230, 230, 230), 2, cv2.LINE_AA)
-    x += 22
-    cv2.putText(canvas, "recorded", (x, y), font, fs, (230, 230, 230), 1, cv2.LINE_AA)
-    x += 74
+    if rec is not None:
+        cv2.line(canvas, (x, y - 4), (x + 18, y - 4), (230, 230, 230), 2, cv2.LINE_AA)
+        x += 22
+        cv2.putText(canvas, "recorded", (x, y), font, fs, (230, 230, 230), 1, cv2.LINE_AA)
+        x += 74
     _dashed(cv2, canvas, (x, y - 4), (x + 18, y - 4), (230, 230, 230), 1, dash=4, gap=3)
     cv2.circle(canvas, (x + 9, y - 4), 4, (230, 230, 230), 1, cv2.LINE_AA)
     x += 22
-    cv2.putText(canvas, "predicted", (x, y), font, fs, (230, 230, 230), 1, cv2.LINE_AA)
-    x += 80
-    cv2.circle(canvas, (x + 6, y - 4), 6, (230, 230, 230), 2, cv2.LINE_AA)
-    x += 16
-    cv2.putText(canvas, "now", (x, y), font, fs, (230, 230, 230), 1, cv2.LINE_AA)
-    x += 36
+    cv2.putText(canvas, "predicted" if rec is not None else "predicted (no recorded tracks)",
+                (x, y), font, fs, (230, 230, 230), 1, cv2.LINE_AA)
+    x += 80 if rec is not None else 232
+    if rec is not None:
+        cv2.circle(canvas, (x + 6, y - 4), 6, (230, 230, 230), 2, cv2.LINE_AA)
+        x += 16
+        cv2.putText(canvas, "now", (x, y), font, fs, (230, 230, 230), 1, cv2.LINE_AA)
+        x += 36
     cv2.rectangle(canvas, (x, y - 9), (x + 9, y), (230, 230, 230), 2)
     x += 14
     cv2.putText(canvas, f"step {reobs}", (x, y), font, fs, (230, 230, 230), 1, cv2.LINE_AA)
@@ -815,7 +825,8 @@ def write_track_sheets(out_dir, frames: list[dict], layout: dict, exec_steps: in
     """Draw every stored frame; one PNG sheet and one MP4 per episode. Returns the files written.
 
     ``frames`` entries: episode, frame, row, image (PNG bytes, BGR), pred, rec,
-    now_xy, now_vis.
+    now_xy, now_vis. ``rec`` and ``now_xy`` are None on a dataset without
+    recorded tracks: only the predicted paths are drawn.
     """
     import cv2
     from pathlib import Path
@@ -847,6 +858,33 @@ def write_track_sheets(out_dir, frames: list[dict], layout: dict, exec_steps: in
         writer.release()
         written.append(str(mp4))
     return written
+
+
+def predicted_visibility(preds: list, layout: dict, step: int) -> list[float]:
+    """Per point: the share of chunks that predict it visible (>= 0.5) at ``step`` (NaN if none reach it)."""
+    out = []
+    for p in layout["points"]:
+        iv = layout["visibility_dims"][p]
+        values = [float(np.asarray(c)[step, iv]) for c in preds if len(c) > step]
+        out.append(float(np.mean(np.asarray(values) >= TRACK_VISIBLE_THRESHOLD)) if values else float("nan"))
+    return out
+
+
+def log_predicted_tracks(preds: list, layout: dict, exec_steps: int) -> None:
+    """The track section for a dataset without recorded tracks: how often each point is predicted visible."""
+    K = max(len(c) for c in preds)
+    k = min(exec_steps, K) - 1
+    width = max(8, *(len(p) for p in layout["points"]))
+    at0, atk = predicted_visibility(preds, layout, 0), predicted_visibility(preds, layout, k)
+    logger.info(
+        f"\n[openloop] point tracks, PREDICTED ONLY ({len(preds)} frames): this dataset has no "
+        "recorded tracks,\n  so there is no error to report. How often the model predicts each "
+        f"point visible (>= {TRACK_VISIBLE_THRESHOLD}):"
+    )
+    logger.info(f"    {'point':<{width}} | {'step 0':>7} | {'step ' + str(k):>8}")
+    for name, a, b in zip(layout["points"], at0, atk):
+        logger.info(f"    {name:<{width}} | {_fmt(100 * a, '.1f', 6)}% | {_fmt(100 * b, '.1f', 7)}%")
+    logger.info("  --track-sheets DIR draws where it puts them in the images.")
 
 
 def dataset_track_stamp(ds) -> dict | None:
@@ -1005,6 +1043,7 @@ def main():
     # track-related stays None otherwise, and the run is exactly as before.
     track_layout = find_track_layout(args.path)
     track_actions = None  # the dataset's action column: the points' current positions
+    track_predicted_only = False  # a track model on a dataset without recorded tracks
     track_camera = None
     if track_layout is not None:
         out_feat = (getattr(policy.config, "output_features", None) or {}).get(ACTION)
@@ -1019,13 +1058,22 @@ def main():
                 problem = f"cannot read the dataset's actions ({e})"
         if problem is not None:
             logger.warning(f"[openloop] point tracks: no track report, {problem}")
+            # The model still predicts tracks: summarise (and with --track-sheets
+            # draw) them on their own, unless the checkpoint itself does not
+            # match its layout.
+            track_predicted_only = model_dim is None or int(model_dim) == len(track_layout["action_names"])
+            if track_predicted_only:
+                logger.info(
+                    "[openloop] point tracks: the model's PREDICTED tracks are summarised after the "
+                    "pose report" + (" and drawn" if args.track_sheets else "")
+                )
         else:
             logger.info(
                 f"[openloop] point tracks: {len(track_layout['points'])} points "
                 f"({', '.join(track_layout['points'])}); a track section follows the pose report"
             )
     if args.track_sheets:
-        if track_actions is None:
+        if track_actions is None and not track_predicted_only:
             logger.warning(
                 "[openloop] --track-sheets ignored: "
                 + ("no point tracks to draw (see above)" if track_layout is not None else
@@ -1045,6 +1093,7 @@ def main():
                                f"does not have; drawing on {track_camera}")
     track_frames: list[dict] = []
     sheet_frames: list[dict] = []
+    predicted_chunks: list[np.ndarray] = []  # predicted-only mode: every chunk, for the summary
 
     # Align the recorded window with the prediction (see the module docstring).
     delta_indices = getattr(policy.config, "action_delta_indices", None)
@@ -1187,6 +1236,17 @@ def main():
                         "pred": np.asarray(pred), "rec": np.asarray(rec),
                         "now_xy": now_xy, "now_vis": now_vis,
                     })
+            elif track_predicted_only:
+                predicted_chunks.append(np.asarray(pred))
+                if track_camera is not None and track_camera in item:
+                    import cv2
+
+                    bgr = cv2.cvtColor(frame_rgb_uint8(item[track_camera]), cv2.COLOR_RGB2BGR)
+                    sheet_frames.append({
+                        "episode": ep, "frame": idx - lo, "row": idx,
+                        "image": cv2.imencode(".png", bgr)[1].tobytes(),
+                        "pred": np.asarray(pred), "rec": None, "now_xy": None, "now_vis": None,
+                    })
 
     if not rows:
         logger.error("[openloop] no frames evaluated — check --repo-id/--root/--episodes")
@@ -1267,9 +1327,12 @@ def main():
 
     if track_frames:
         log_track_report(stack_track_metrics(track_frames), track_layout, exec_steps)
+    elif predicted_chunks:
+        log_predicted_tracks(predicted_chunks, track_layout, exec_steps)
     if sheet_frames:
         first = sheet_frames[0]
-        reobs = min(exec_steps, len(first["pred"]), len(first["rec"])) - 1
+        rec_len = len(first["pred"]) if first["rec"] is None else len(first["rec"])
+        reobs = min(exec_steps, len(first["pred"]), rec_len) - 1
         fps = float(getattr(getattr(ds, "meta", None), "fps", None) or getattr(ds, "fps", None) or 15)
         written = write_track_sheets(
             args.track_sheets, sheet_frames, track_layout, exec_steps,
@@ -1277,9 +1340,10 @@ def main():
         )
         logger.info(
             f"\n[openloop] track sheets ({track_camera}): {len(written)} files in {args.track_sheets}\n"
-            "  solid = recorded (tracker), dashed with circles = predicted, ring = where the\n"
-            "  point is now, "
-            f"squares = step {reobs} (re-observe), "
+            + ("  solid = recorded (tracker), dashed with circles = predicted, ring = where the\n"
+               "  point is now, " if first["rec"] is not None else
+               "  PREDICTED ONLY (no recorded tracks): dashed with circles = predicted, ")
+            + f"squares = step {reobs} (re-observe), "
             "grey x = a step predicted hidden.\n"
             "  The MP4 has every evaluated frame, at real-time speed for --stride."
         )
