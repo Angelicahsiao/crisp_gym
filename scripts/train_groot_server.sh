@@ -72,6 +72,7 @@ cd "$WORKDIR"
 #   SKIP_PREFLIGHT=1 ./train_groot_server.sh         # bypass the gate
 #   SKIP_HUB_CHECK=1 ./train_groot_server.sh         # bypass the hub gate
 #   DRY_RUN=1 ./train_groot_server.sh                # print the command, launch nothing
+#   AUGMENT=noaffine ./train_groot_server.sh         # image augmentation, see below
 #   SE3=1 DATASET=.../franka_electricbox_tracks/lerobot ./train_groot_server.sh
 #                                                    # POINT-TRACK targets, see below
 #
@@ -103,6 +104,18 @@ cd "$WORKDIR"
 # unchanged: pose from dims 0-8, gripper from the last dim.
 TRACK_LOSS_WEIGHT="${TRACK_LOSS_WEIGHT:-}"
 NO_TRACK_LOSS_PATCH="${NO_TRACK_LOSS_PATCH:-0}"
+
+# IMAGE AUGMENTATION — AUGMENT selects lerobot's dataset-level transforms,
+# applied to training frames only (lerobot passes none to the held-out split,
+# and none run at deploy). Same switch as train_multi_task_dit_server.sh:
+#   0         none (the default here, as before this setting existed)
+#   noaffine  lerobot's colour / contrast / saturation / hue / sharpness jitter,
+#             WITHOUT the random rotate/shift
+#   all       lerobot's full default set, rotate/shift included
+# For a point-track dataset use noaffine: a random rotate/shift moves the image
+# but not the track targets. (GR00T's own train-time random crop does the same
+# on a small scale, as multi_task_dit's does.)
+AUGMENT="${AUGMENT:-0}"
 
 DATASET_NAME="${DATASET_NAME:-open_electribox_sum}"
 DATASET="${DATASET:-$WORKDIR/datasets/$DATASET_NAME}"
@@ -141,6 +154,7 @@ SE3="${SE3:-0}"
 WRT_START="${WRT_START:-1}"
 
 # Checked first so a typo fails in seconds, before the preflight and hub checks.
+case "$AUGMENT" in noaffine|all|0) ;; *) echo "AUGMENT must be noaffine, all or 0, got: $AUGMENT" >&2; exit 2 ;; esac
 if [ -n "$EPOCHS" ] && ! awk -v e="$EPOCHS" 'BEGIN { exit !(e ~ /^[0-9]*\.?[0-9]+$/ && e + 0 > 0) }'; then
     echo "EPOCHS must be a positive number, got: $EPOCHS" >&2
     exit 2
@@ -172,6 +186,10 @@ fi
 if [ -n "$TRACK_LOSS_WEIGHT" ] && [ "$NO_TRACK_LOSS_PATCH" != "0" ]; then
     echo "TRACK_LOSS_WEIGHT and NO_TRACK_LOSS_PATCH=1 contradict each other: pick one." >&2
     exit 2
+fi
+if [ "$TRACKS" -eq 1 ] && [ "$AUGMENT" = "all" ]; then
+    echo "WARNING: AUGMENT=all randomly rotates/shifts the images but not the point-track targets;" >&2
+    echo "         AUGMENT=noaffine keeps them consistent." >&2
 fi
 if [ "$TRACKS" -eq 0 ] && { [ -n "$TRACK_LOSS_WEIGHT" ] || [ "$NO_TRACK_LOSS_PATCH" != "0" ]; }; then
     echo "WARNING: TRACK_LOSS_WEIGHT / NO_TRACK_LOSS_PATCH ignored: $DATASET has no point-track targets." >&2
@@ -335,6 +353,22 @@ else
         --policy.use_relative_actions=true
         --policy.relative_exclude_joints='["gripper"]'
     )
+fi
+
+# Augmentation runs on training frames only (see IMAGE AUGMENTATION above).
+if [ "$AUGMENT" != "0" ]; then
+    CMD+=(--dataset.image_transforms.enable=true)
+fi
+if [ "$AUGMENT" = "noaffine" ]; then
+    # lerobot 0.6.1's default transforms MINUS "affine". The WHOLE list must be
+    # given: `--dataset.image_transforms.tfs.affine.weight=0` is rejected, and a
+    # JSON with only the affine entry REPLACES the list, leaving 0 transforms.
+    IMAGE_TFS='{"brightness": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"brightness": [0.8, 1.2]}}, '\
+'"contrast": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"contrast": [0.8, 1.2]}}, '\
+'"saturation": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"saturation": [0.5, 1.5]}}, '\
+'"hue": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"hue": [-0.05, 0.05]}}, '\
+'"sharpness": {"weight": 1.0, "type": "SharpnessJitter", "kwargs": {"sharpness": [0.5, 1.5]}}}'
+    CMD+=(--dataset.image_transforms.tfs="$IMAGE_TFS")
 fi
 
 CMD+=(

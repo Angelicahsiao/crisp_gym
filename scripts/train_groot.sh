@@ -72,6 +72,11 @@
 #                      Compare against --se3 on the source dataset.
 #   --no-track-loss-patch   with --se3 on such a dataset: weight every action
 #                      dim equally
+#   --augment MODE     image augmentation on training frames: 0 (default,
+#                      none), noaffine (lerobot's colour/sharpness jitter
+#                      without rotate/shift; use this for a point-track
+#                      dataset), all (lerobot's full default set). Same switch
+#                      as train_multi_task_dit_server.sh's AUGMENT.
 #   --skip-preflight   run without gating on groot_preflight.py
 #   --dry-run          print the command and exit
 #   --                 everything after this is appended to the lerobot command
@@ -87,7 +92,7 @@ REPO="$(cd "$HERE/.." && pwd)"
 DATASET="" OUTPUT="" REPO_ID="" JOB_NAME="" EPOCHS=""
 BATCH_SIZE=32 STEPS=100000 SAVE_FREQ=20000 NUM_WORKERS=8
 SKIP_PREFLIGHT=0 DRY_RUN=0 SE3=0 WRT_START=1
-TRACK_LOSS_WEIGHT="" NO_TRACK_LOSS_PATCH=0
+TRACK_LOSS_WEIGHT="" NO_TRACK_LOSS_PATCH=0 AUGMENT=0
 EXTRA=()
 
 # Every value-taking option goes through this first. Without it, a flag given
@@ -118,6 +123,7 @@ while [ $# -gt 0 ]; do
         --no-wrt-start)   WRT_START=0; shift ;;
         --track-loss-weight) need_value "$@"; TRACK_LOSS_WEIGHT="$2"; shift 2 ;;
         --no-track-loss-patch) NO_TRACK_LOSS_PATCH=1; shift ;;
+        --augment)        need_value "$@"; AUGMENT="$2"; shift 2 ;;
         --skip-preflight) SKIP_PREFLIGHT=1; shift ;;
         --dry-run)        DRY_RUN=1; shift ;;
         --)               shift; EXTRA=("$@"); break ;;
@@ -136,6 +142,7 @@ if [ ! -d "$DATASET" ]; then
     exit 2
 fi
 # Checked here so a typo fails in seconds, before the preflight and hub checks.
+case "$AUGMENT" in noaffine|all|0) ;; *) echo "--augment must be noaffine, all or 0, got: $AUGMENT" >&2; exit 2 ;; esac
 if [ -n "$EPOCHS" ] && ! awk -v e="$EPOCHS" 'BEGIN { exit !(e ~ /^[0-9]*\.?[0-9]+$/ && e + 0 > 0) }'; then
     echo "--epochs must be a positive number, got: $EPOCHS" >&2
     exit 2
@@ -159,6 +166,10 @@ fi
 if [ -n "$TRACK_LOSS_WEIGHT" ] && [ "$NO_TRACK_LOSS_PATCH" -eq 1 ]; then
     echo "--track-loss-weight and --no-track-loss-patch contradict each other: pick one." >&2
     exit 2
+fi
+if [ "$TRACKS" -eq 1 ] && [ "$AUGMENT" = "all" ]; then
+    echo "WARNING: --augment all randomly rotates/shifts the images but not the point-track targets;" >&2
+    echo "         --augment noaffine keeps them consistent." >&2
 fi
 if [ "$TRACKS" -eq 0 ] && { [ -n "$TRACK_LOSS_WEIGHT" ] || [ "$NO_TRACK_LOSS_PATCH" -eq 1 ]; }; then
     echo "WARNING: --track-loss-weight / --no-track-loss-patch ignored: $DATASET has no point-track targets." >&2
@@ -302,6 +313,22 @@ else
         --policy.use_relative_actions=true
         --policy.relative_exclude_joints='["gripper"]'
     )
+fi
+
+# Augmentation runs on training frames only (see --augment above).
+if [ "$AUGMENT" != "0" ]; then
+    CMD+=(--dataset.image_transforms.enable=true)
+fi
+if [ "$AUGMENT" = "noaffine" ]; then
+    # lerobot 0.6.1's default transforms MINUS "affine". The WHOLE list must be
+    # given: `--dataset.image_transforms.tfs.affine.weight=0` is rejected, and a
+    # JSON with only the affine entry REPLACES the list, leaving 0 transforms.
+    IMAGE_TFS='{"brightness": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"brightness": [0.8, 1.2]}}, '\
+'"contrast": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"contrast": [0.8, 1.2]}}, '\
+'"saturation": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"saturation": [0.5, 1.5]}}, '\
+'"hue": {"weight": 1.0, "type": "ColorJitter", "kwargs": {"hue": [-0.05, 0.05]}}, '\
+'"sharpness": {"weight": 1.0, "type": "SharpnessJitter", "kwargs": {"sharpness": [0.5, 1.5]}}}'
+    CMD+=(--dataset.image_transforms.tfs="$IMAGE_TFS")
 fi
 
 CMD+=(

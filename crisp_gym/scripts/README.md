@@ -608,4 +608,7 @@ pairs each action dim with the state dim at the same index, which the track
 dims do not have, so both scripts refuse a track dataset without SE3. In SE3
 mode the wrapper recomputes GR00T's loss from the element-wise error its
 action head returns, with the same weights and hidden-point mask. Compare
-against SE3 on the source dataset, not against GR00T's default mode.
+against SE3 on the source dataset, not against GR00T's default mode. For image
+augmentation use `AUGMENT=noaffine` (`--augment noaffine`): colour and
+sharpness jitter only, as in `train_multi_task_dit_server.sh`; `all` adds a
+random rotate/shift that moves the image but not the track targets.
