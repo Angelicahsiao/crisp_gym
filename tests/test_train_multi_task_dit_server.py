@@ -259,6 +259,14 @@ def test_warmup_resize_and_sizes_are_forwarded(layout):
     assert _flag(argv, "--batch_size") == "32" and _flag(argv, "--num_workers") == "4"
 
 
+def test_in_memory_is_off_unless_asked_and_reaches_the_relative_launcher(layout):
+    assert "--in-memory" not in _train_argv(_run(layout)[1])
+    layout["log"].unlink()
+    argv = _train_argv(_run(layout, {"IN_MEMORY": "1"})[1])
+    assert argv[0].endswith("lerobot_relative_pose.py")
+    assert argv.count("--in-memory") == 1
+
+
 def test_extra_arguments_are_appended_last(layout):
     argv = _train_argv(_run(layout, args=["--policy.num_layers=8", "--seed=7"])[1])
     assert argv[-2:] == ["--policy.num_layers=8", "--seed=7"]
@@ -276,6 +284,8 @@ def test_extra_arguments_are_appended_last(layout):
         ({}, ["--epochs=10"], "use EPOCHS=N"),
         ({"ABSOLUTE": "2"}, [], "ABSOLUTE must be 0 or 1"),
         ({"WRT_START": "yes"}, [], "WRT_START must be 0 or 1"),
+        ({"IN_MEMORY": "yes"}, [], "IN_MEMORY must be 0 or 1"),
+        ({"IN_MEMORY": "1", "ABSOLUTE": "1"}, [], "IN_MEMORY=1 needs the relative mode"),
         ({"OBJECTIVE": "ddpm"}, [], "OBJECTIVE must be diffusion or flow_matching"),
         ({"AUGMENT": "1"}, [], "AUGMENT must be noaffine, all or 0"),
         ({"STEPS": "abc"}, [], "STEPS must be a positive integer"),

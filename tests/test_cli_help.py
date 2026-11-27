@@ -10,7 +10,8 @@ Not covered, on purpose:
   * the training launchers (lerobot_relative_pose, train_absolute_next_pose,
     train_action_from_target_cartesian) and check_relative_pose: they have no
     argument parser of their own and hand `--help` on to lerobot;
-  * check_available_policies: it takes no arguments.
+  * check_available_policies: it takes no arguments;
+  * memory_dataset: a module lerobot_relative_pose imports, not a script.
 """
 
 import subprocess
@@ -85,6 +86,8 @@ def test_every_script_is_listed_or_excluded_on_purpose():
         "train_action_from_target_cartesian.py",
         "check_relative_pose.py",
         "check_available_policies.py",
+        # a module the trainer imports, with no command line
+        "memory_dataset.py",
     }
     listed = {p.name for p in ROS_FREE} | {p.values[0].name for p in NEEDS_MORE}
     on_disk = {p.name for p in SCRIPTS.glob("*.py")}

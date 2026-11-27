@@ -726,13 +726,21 @@ def main():
     epochs and the target checkpoint is the N-epoch model. Without --epochs the
     schedule is untouched and the equivalent epoch count is only logged.
 
+    CLI: --in-memory reads a dataset WITHOUT cameras into memory once
+    (memory_dataset.py, beside this file) instead of through the Hugging Face
+    dataset for every item: the same items, ~10x faster. Refused with cameras.
+
     These are OUR flags — stripped from argv before draccus parses the rest.
     """
     import sys
 
     import lerobot.scripts.lerobot_train as lerobot_train
 
+    # imported here, not at the top: tests load this file with a torch stub
+    from memory_dataset import InMemoryDataset, pop_in_memory_flag
+
     append_wrt, remaining = _pop_wrt_start_flag(sys.argv[1:])
+    in_memory, remaining = pop_in_memory_flag(remaining)
     schedule_epochs, epochs, remaining = _setup_epochs(remaining)
     sys.argv = [sys.argv[0]] + remaining
     logging.basicConfig(level=logging.INFO)
@@ -743,6 +751,9 @@ def main():
     )
 
     def _wrap(dataset, cfg):
+        if in_memory:
+            dataset = InMemoryDataset(dataset)
+            logger.info("Holding the %d frames in memory (--in-memory).", len(dataset))
         wrapped = RelativePoseDataset(dataset, append_wrt_start_to_state=append_wrt)
         logger.info("Wrapped dataset with RelativePoseDataset (UMI-style relative poses).")
         recompute_relative_stats(wrapped)

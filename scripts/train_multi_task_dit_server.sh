@@ -67,6 +67,7 @@ cd "$WORKDIR"
 #   OBJECTIVE=flow_matching ./train_multi_task_dit_server.sh
 #   AUGMENT=all ./train_multi_task_dit_server.sh          # augmentation incl. rotate/shift
 #   AUGMENT=0 ./train_multi_task_dit_server.sh            # no augmentation
+#   IN_MEMORY=1 ./train_multi_task_dit_server.sh          # no cameras: hold the dataset in memory
 #   STEPS=2000 ./train_multi_task_dit_server.sh           # smoke test
 #   DATASET_NAME=other_set ./train_multi_task_dit_server.sh
 #   OUT=/mnt/nfs_share/runs/x ./train_multi_task_dit_server.sh
@@ -96,6 +97,10 @@ ABSOLUTE="${ABSOLUTE:-0}"
 # 0 -> 10-D plain relative state. Relative mode only.
 # Deploy MUST match: state_input relative_wrt_start vs relative.
 WRT_START="${WRT_START:-1}"
+# 1 -> read a dataset WITHOUT cameras into memory once (memory_dataset.py):
+# lerobot otherwise reads every item's windows from disk, ~11 ms per item, so
+# the GPU waits for data. Relative mode only; refused for a dataset with cameras.
+IN_MEMORY="${IN_MEMORY:-0}"
 
 _mode_tag="_rel"
 [ "$ABSOLUTE" = "1" ] && _mode_tag="_abs"
@@ -139,6 +144,8 @@ for a in "$@"; do
 done
 [ "$ABSOLUTE" = "0" ] || [ "$ABSOLUTE" = "1" ] || fail "ABSOLUTE must be 0 or 1, got: $ABSOLUTE"
 [ "$WRT_START" = "0" ] || [ "$WRT_START" = "1" ] || fail "WRT_START must be 0 or 1, got: $WRT_START"
+[ "$IN_MEMORY" = "0" ] || [ "$IN_MEMORY" = "1" ] || fail "IN_MEMORY must be 0 or 1, got: $IN_MEMORY"
+[ "$IN_MEMORY" = "0" ] || [ "$ABSOLUTE" = "0" ] || fail "IN_MEMORY=1 needs the relative mode (lerobot_relative_pose.py); the absolute launcher has no in-memory loader"
 case "$OBJECTIVE" in diffusion|flow_matching) ;; *) fail "OBJECTIVE must be diffusion or flow_matching, got: $OBJECTIVE" ;; esac
 case "$AUGMENT" in noaffine|all|0) ;; *) fail "AUGMENT must be noaffine, all or 0, got: $AUGMENT" ;; esac
 for v in STEPS BATCH_SIZE SAVE_FREQ NUM_WORKERS INFERENCE_STEPS HORIZON N_ACTION_STEPS IMAGE_RESIZE; do
@@ -242,6 +249,7 @@ fi
 CMD=(python "$TRAINER")
 if [ "$ABSOLUTE" = "0" ]; then
     if [ "$WRT_START" = "1" ]; then CMD+=(--wrt-start); else CMD+=(--no-wrt-start); fi
+    if [ "$IN_MEMORY" = "1" ]; then CMD+=(--in-memory); fi
 fi
 # Consumed by the launcher before lerobot parses the rest (lerobot itself would
 # reject it). STEPS and SAVE_FREQ are still passed below: with EPOCHS they set

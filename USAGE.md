@@ -977,7 +977,14 @@ Check a run in lerobot's log line: `data_s` is the time spent waiting for data,
   Recording stays at 800x1280 (HANDOFF §4b); this is a training copy.
 - more `NUM_WORKERS`, if the machine has the cores;
 - `AUGMENT=0` (or `--augment 0`) once, to see how much of the wait is the
-  augmentation and how much the video decoding.
+  augmentation and how much the video decoding;
+- a dataset WITHOUT cameras (the simulated press-button data, §15): `IN_MEMORY=1`
+  on the DiT launcher (relative mode). lerobot reads every item's
+  delta-timestamp windows from disk, about 11 ms an item; held in memory
+  (`crisp_gym/scripts/memory_dataset.py`) the same item takes 0.27 ms, 1.1 ms
+  with the relative-pose conversion (measured 2026-11-27 on the 20,111-frame
+  simulated set). Sheet 5's DiT runs waited 0.7 s for data per 0.06 s step.
+  A dataset with cameras is refused: there the decoding is the slow part.
 
 ## 9. Deploy a trained policy
 

@@ -73,6 +73,7 @@ python lerobot_relative_pose.py \
 |---|---|
 | `--wrt-start` (default) | append `rot_wrt_start` → **16-D UMI-parity** `observation.state`. Deploy with `state_input: relative_wrt_start`. |
 | `--no-wrt-start` | plain **10-D relative** state (pose9 + gripper), no wrt-start. Deploy with `state_input: relative`. |
+| `--in-memory` | a dataset **without cameras**: read it into memory once (`memory_dataset.py`, beside this script) instead of from disk per item, ~10x faster with the same items. Refused for a dataset with cameras. The DiT launcher's `IN_MEMORY=1`. |
 
 Deploy: `relative_lerobot_policy` (see below). The `state_input` in that config
 must match the flag you trained with.
